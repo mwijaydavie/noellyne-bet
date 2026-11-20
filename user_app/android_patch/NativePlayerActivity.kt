@@ -302,20 +302,20 @@ class NativePlayerActivity : Activity() {
         // Put a content view on screen first. Some Android 12 / OEM builds can
         // be fragile if immersive-window calls happen before a decor view exists.
         val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.BLACK)
+            setBackgroundColor(Color.rgb(20, 18, 18))
         }
         setContentView(root)
 
         try {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            window.statusBarColor = Color.BLACK
-            window.navigationBarColor = Color.BLACK
+            window.statusBarColor = Color.rgb(20, 18, 18)
+            window.navigationBarColor = Color.rgb(20, 18, 18)
         } catch (_: Throwable) {
             // Window cosmetics must never stop playback from starting.
         }
 
         playerView = PlayerView(this).apply {
-            setBackgroundColor(Color.BLACK)
+            setBackgroundColor(Color.rgb(20, 18, 18))
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             // Native Media3 default controls are oversized and show unwanted
             // Previous / Next buttons. Use one slim, accessible transport row.
@@ -323,7 +323,7 @@ class NativePlayerActivity : Activity() {
         }
         // The player controls and progress/time belong to the VIDEO box, not
         // the bottom of an otherwise empty portrait phone screen.
-        videoHost = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        videoHost = FrameLayout(this).apply { setBackgroundColor(Color.rgb(20, 18, 18)) }
         videoHost.addView(playerView,
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         root.addView(videoHost, FrameLayout.LayoutParams(
@@ -334,7 +334,7 @@ class NativePlayerActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(7), dp(4), dp(7), dp(4))
-            setBackgroundColor(Color.rgb(21, 21, 30))
+            setBackgroundColor(Color.rgb(29, 25, 24))
             // Server name / quality / back button stay hidden until player
             // controls are shown by a tap.
             visibility = View.GONE
@@ -508,12 +508,12 @@ class NativePlayerActivity : Activity() {
             val track = GradientDrawable().apply {
                 cornerRadius = dp(2).toFloat()
                 setSize(dp(100), dp(3))
-                setColor(Color.rgb(98, 105, 103))
+                setColor(Color.rgb(115, 106, 102))
             }
             val filledTrack = GradientDrawable().apply {
                 cornerRadius = dp(2).toFloat()
                 setSize(dp(100), dp(3))
-                setColor(Color.rgb(71, 229, 158))
+                setColor(Color.rgb(244, 151, 126))
             }
             progressDrawable = LayerDrawable(arrayOf(
                 track, ClipDrawable(filledTrack, Gravity.LEFT, ClipDrawable.HORIZONTAL)
@@ -1192,7 +1192,7 @@ class NativePlayerActivity : Activity() {
             background = GradientDrawable().apply {
                 cornerRadius = dp(8).toFloat()
                 setColor(Color.argb(235, 19, 48, 37))
-                setStroke(dp(1), Color.rgb(56, 216, 138))
+                setStroke(dp(1), Color.rgb(232, 117, 88))
             }
             setOnClickListener { showServerMenu() }
         }
@@ -1238,7 +1238,7 @@ class NativePlayerActivity : Activity() {
             elevation = dp(14).toFloat()
             background = GradientDrawable().apply {
                 cornerRadius = dp(16).toFloat()
-                setColor(Color.rgb(18, 18, 18))
+                setColor(Color.rgb(20, 18, 18))
                 setStroke(dp(1), Color.rgb(71, 72, 83))
             }
             clipToPadding = false
@@ -1263,7 +1263,7 @@ class NativePlayerActivity : Activity() {
             textSize = 12f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             letterSpacing = 0.02f
-            setTextColor(Color.rgb(189, 189, 189))
+            setTextColor(Color.rgb(168, 156, 150))
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(6), 0, dp(6), 0)
         }
@@ -1317,8 +1317,8 @@ class NativePlayerActivity : Activity() {
     private fun settingsBackground(selected: Boolean, radius: Int = 8): GradientDrawable =
         GradientDrawable().apply {
             cornerRadius = dp(radius).toFloat()
-            setColor(if (selected) Color.rgb(23, 49, 40) else Color.rgb(29, 29, 29))
-            setStroke(dp(1), if (selected) Color.rgb(56, 185, 121)
+            setColor(if (selected) Color.rgb(58, 30, 24) else Color.rgb(29, 29, 29))
+            setStroke(dp(1), if (selected) Color.rgb(229, 117, 88)
                 else Color.rgb(65, 65, 65))
         }
 
@@ -1361,7 +1361,7 @@ class NativePlayerActivity : Activity() {
             text = subtitle
             textSize = 10f
             typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-            setTextColor(Color.rgb(189, 189, 189))
+            setTextColor(Color.rgb(168, 156, 150))
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         })
@@ -1371,7 +1371,7 @@ class NativePlayerActivity : Activity() {
             text = "✓"
             textSize = 11f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(Color.rgb(143, 227, 185))
+            setTextColor(Color.rgb(244, 170, 150))
             gravity = Gravity.CENTER
         }, LinearLayout.LayoutParams(dp(26), dp(24)))
         settingsItems.addView(row, LinearLayout.LayoutParams(
@@ -1410,7 +1410,7 @@ class NativePlayerActivity : Activity() {
             val tab = overlayButton(label).apply {
                 textSize = 10f
                 background = settingsBackground(active, 7)
-                setTextColor(if (active) Color.rgb(143, 227, 185) else Color.WHITE)
+                setTextColor(if (active) Color.rgb(244, 170, 150) else Color.WHITE)
                 setPadding(dp(2), 0, dp(2), 0)
                 contentDescription = label + if (active) ", selected tab" else " tab"
                 setOnClickListener { openSettingsMenu(key) }
@@ -1602,7 +1602,7 @@ class NativePlayerActivity : Activity() {
             "playback fatal error",
             mapOf("reason" to text.lineSequence().firstOrNull().orEmpty().take(80))
         )
-        val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        val root = FrameLayout(this).apply { setBackgroundColor(Color.rgb(20, 18, 18)) }
         val message = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 18f

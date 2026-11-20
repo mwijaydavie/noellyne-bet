@@ -43,6 +43,18 @@ cd admin_app && flutter pub get && flutter run         # admin
 node preview/server.mjs                                # design preview
 ```
 
+## Configuration (dart-define)
+
+| Define | Default | Purpose |
+|---|---|---|
+| `SUPABASE_URL` | current project | Auth, realtime, Daily Picks |
+| `SUPABASE_ANON_KEY` | publishable key | Supabase client |
+| `PUBLIC_API_BASE` | Cloudflare feed | Match list |
+| `UPDATE_MANIFEST_URL` | our `viewer-latest/latest.json` | In-app updater |
+
+In-app updates are served from **this repo's** `viewer-latest` release; the CI
+job rewrites `latest.json` (version, build, sha256, size) on every APK build.
+
 ## Get the APK
 
 Every push that touches `user_app/` builds an installable APK on GitHub Actions

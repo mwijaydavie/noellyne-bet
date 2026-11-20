@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:posthog_flutter/posthog_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'analytics_service.dart';
 import 'backend_endpoint.dart';
 import 'app_theme.dart';
+import 'noellyne_config.dart';
 import 'screens/home_page.dart';
 import 'theme_controller.dart';
 
@@ -19,8 +21,8 @@ Future<void> main() async {
 }
 
 Future<void> _initializeBackend() async {
-  const directUrl = 'https://woggzixprvyjnfjzsglz.supabase.co';
-  const anonKey = 'sb_publishable_ka-rZxHdJUMYng6WJDDQUg_ZcWZJl3O';
+  const directUrl = NoellyneConfig.supabaseUrl;
+  const anonKey = NoellyneConfig.supabaseAnonKey;
 
   try {
     final url = await resolveSupabaseUrl(
@@ -57,6 +59,24 @@ class FootballViewerApp extends StatelessWidget {
           darkTheme: AppTheme.dark(),
           themeMode: AppThemeController.instance.mode,
           navigatorObservers: [PosthogObserver()],
+          // Status bar icons must follow the theme, otherwise the clock and
+          // battery vanish on the alabaster canvas.
+          builder: (context, child) {
+            final dark = Theme.of(context).brightness == Brightness.dark;
+            return AnnotatedRegion<SystemUiOverlayStyle>(
+              value: (dark
+                      ? SystemUiOverlayStyle.light
+                      : SystemUiOverlayStyle.dark)
+                  .copyWith(
+                statusBarColor: Colors.transparent,
+                systemNavigationBarColor:
+                    Theme.of(context).colorScheme.surface,
+                systemNavigationBarIconBrightness:
+                    dark ? Brightness.light : Brightness.dark,
+              ),
+              child: child ?? const SizedBox.shrink(),
+            );
+          },
           home: HomePage(backendReady: backendReady,
             initialMatchId: Uri.base.queryParameters['match']),
         );

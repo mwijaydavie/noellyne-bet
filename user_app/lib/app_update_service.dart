@@ -8,6 +8,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import 'analytics_service.dart';
 import 'app_update_installer.dart';
+import 'noellyne_config.dart';
 
 const _vpnFreeViewerOrigin = 'https://nca.nyeinchanaung.us.ci';
 
@@ -34,8 +35,35 @@ const _viewerReleaseApkPath =
     'NCA-arm64-v8a-latest.apk';
 
 /// Refuse unrelated or corrupted manifests before comparing version codes.
+/// Noellyne Bet manifests are served from OUR GitHub releases, not the
+/// upstream NCA feed.
 @visibleForTesting
-bool validViewerRelease(Map<String, dynamic> release) {
+bool isNoellyneRelease(Map<String, dynamic> release) {
+  final uri = Uri.tryParse(release['apk_url']?.toString() ?? '');
+  final digest = (release['sha256'] ?? '').toString().trim().toLowerCase();
+  final version = (release['version_name'] ?? '').toString().trim();
+  final size = int.tryParse(release['size_bytes']?.toString() ?? '') ?? 0;
+  final build = int.tryParse(release['build_number']?.toString() ?? '') ?? 0;
+  return release['app'] == 'noellyne_viewer' &&
+      uri != null &&
+      uri.scheme == 'https' &&
+      uri.host == 'github.com' &&
+      uri.path.startsWith(NoellyneConfig.releaseRepoPath) &&
+      !uri.hasQuery &&
+      !uri.hasFragment &&
+      RegExp(r'^[0-9a-f]{64}$').hasMatch(digest) &&
+      RegExp(r'^\d+\.\d+\.\d+$').hasMatch(version) &&
+      size > 0 &&
+      size <= 120 * 1024 * 1024 &&
+      build > 0;
+}
+
+@visibleForTesting
+bool validViewerRelease(Map<String, dynamic> release) =>
+    isNoellyneRelease(release) || _legacyNcaRelease(release);
+
+@visibleForTesting
+bool _legacyNcaRelease(Map<String, dynamic> release) {
   final uri = Uri.tryParse(release['apk_url']?.toString() ?? '');
   final digest = (release['sha256'] ?? '').toString().trim().toLowerCase();
   final version = (release['version_name'] ?? '').toString().trim();
@@ -64,6 +92,9 @@ class AppUpdateService {
 
   // Prefer the release feed written atomically with signed APKs; Pages lags.
   static const _manifestUrls = <String>[
+    // Noellyne Bet's own rolling manifest (primary).
+    NoellyneConfig.updateManifestUrl,
+    // Legacy upstream feeds kept as fallbacks until the old installs age out.
     'https://raw.githubusercontent.com/'
         'nyeinchanaung75299-eng/football-stream-app/'
         'feed/public/releases/latest.json',
@@ -207,7 +238,7 @@ class AppUpdateService {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                'NCA ${info.version} (build ${info.buildNumber}) is already up to date. Latest build: $latestBuild.',
+                'Noellyne Bet ${info.version} (build ${info.buildNumber}) is up to date. Latest build: $latestBuild.',
               ),
             ),
           );

@@ -195,7 +195,18 @@ Each sprint ends with a working preview you can tap through on your phone.
 - [x] `n8n/noellyne-daily-picks-branch.json` — drop-in n8n branch (2 nodes) that mirrors `Quant Model v3.1` picks into `daily_picks`; Telegram flow untouched.
 - [x] `daily_picks` schema extended; unique index switched to plain `(match, pick, kickoff_time)` so PostgREST upserts are idempotent across 09/14/19 runs.
 
-### Next (Sprint 4)
+### Sprint 4 — UI bug sweep, ownership & player 💥
+
+- [x] **Daily Picks gets a real `Scaffold`** — no more yellow double-underlined fallback typography; light mode canvas is the alabaster theme surface (cards no longer grey on black).
+- [x] Header no longer collides with the list — title lives in the `AppBar` (back + refresh), so cards can never scroll through it.
+- [x] **Dock is a true stadium capsule** — 60px high, `BorderRadius.circular(999)` outside *and* on the active indicator, 5px inset, 240ms `cubic(0.22,1,0.36,1)`, `HapticFeedback.lightImpact()`, 20px icons / 10.5px labels.
+- [x] AI button is a 60×60 circle (`#F4977E → #E57558`) spaced 12px from the dock.
+- [x] **Status bar contrast fixed** — `AnnotatedRegion<SystemUiOverlayStyle>` follows the theme, so the clock/battery stay visible on alabaster.
+- [x] **Updates now come from us** — `NoellyneConfig.updateManifestUrl` points at `mwijaydavie/noellyne-bet` `viewer-latest`; CI publishes `latest.json` (sha256, size, build) with the APK. Legacy NCA feed kept only as fallback.
+- [x] `NoellyneConfig` — Supabase URL/key, public API and update manifest are all `--dart-define` overridable.
+- [x] **Native Android player re-skinned** — NCA green accents → terracotta/obsidian (#141212 canvas).
+
+### Next (Sprint 5)
 
 - [ ] Match Theatre: obsidian player surface + draggable pick sheet.
 - [ ] Favorites / history / kickoff reminders.

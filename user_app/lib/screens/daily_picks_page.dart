@@ -48,12 +48,35 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
 
   @override
   Widget build(BuildContext context) {
-    return NoellyneBackground(
-      child: SafeArea(
-        bottom: false,
+    // A Scaffold is mandatory here: without it the route has no Material
+    // ancestor, so ThemeData is dropped and every Text falls back to the
+    // yellow double-underlined debug style.
+    return Scaffold(
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      appBar: AppBar(
+        toolbarHeight: 66,
+        titleSpacing: 0,
+        title: const _Header(),
+        actions: [
+          IconButton(
+            onPressed: _refresh,
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Refresh picks',
+          ),
+          const SizedBox(width: 4),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(
+            height: 1,
+            color: Theme.of(context).colorScheme.outlineVariant
+                .withValues(alpha: .35),
+          ),
+        ),
+      ),
+      body: NoellyneBackground(
         child: Column(
           children: [
-            _Header(onRefresh: _refresh),
             Expanded(
               child: FutureBuilder<List<DailyPick>>(
                 future: _future,
@@ -137,49 +160,36 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.onRefresh});
-
-  final Future<void> Function() onRefresh;
+  const _Header();
 
   @override
   Widget build(BuildContext context) {
-    final onSurface = Theme.of(context).colorScheme.onSurface;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 10, 12, 6),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Daily Picks',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: NoellyneUI.headlineTracking,
-                    color: onSurface,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Curated by Noellyne AI · updated every morning',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Daily Picks',
+          style: TextStyle(
+            fontSize: 21,
+            fontWeight: FontWeight.w800,
+            letterSpacing: NoellyneUI.headlineTracking,
+            color: scheme.onSurface,
           ),
-          IconButton(
-            onPressed: onRefresh,
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh picks',
+        ),
+        const SizedBox(height: 1),
+        Text(
+          'Curated by Noellyne AI · updated every morning',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w600,
+            color: scheme.onSurfaceVariant,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

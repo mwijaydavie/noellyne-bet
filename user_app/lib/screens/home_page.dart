@@ -12,6 +12,7 @@ import '../analytics_service.dart';
 import '../app_theme.dart';
 import '../backend_endpoint.dart';
 import '../network_endpoints.dart';
+import '../noellyne_config.dart';
 import '../playback_routes.dart';
 import '../native_player.dart';
 import 'source_browser_page.dart';
@@ -86,10 +87,7 @@ class _HomePageState extends State<HomePage> {
   final Map<String, Future<List<Map<String, dynamic>>>> _streamLinkInflight =
       {};
 
-  static const _publicApiBase = String.fromEnvironment(
-    'PUBLIC_API_BASE',
-    defaultValue: 'https://football-api.nyeinchanaung.us.ci',
-  );
+  static const _publicApiBase = NoellyneConfig.publicApiBase;
   List<String> get _publicApiBases {
     final bases = publicApiBases(
       primary: _publicApiBase,

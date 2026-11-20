@@ -222,6 +222,34 @@ jobs:
             --notes-file /tmp/notes.md \
             --latest
 
+      - name: Publish rolling update manifest (viewer-latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          cp /tmp/apk/NoellyneBet-*.apk /tmp/apk/NoellyneBet-latest.apk
+          APK_BYTES=$(stat -c%s /tmp/apk/NoellyneBet-latest.apk)
+          cat > /tmp/apk/latest.json <<EOF
+          {
+            "app": "noellyne_viewer",
+            "abi": "universal",
+            "version_name": "${APK_VERSION}",
+            "build_number": ${BUILD_NUMBER},
+            "apk_url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/viewer-latest/NoellyneBet-latest.apk",
+            "sha256": "${APK_SHA256}",
+            "size_bytes": ${APK_BYTES},
+            "notes": "Noellyne Bet ${APK_VERSION} (build ${BUILD_NUMBER}) from ${GITHUB_SHA::12}",
+            "mandatory": false
+          }
+          EOF
+          cat /tmp/apk/latest.json
+          gh release view viewer-latest >/dev/null 2>&1 || \
+            gh release create viewer-latest \
+              --title "Noellyne Bet · latest" \
+              --notes "Rolling build consumed by the in-app updater (GET latest.json)."
+          gh release upload viewer-latest \
+            /tmp/apk/NoellyneBet-latest.apk /tmp/apk/latest.json --clobber
+
       - name: Summary
         run: |
           {

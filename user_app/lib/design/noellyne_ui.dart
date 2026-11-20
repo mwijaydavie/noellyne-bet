@@ -1,6 +1,7 @@
 import 'dart:ui' show FontFeature, ImageFilter;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_theme.dart';
 
@@ -639,48 +640,57 @@ class FloatingDock extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
+          // Stadium capsule: 60 high, fully rounded, 5px inner inset.
           Expanded(
-            child: GlassBlur(
-              radius: 24,
-              padding: const EdgeInsets.all(7),
-              child: Row(
-                children: [
-                  for (var i = 0; i < items.length; i++)
-                    Expanded(
-                      child: _DockTile(
-                        item: items[i],
-                        active: i == index,
-                        onTap: () => onSelected(i),
+            child: SizedBox(
+              height: 60,
+              child: GlassBlur(
+                radius: 999,
+                padding: const EdgeInsets.all(5),
+                sigma: 18,
+                child: Row(
+                  children: [
+                    for (var i = 0; i < items.length; i++)
+                      Expanded(
+                        child: _DockTile(
+                          item: items[i],
+                          active: i == index,
+                          onTap: () {
+                            HapticFeedback.lightImpact();
+                            onSelected(i);
+                          },
+                        ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
           if (onAiPressed != null) ...[
-            const SizedBox(width: 10),
+            const SizedBox(width: 12),
             PressableScale(
-              onTap: onAiPressed,
+              onTap: () {
+                HapticFeedback.lightImpact();
+                onAiPressed!();
+              },
+              scale: .95,
               child: Tooltip(
                 message: aiTooltip,
                 child: Container(
-                  width: 56,
-                  height: 56,
+                  width: 60,
+                  height: 60,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     gradient: const LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [
-                        NoellyneColors.glowSoft,
-                        NoellyneColors.glowDeep,
-                      ],
+                      colors: [Color(0xFFF4977E), Color(0xFFE57558)],
                     ),
                     boxShadow: [
                       BoxShadow(
-                        color: NoellyneColors.glowDeep.withValues(alpha: .5),
+                        color: const Color(0xFFE57558).withValues(alpha: .45),
                         blurRadius: 26,
                         offset: const Offset(0, 10),
                       ),
@@ -689,7 +699,7 @@ class FloatingDock extends StatelessWidget {
                   child: Icon(
                     Icons.auto_awesome_rounded,
                     color: dark ? NoellyneColors.ink : Colors.white,
-                    size: 24,
+                    size: 25,
                   ),
                 ),
               ),
@@ -725,28 +735,36 @@ class _DockTile extends StatelessWidget {
 
     return PressableScale(
       onTap: onTap,
+      scale: .95,
       child: AnimatedContainer(
-        duration: NoellyneMotion.tap,
+        duration: const Duration(milliseconds: 240),
         curve: NoellyneMotion.tapCurve,
-        padding: const EdgeInsets.symmetric(vertical: 7),
+        margin: const EdgeInsets.symmetric(horizontal: 1),
         decoration: BoxDecoration(
           color: active ? activeBg : Colors.transparent,
-          borderRadius: BorderRadius.circular(18),
+          // Full pill so the indicator curve runs concentrically inside the
+          // 999-radius dock capsule.
+          borderRadius: BorderRadius.circular(999),
         ),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.max,
           children: [
-            Icon(active ? (item.activeIcon ?? item.icon) : item.icon,
-                size: 19, color: fg),
-            const SizedBox(height: 3),
+            Icon(
+              active ? (item.activeIcon ?? item.icon) : item.icon,
+              size: 20,
+              color: fg,
+            ),
+            const SizedBox(height: 2),
             Text(
               item.label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: fg,
-                fontSize: 9.5,
-                fontWeight: FontWeight.w700,
+                fontSize: 10.5,
+                fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+                height: 1.05,
               ),
             ),
           ],
