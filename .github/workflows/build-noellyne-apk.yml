@@ -209,6 +209,28 @@ jobs:
           java_dest.mkdir(parents=True, exist_ok=True)
           shutil.copy2('android_patch/PlaybackSourceSessions.java',
                        java_dest / 'PlaybackSourceSessions.java')
+
+          # --- sync guard -------------------------------------------------
+          # The APK must compile the patched player, not a stale copy.
+          compiled = kotlin_dest / 'NativePlayerActivity.kt'
+          text = compiled.read_text()
+          required = [
+              'finishWithTab(',
+              'ensureSettingsSheetVisible',
+              'settingsScrim',
+              'adoptSources',
+              'ic_bet_home',
+              'onBackPressed',
+          ]
+          missing = [marker for marker in required if marker not in text]
+          print('COMPILED PLAYER SOURCE:', compiled, len(text), 'bytes')
+          if missing:
+              raise SystemExit(
+                  'Native player patch is out of sync, missing: ' + ', '.join(missing)
+              )
+          if 'hands them over' in text:
+              raise SystemExit('Legacy placeholder sentence reached the build')
+          print('SYNC OK: patched player markers present')
           PY
 
       - name: Get dependencies

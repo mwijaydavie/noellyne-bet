@@ -21,9 +21,12 @@ import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.SurfaceView
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.animation.TimeInterpolator
 import android.view.WindowInsets
+import android.view.animation.PathInterpolator
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -163,6 +166,7 @@ class NativePlayerActivity : Activity() {
     private lateinit var theatrePanel: ScrollView
     private lateinit var theatreBody: LinearLayout
     private lateinit var settingsPanel: LinearLayout
+    private var settingsScrim: View? = null
     private lateinit var settingsScroll: ScrollView
     private lateinit var settingsItems: LinearLayout
     private var settingsSection = "video"
@@ -1588,8 +1592,11 @@ class NativePlayerActivity : Activity() {
         if (raw.isBlank()) return emptyList()
         return try {
             val array = org.json.JSONArray(raw)
-            (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+            val items = (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+            Log.d("NoellynePlayer", "suggestedChannels received: ${items.size}")
+            items
         } catch (_: Throwable) {
+            Log.d("NoellynePlayer", "suggestedChannels payload was not valid JSON")
             emptyList()
         }
     }
@@ -1935,8 +1942,11 @@ class NativePlayerActivity : Activity() {
                 val id = item.optString("id")
                 row.setOnClickListener {
                     val carried = item.optString("sourcesJson")
+                    val targetTab = item.optInt("tab", -1)
                     if (carried.isNotBlank()) {
                         adoptSources(carried, item.optString("epgTitle"))
+                    } else if (targetTab >= 0) {
+                        finishWithTab(targetTab)
                     } else if (id.isNotBlank()) {
                         MainActivity.emitPlayerEvent("openMatch", mapOf("matchId" to id))
                         finish()
@@ -1997,10 +2007,7 @@ class NativePlayerActivity : Activity() {
                 setTextColor(if (index == activeIndex) activeColor else secondaryInk())
                 setPadding(0, dp(3), 0, 0)
             })
-            tab.setOnClickListener {
-                MainActivity.emitPlayerEvent("navigateToTab", mapOf("index" to index))
-                finish()
-            }
+            tab.setOnClickListener { finishWithTab(index) }
             row.addView(tab, LinearLayout.LayoutParams(0, dp(52), 1f))
         }
 
@@ -2031,10 +2038,7 @@ class NativePlayerActivity : Activity() {
                 intArrayOf(Color.rgb(244, 151, 126), Color.rgb(232, 130, 103))
             ).apply { shape = GradientDrawable.OVAL }
             contentDescription = "Noellyne AI"
-            setOnClickListener {
-                MainActivity.emitPlayerEvent("navigateToTab", mapOf("index" to 4))
-                finish()
-            }
+            setOnClickListener { finishWithTab(4) }
         }
 
         playerDock = LinearLayout(this).apply {
@@ -2061,6 +2065,15 @@ class NativePlayerActivity : Activity() {
      * Swap the playing fixture's sources without leaving the player (used by
      * the suggested-channel cards).
      */
+    /**
+     * Hand a tab tap back to Flutter through the activity result, so the real
+     * tab opens (and `PlaybackAudioService` keeps playing when Audio Mode is on).
+     */
+    private fun finishWithTab(index: Int) {
+        setResult(RESULT_OK, Intent().putExtra("navigateToTab", index))
+        finish()
+    }
+
     private fun adoptSources(json: String, newTitle: String) {
         val parsed = try {
             org.json.JSONArray(json)
@@ -2111,25 +2124,58 @@ class NativePlayerActivity : Activity() {
     // real close X, compact system-font rows and selected green checkmarks.
     // Only the controls are native views; Media3 and its track selector stay intact.
     private fun buildSettingsPanel(root: FrameLayout) {
+        // Soft dim behind the sheet. Never a solid black band: the 16:9 video
+        // stays readable while quality is being changed.
+        settingsScrim = View(this).apply {
+            setBackgroundColor(Color.argb(72, 0, 0, 0))
+            visibility = View.GONE
+            alpha = 0f
+            setOnClickListener { closeSettingsMenu() }
+        }
+        root.addView(settingsScrim, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            Gravity.TOP
+        ))
+
         settingsPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            elevation = dp(14).toFloat()
-            background = GradientDrawable().apply {
-                cornerRadius = dp(16).toFloat()
-                setColor(Color.rgb(20, 18, 18))
-                setStroke(dp(1), Color.rgb(71, 72, 83))
-            }
+            elevation = dp(18).toFloat()
             clipToPadding = false
             contentDescription = "Player settings"
+            background = GradientDrawable().apply {
+                cornerRadius = dp(24).toFloat()
+                if (isNightMode()) {
+                    setColor(Color.rgb(33, 30, 29))
+                    setStroke(dp(1), Color.argb(28, 255, 255, 255))
+                } else {
+                    setColor(Color.rgb(255, 255, 255))
+                    setStroke(dp(1), Color.rgb(234, 227, 223))
+                }
+            }
         }
+
+        // Centred drag pill, so it reads as a sheet rather than a dialog.
+        val dragPill = View(this).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dp(999).toFloat()
+                setColor(if (isNightMode()) Color.argb(90, 255, 255, 255)
+                    else Color.argb(70, 29, 25, 24))
+            }
+        }
+        settingsPanel.addView(dragPill, LinearLayout.LayoutParams(dp(36), dp(4)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            topMargin = dp(10)
+            bottomMargin = dp(2)
+        })
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(9), dp(7), dp(9), dp(4))
         }
-        val back = overlayButton("←").apply {
+        val back = overlayButton("←", onSheet = true).apply {
             textSize = 16f
             contentDescription = "Back to video settings"
             setOnClickListener {
@@ -2142,11 +2188,11 @@ class NativePlayerActivity : Activity() {
             textSize = 12f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             letterSpacing = 0.02f
-            setTextColor(Color.rgb(168, 156, 150))
+            setTextColor(secondaryInk())
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(6), 0, dp(6), 0)
         }
-        val close = overlayButton("✕").apply {
+        val close = overlayButton("✕", onSheet = true).apply {
             textSize = 16f
             contentDescription = "Close player settings"
             setOnClickListener { closeSettingsMenu() }
@@ -2168,37 +2214,64 @@ class NativePlayerActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         settingsPanel.addView(settingsScroll, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(settingsPanel, FrameLayout.LayoutParams(
-            dp(335), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM
         ).apply {
-            topMargin = dp(54)
-            rightMargin = dp(8) + displayCutoutSafeRight
+            leftMargin = dp(12)
+            rightMargin = dp(12)
+            bottomMargin = dp(16)
         })
     }
 
     private fun positionSettingsPanel(root: FrameLayout, landscape: Boolean) {
         if (!::settingsPanel.isInitialized) return
-        val widthAvailable = (root.width - dp(16) - displayCutoutSafeRight)
-            .coerceAtLeast(dp(160))
-        val width = if (landscape) {
-            minOf(dp(335), widthAvailable, (root.width * 0.48f).toInt().coerceAtLeast(dp(180)))
-        } else minOf(dp(335), widthAvailable)
-        settingsPanel.layoutParams = (settingsPanel.layoutParams as FrameLayout.LayoutParams).apply {
-            this.width = width
-            this.height = ViewGroup.LayoutParams.WRAP_CONTENT
-            gravity = Gravity.TOP or Gravity.END
-            topMargin = if (landscape) dp(50) else dp(54)
-            rightMargin = dp(8)
+        val params = (settingsPanel.layoutParams as? FrameLayout.LayoutParams)
+            ?: FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        if (landscape) {
+            // Floating right panel so the pitch stays visible on the left.
+            val widthAvailable = (root.width - dp(24) - displayCutoutSafeRight)
+                .coerceAtLeast(dp(200))
+            params.width = minOf(dp(320), widthAvailable)
+            params.height = ViewGroup.LayoutParams.WRAP_CONTENT
+            params.gravity = Gravity.BOTTOM or Gravity.END
+            params.leftMargin = 0
+            params.rightMargin = dp(12) + displayCutoutSafeRight
+            params.topMargin = 0
+            params.bottomMargin = dp(12) + navigationInsetPx
+        } else {
+            // Portrait: detached bottom sheet, max 56% of the screen.
+            params.width = ViewGroup.LayoutParams.MATCH_PARENT
+            params.height = (root.height * 0.56f).toInt()
+                .coerceIn(dp(220), root.height.coerceAtLeast(dp(240)))
+            params.gravity = Gravity.BOTTOM
+            params.leftMargin = dp(12)
+            params.rightMargin = dp(12)
+            params.topMargin = 0
+            params.bottomMargin = navigationInsetPx + dp(16)
         }
+        settingsPanel.layoutParams = params
+        // The sheet must never grow taller than its own content.
+        settingsPanel.layoutParams = params
     }
 
     private fun settingsBackground(selected: Boolean, radius: Int = 8): GradientDrawable =
         GradientDrawable().apply {
             cornerRadius = dp(radius).toFloat()
-            setColor(if (selected) Color.rgb(58, 30, 24) else Color.rgb(29, 29, 29))
-            setStroke(dp(1), if (selected) Color.rgb(229, 117, 88)
-                else Color.rgb(65, 65, 65))
+            if (isNightMode()) {
+                setColor(if (selected) Color.rgb(58, 30, 24) else Color.rgb(38, 34, 33))
+                setStroke(dp(1), if (selected) Color.rgb(229, 117, 88)
+                    else Color.argb(24, 255, 255, 255))
+            } else {
+                setColor(if (selected) Color.rgb(253, 231, 223) else Color.rgb(247, 243, 240))
+                setStroke(dp(1), if (selected) Color.rgb(232, 130, 103)
+                    else Color.rgb(234, 227, 223))
+            }
         }
 
     private fun addSettingsChoice(
@@ -2232,7 +2305,7 @@ class NativePlayerActivity : Activity() {
             text = label
             textSize = 12f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(Color.WHITE)
+            setTextColor(primaryInk())
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         })
@@ -2240,7 +2313,7 @@ class NativePlayerActivity : Activity() {
             text = subtitle
             textSize = 10f
             typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-            setTextColor(Color.rgb(168, 156, 150))
+            setTextColor(secondaryInk())
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         })
@@ -2250,7 +2323,7 @@ class NativePlayerActivity : Activity() {
             text = "✓"
             textSize = 11f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(Color.rgb(244, 170, 150))
+            setTextColor(Color.rgb(232, 130, 103))
             gravity = Gravity.CENTER
         }, LinearLayout.LayoutParams(dp(26), dp(24)))
         settingsItems.addView(row, LinearLayout.LayoutParams(
@@ -2268,14 +2341,66 @@ class NativePlayerActivity : Activity() {
     }
 
     private fun closeSettingsMenu() {
-        if (::settingsPanel.isInitialized) settingsPanel.visibility = View.GONE
+        if (!::settingsPanel.isInitialized || settingsPanel.visibility != View.VISIBLE) {
+            setControlsVisible(true)
+            return
+        }
+        val distance = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            0f
+        } else {
+            settingsPanel.height.coerceAtLeast(dp(200)).toFloat()
+        }
+        settingsPanel.animate()
+            .translationY(distance)
+            .alpha(0f)
+            .setDuration(200)
+            .setInterpolator(sheetInterpolator())
+            .withEndAction {
+                settingsPanel.visibility = View.GONE
+                settingsPanel.translationY = 0f
+                settingsPanel.alpha = 1f
+            }
+            .start()
+        settingsScrim?.animate()?.alpha(0f)?.setDuration(200)?.withEndAction {
+            settingsScrim?.visibility = View.GONE
+        }?.start()
         setControlsVisible(true)
+    }
+
+    private fun sheetInterpolator(): TimeInterpolator =
+        PathInterpolator(0.16f, 1f, 0.3f, 1f)
+
+    private fun ensureSettingsSheetVisible() {
+        if (!::settingsPanel.isInitialized) return
+        val rootView = settingsPanel.parent as? FrameLayout ?: return
+        val landscape =
+            resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        positionSettingsPanel(rootView, landscape)
+        val scrim = settingsScrim
+        scrim?.visibility = View.VISIBLE
+        scrim?.alpha = 0f
+        scrim?.animate()?.alpha(1f)?.setDuration(200)?.start()
+        if (settingsPanel.visibility != View.VISIBLE) {
+            settingsPanel.visibility = View.VISIBLE
+            settingsPanel.alpha = 0f
+            settingsPanel.translationY =
+                if (landscape) 0f else dp(220).toFloat()
+            settingsPanel.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(240)
+                .setInterpolator(sheetInterpolator())
+                .start()
+        } else {
+            settingsPanel.animate().alpha(1f).translationY(0f).setDuration(160).start()
+        }
     }
 
     private fun openSettingsMenu(section: String) {
         if (!::settingsPanel.isInitialized || isFinishing || isDestroyed) return
         settingsSection = section
         settingsItems.removeAllViews()
+        ensureSettingsSheetVisible()
         val tabs = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -2289,7 +2414,9 @@ class NativePlayerActivity : Activity() {
             val tab = overlayButton(label).apply {
                 textSize = 10f
                 background = settingsBackground(active, 7)
-                setTextColor(if (active) Color.rgb(244, 170, 150) else Color.WHITE)
+                setTextColor(
+                    if (active) Color.rgb(232, 130, 103) else secondaryInk()
+                )
                 setPadding(dp(2), 0, dp(2), 0)
                 contentDescription = label + if (active) ", selected tab" else " tab"
                 setOnClickListener { openSettingsMenu(key) }
@@ -2491,18 +2618,32 @@ class NativePlayerActivity : Activity() {
         setContentView(root)
     }
 
-    private fun overlayButton(value: String): TextView {
+    /**
+     * Circular chrome button. Over the video it stays frosted-white-on-black;
+     * inside the settings sheet it flips to the light/dark card palette so it
+     * never disappears on a white surface.
+     */
+    private fun overlayButton(value: String, onSheet: Boolean = false): TextView {
         return TextView(this).apply {
             text = value
             textSize = 12f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            setTextColor(Color.WHITE)
+            setTextColor(if (onSheet) primaryInk() else Color.WHITE)
             gravity = Gravity.CENTER
-            // Frosted circular chrome, matching the Flutter design system.
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.argb(132, 0, 0, 0))
-                setStroke(dp(1), Color.argb(36, 255, 255, 255))
+                if (onSheet) {
+                    if (isNightMode()) {
+                        setColor(Color.rgb(44, 40, 39))
+                        setStroke(dp(1), Color.argb(26, 255, 255, 255))
+                    } else {
+                        setColor(Color.rgb(247, 243, 240))
+                        setStroke(dp(1), Color.rgb(234, 227, 223))
+                    }
+                } else {
+                    setColor(Color.argb(132, 0, 0, 0))
+                    setStroke(dp(1), Color.argb(36, 255, 255, 255))
+                }
             }
             isClickable = true
             isFocusable = true
@@ -2559,6 +2700,24 @@ class NativePlayerActivity : Activity() {
         } catch (_: Throwable) {
             // Fullscreen behavior is optional; playback should still continue.
         }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        // 1) any overlay first
+        if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
+            closeSettingsMenu()
+            return
+        }
+        // 2) leave fullscreen before leaving the player (YouTube behaviour)
+        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            intent.putExtra("nca_landscape", false)
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            return
+        }
+        // 3) plain close back to the screen that launched the player
+        setResult(RESULT_CANCELED)
+        super.onBackPressed()
     }
 
     override fun onDestroy() {

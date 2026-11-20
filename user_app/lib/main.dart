@@ -13,6 +13,8 @@ import 'screens/channels_page.dart';
 import 'screens/daily_picks_page.dart';
 import 'screens/home_page.dart';
 import 'screens/splash_screen.dart';
+import 'screens/welcome_page.dart';
+import 'widgets/root_back_guard.dart';
 import 'theme_controller.dart';
 
 /// Root navigator, so the native player can switch tabs even when the screen
@@ -50,13 +52,13 @@ void _installNativeTabRouter() {
     final ctx = appNavigatorKey.currentContext;
     switch (index) {
       case 0:
-        go(const HomePage());
+        go(const RootBackGuard(isHome: true, child: HomePage()));
       case 1:
-        go(const ChannelsPage());
+        go(const RootBackGuard(child: ChannelsPage()));
       case 2:
-        go(const DailyPicksPage());
+        go(const RootBackGuard(child: DailyPicksPage()));
       case 3:
-        go(const HomePage());
+        go(const RootBackGuard(isHome: true, child: HomePage()));
         if (ctx != null) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             final live = appNavigatorKey.currentContext ?? ctx;
@@ -136,12 +138,71 @@ class FootballViewerApp extends StatelessWidget {
               child: child ?? const SizedBox.shrink(),
             );
           },
-          home: SplashGate(
-            backendReady: backendReady,
-            initialMatchId: Uri.base.queryParameters['match'],
+          home: RootBackGuard(
+            isHome: true,
+            child: _FirstRunGate(
+              backendReady: backendReady,
+              initialMatchId: Uri.base.queryParameters['match'],
+            ),
           ),
         );
       },
+    );
+  }
+}
+
+/// Shows the one-time welcome for brand-new installs, then the splash lobby.
+class _FirstRunGate extends StatefulWidget {
+  const _FirstRunGate({this.backendReady, this.initialMatchId});
+
+  final Future<void>? backendReady;
+  final String? initialMatchId;
+
+  @override
+  State<_FirstRunGate> createState() => _FirstRunGateState();
+}
+
+class _FirstRunGateState extends State<_FirstRunGate> {
+  bool _checked = false;
+  bool _seen = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_check());
+  }
+
+  Future<void> _check() async {
+    final seen = await WelcomePage.seen();
+    if (!mounted) return;
+    setState(() {
+      _seen = seen;
+      _checked = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_checked) return const SizedBox.shrink();
+    if (!_seen) {
+      return WelcomePage(
+        onDone: () {
+          if (!mounted) return;
+          setState(() => _seen = true);
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute<void>(
+              builder: (_) => SplashGate(
+                backendReady: widget.backendReady,
+                initialMatchId: widget.initialMatchId,
+              ),
+            ),
+          );
+        },
+      );
+    }
+    return SplashGate(
+      backendReady: widget.backendReady,
+      initialMatchId: widget.initialMatchId,
     );
   }
 }

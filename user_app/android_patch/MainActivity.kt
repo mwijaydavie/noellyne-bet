@@ -1,5 +1,6 @@
 package com.example.football_viewer
 
+import android.app.Activity
 import android.content.Intent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -8,7 +9,9 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val channelName = "football_stream/native_player"
 
+
     companion object {
+        const val PLAYER_REQUEST = 4711
         private var playerEventChannel: MethodChannel? = null
 
         fun emitPlayerEvent(
@@ -55,7 +58,8 @@ class MainActivity : FlutterActivity() {
             val sessionId = call.argument<String>("sessionId").orEmpty()
             NativePlayerActivity.prepareOpeningSession(sessionId)
             try {
-                startActivity(Intent(this, NativePlayerActivity::class.java).apply {
+                startActivityForResult(
+                    Intent(this, NativePlayerActivity::class.java).apply {
                     putExtra("sourcesJson", sourcesJson)
                     putExtra(
                         "selectedIndex",
@@ -86,6 +90,19 @@ class MainActivity : FlutterActivity() {
             }
 
             result.success(null)
+        }
+    }
+
+    /**
+     * The native player hands tab taps back here (`navigateToTab`), so the real
+     * Flutter tab opens instead of dropping the user on the previous screen.
+     */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != PLAYER_REQUEST) return
+        val tab = data?.getIntExtra("navigateToTab", -1) ?: -1
+        if (resultCode == Activity.RESULT_OK && tab >= 0) {
+            emitPlayerEvent("navigateToTab", mapOf("index" to tab))
         }
     }
 }

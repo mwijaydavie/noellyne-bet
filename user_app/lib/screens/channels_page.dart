@@ -349,6 +349,30 @@ class _ChannelsPageState extends State<ChannelsPage> {
     }
   }
 
+  /// Other loaded channels, so the native player never shows an empty
+  /// suggested list. Tapping one returns to this tab (`tab: 1`).
+  List<Map<String, dynamic>> _suggestedChannels(Map<String, dynamic> current) {
+    final rows = _lastChannels ?? const <Map<String, dynamic>>[];
+    final currentId = current['id']?.toString() ?? '';
+    final out = <Map<String, dynamic>>[];
+    for (final row in rows) {
+      final id = (row['id'] ?? '').toString();
+      final name = (row['name'] ?? '').toString().trim();
+      if (id.isEmpty || name.isEmpty || id == currentId) continue;
+      out.add(<String, dynamic>{
+        'id': id,
+        'name': name,
+        'epgTitle': name,
+        'subtitle': 'Channel \u00B7 tap to open',
+        'isLive': true,
+        'lineCount': 0,
+        'tab': 1,
+      });
+      if (out.length >= 20) break;
+    }
+    return out;
+  }
+
   Future<void> watch(Map<String, dynamic> channel, {bool viaVercel = false}) async {
     if (opening) return;
     FocusManager.instance.primaryFocus?.unfocus();
@@ -409,6 +433,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
         selectedIndex: 0,
         title: channel['name']?.toString() ?? 'Channel',
         matchId: id,
+        suggestedChannels: _suggestedChannels(channel),
         activeTabIndex: 1,
         isDark: Theme.of(context).brightness == Brightness.dark,
       );
