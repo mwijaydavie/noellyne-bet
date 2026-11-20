@@ -64,6 +64,18 @@ class MainActivity : FlutterActivity() {
                     putExtra("title", call.argument<String>("title").orEmpty())
                     putExtra("matchId", call.argument<String>("matchId").orEmpty())
                     putExtra("sessionId", sessionId)
+                    putExtra(
+                        "suggestedChannels",
+                        call.argument<String>("suggestedChannels").orEmpty()
+                    )
+                    putExtra(
+                        "featuredPick",
+                        call.argument<String>("featuredPick").orEmpty()
+                    )
+                    putExtra(
+                        "activeTabIndex",
+                        call.argument<Int>("activeTabIndex") ?: 0
+                    )
                 })
             } catch (_: Exception) {
                 NativePlayerActivity.cancelOpeningSession(sessionId)

@@ -33,6 +33,13 @@ class NativePlayer {
   static List<Map<String, dynamic>>? _iosSources;
   static ValueNotifier<int>? _iosSourceUpdates;
 
+  /// Native dock requested another tab: (0 Live, 1 Matches, 2 Channels,
+  /// 3 More, 4 Noellyne AI).
+  static void Function(int index)? onNavigateToTab;
+
+  /// A suggested channel was tapped inside the player.
+  static void Function(String matchId)? onOpenMatch;
+
   // Native players ship with their playback engines, so there is no script
   // download to warm before the line picker is shown.
   static void prewarm({required List<Map<String, dynamic>> sources}) {}
@@ -49,6 +56,23 @@ class NativePlayer {
 
       final event = raw['event']?.toString().trim() ?? '';
       if (event.isEmpty) return;
+
+      // Native UI intent, not analytics: hand it back to the app shell.
+      final eventProperties = raw['properties'];
+      if (event == 'navigateToTab') {
+        final index = eventProperties is Map
+            ? ((eventProperties['index'] as num?)?.toInt() ?? 0)
+            : 0;
+        onNavigateToTab?.call(index);
+        return;
+      }
+      if (event == 'openMatch') {
+        final id = eventProperties is Map
+            ? (eventProperties['matchId']?.toString() ?? '')
+            : '';
+        if (id.isNotEmpty) onOpenMatch?.call(id);
+        return;
+      }
 
       final properties = <String, Object>{};
       final rawProperties = raw['properties'];
@@ -71,6 +95,9 @@ class NativePlayer {
     String? title,
     String? matchId,
     String? sessionId,
+    List<Map<String, dynamic>>? suggestedChannels,
+    Map<String, dynamic>? featuredPick,
+    int activeTabIndex = 0,
   }) async {
     if (Platform.isIOS) {
       if (context == null || !context.mounted) {
@@ -114,6 +141,10 @@ class NativePlayer {
       'title': title ?? 'Football Live',
       'matchId': matchId ?? '',
       'sessionId': sessionId ?? '',
+      'suggestedChannels':
+          suggestedChannels == null ? '' : jsonEncode(suggestedChannels),
+      'featuredPick': featuredPick == null ? '' : jsonEncode(featuredPick),
+      'activeTabIndex': activeTabIndex,
     });
   }
 

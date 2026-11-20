@@ -17,6 +17,7 @@ import android.os.SystemClock
 import android.text.TextUtils
 import android.util.Base64
 import android.util.Rational
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -144,6 +145,12 @@ class NativePlayerActivity : Activity() {
     private lateinit var serverRail: LinearLayout
     private lateinit var serverRailScroll: HorizontalScrollView
     private lateinit var statusText: TextView
+    private lateinit var playerLoader: PlayerLoaderView
+    private lateinit var heroControls: LinearLayout
+    private lateinit var heroPlay: TextView
+    private lateinit var topScrim: View
+    private lateinit var bottomScrim: View
+    private lateinit var playerDock: LinearLayout
     private lateinit var compactControls: LinearLayout
     private lateinit var compactPlay: TextView
     private lateinit var compactTime: TextView
@@ -586,6 +593,65 @@ class NativePlayerActivity : Activity() {
             ViewGroup.LayoutParams.WRAP_CONTENT, dp(35)))
         compactControls.addView(compactSeek, LinearLayout.LayoutParams(0, dp(35), 1f))
         compactControls.addView(settingsButton, LinearLayout.LayoutParams(dp(35), dp(35)))
+        fun frostedCircle(label: String, sizeDp: Int, description: String): TextView =
+            TextView(this).apply {
+                text = label
+                contentDescription = description
+                textSize = if (sizeDp >= 56) 20f else 11f
+                typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.argb(120, 0, 0, 0))
+                    setStroke(dp(1), Color.argb(40, 255, 255, 255))
+                }
+                isClickable = true
+                isFocusable = true
+            }
+
+        fun seekBy(deltaMs: Long) {
+            val exo = player ?: return
+            val max = exo.duration
+            var target = exo.currentPosition + deltaMs
+            if (target < 0L) target = 0L
+            if (max != C.TIME_UNSET && max > 0L) target = target.coerceAtMost(max)
+            exo.seekTo(target)
+            updateCompactControls()
+            setControlsVisible(true)
+        }
+
+        val rewindHero = frostedCircle("\u221210", 46, "Back 10 seconds").apply {
+            setOnClickListener { seekBy(-10_000L) }
+        }
+        heroPlay = frostedCircle("\u2161", 58, "Play or pause").apply {
+            setOnClickListener {
+                val exo = player ?: return@setOnClickListener
+                if (exo.isPlaying) exo.pause() else exo.play()
+                updateCompactControls()
+                setControlsVisible(true)
+            }
+        }
+        val forwardHero = frostedCircle("+10", 46, "Forward 10 seconds").apply {
+            setOnClickListener { seekBy(10_000L) }
+        }
+        heroControls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        heroControls.addView(rewindHero, LinearLayout.LayoutParams(dp(46), dp(46)))
+        heroControls.addView(heroPlay, LinearLayout.LayoutParams(dp(58), dp(58)).apply {
+            leftMargin = dp(26)
+            rightMargin = dp(26)
+        })
+        heroControls.addView(forwardHero, LinearLayout.LayoutParams(dp(46), dp(46)))
+        videoHost.addView(heroControls, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        ))
+
         videoHost.addView(compactControls, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(35), Gravity.BOTTOM
         ))
@@ -640,23 +706,35 @@ class NativePlayerActivity : Activity() {
                 }
                 theatrePanel.visibility = if (landscape) View.GONE else View.VISIBLE
             }
+            if (::playerDock.isInitialized) {
+                playerDock.visibility = if (landscape) View.GONE else View.VISIBLE
+            }
             if (::settingsPanel.isInitialized) positionSettingsPanel(root, landscape)
         }
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutPlayer() }
         root.post { layoutPlayer(); applyDisplayMode() }
         renderServerRail()
 
-        // Single tap: show ALL controls, second tap: hide ALL immediately.
-        // Without another touch, every overlay fades out after exactly 7s.
-        playerView.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_UP) {
+        // Single tap toggles the chrome, double tap seeks like YouTube.
+        val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
                     closeSettingsMenu()
                     setControlsVisible(true)
                 } else {
                     setControlsVisible(!controlsVisible)
                 }
+                return true
             }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                val half = (playerView.width / 2).toFloat()
+                if (e.x < half) seekBy(-10_000L) else seekBy(10_000L)
+                return true
+            }
+        })
+        playerView.setOnTouchListener { _, event ->
+            gestures.onTouchEvent(event)
             true
         }
         playerView.post { setControlsVisible(true) }
@@ -676,19 +754,38 @@ class NativePlayerActivity : Activity() {
             visibility = View.GONE
         }
 
-        // Inside the picture, bottom-left: a quiet status chip instead of a
-        // centred spinner over a wall of black.
+        // Dead-centre broadcast loader (rotating coral arc + radar ring).
+        playerLoader = PlayerLoaderView(this)
         videoHost.addView(
-            statusText,
+            playerLoader,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.START
-            ).apply {
-                leftMargin = dp(12)
-                bottomMargin = dp(54)
-            }
+                Gravity.CENTER
+            )
         )
+
+        // Gradient scrims keep titles and controls legible over bright frames.
+        topScrim = View(this).apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.argb(184, 0, 0, 0), Color.TRANSPARENT)
+            )
+            visibility = View.GONE
+        }
+        bottomScrim = View(this).apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.BOTTOM_TOP,
+                intArrayOf(Color.argb(210, 0, 0, 0), Color.TRANSPARENT)
+            )
+            visibility = View.GONE
+        }
+        videoHost.addView(topScrim, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(96), Gravity.TOP
+        ))
+        videoHost.addView(bottomScrim, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(112), Gravity.BOTTOM
+        ))
 
         // Audio-only stage: video decoding is switched off, the picture area
         // becomes a coral equalizer so data and battery are saved.
@@ -728,6 +825,7 @@ class NativePlayerActivity : Activity() {
         // Portrait companion panel: the 16:9 picture stays pinned to the top
         // and everything below it becomes the Match Theatre.
         buildTheatrePanel(root)
+        buildDock(root)
 
         // Web-style settings are a dark native overlay, not Android PopupMenu.
         // Add last so the panel remains above playback/status without replacing Media3.
@@ -782,6 +880,7 @@ class NativePlayerActivity : Activity() {
      */
     private fun setAudioOnly(enabled: Boolean) {
         audioOnlyMode = enabled
+        applyAudioOnlyTracks(enabled)
         if (::playerView.isInitialized) {
             playerView.visibility = if (enabled) View.INVISIBLE else View.VISIBLE
         }
@@ -800,6 +899,52 @@ class NativePlayerActivity : Activity() {
             )
         }
         setControlsVisible(true)
+    }
+
+    /**
+     * Hiding a PlayerView does NOT stop ExoPlayer from downloading video
+     * segments. Disabling the video track type does, and clearing the surface
+     * releases the decoder. Muxed single-rendition streams lose their audio
+     * when video is disabled, so that case re-enables the track but keeps the
+     * surface detached (GPU decode stops, audio survives).
+     */
+    private fun applyAudioOnlyTracks(enabled: Boolean) {
+        val exo = player ?: return
+        try {
+            if (enabled) {
+                exo.trackSelectionParameters = exo.trackSelectionParameters
+                    .buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+                    .build()
+                exo.clearVideoSurface()
+                // Re-check shortly: if the stream was muxed, audio would drop.
+                playerView.postDelayed({
+                    val current = player
+                    if (current != null && audioOnlyMode) {
+                        val hasAudio = current.currentTracks.groups.any { group ->
+                            group.type == C.TRACK_TYPE_AUDIO && group.isSupported
+                        }
+                        if (!hasAudio) {
+                            current.trackSelectionParameters =
+                                current.trackSelectionParameters
+                                    .buildUpon()
+                                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                                    .build()
+                            current.clearVideoSurface()
+                        }
+                    }
+                }, 1200L)
+            } else {
+                exo.trackSelectionParameters = exo.trackSelectionParameters
+                    .buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                    .build()
+                if (::playerView.isInitialized) {
+                    exo.setVideoSurfaceView(playerView.videoSurfaceView)
+                }
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     override fun onUserLeaveHint() {
@@ -828,6 +973,7 @@ class NativePlayerActivity : Activity() {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         if (isInPictureInPictureMode) {
             if (::theatrePanel.isInitialized) theatrePanel.visibility = View.GONE
+            if (::playerDock.isInitialized) playerDock.visibility = View.GONE
             setControlsVisible(false)
         } else {
             setControlsVisible(true)
@@ -854,6 +1000,12 @@ class NativePlayerActivity : Activity() {
         if (::serverRailScroll.isInitialized)
             serverRailScroll.visibility =
                 if (visible && visibleServerIndices().size > 1) View.VISIBLE else View.GONE
+        if (::heroControls.isInitialized)
+            heroControls.visibility = if (visible) View.VISIBLE else View.GONE
+        if (::topScrim.isInitialized)
+            topScrim.visibility = if (visible) View.VISIBLE else View.GONE
+        if (::bottomScrim.isInitialized)
+            bottomScrim.visibility = if (visible) View.VISIBLE else View.GONE
         clearControlsHideTimer()
         if (visible && ::playerView.isInitialized) {
             val task = Runnable {
@@ -1387,182 +1539,394 @@ class NativePlayerActivity : Activity() {
         return label
     }
 
+    private fun suggestedChannels(): List<org.json.JSONObject> {
+        val raw = intent.getStringExtra("suggestedChannels").orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return try {
+            val array = org.json.JSONArray(raw)
+            (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    private fun featuredPick(): org.json.JSONObject? {
+        val raw = intent.getStringExtra("featuredPick").orEmpty()
+        if (raw.isBlank()) return null
+        return try {
+            org.json.JSONObject(raw)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun isNightMode(): Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+
+    private fun cardBackground(radiusDp: Int): GradientDrawable = GradientDrawable().apply {
+        cornerRadius = dp(radiusDp).toFloat()
+        if (isNightMode()) {
+            setColor(Color.rgb(28, 25, 24))
+            setStroke(dp(1), Color.argb(20, 255, 255, 255))
+        } else {
+            setColor(Color.rgb(250, 247, 245))
+            setStroke(dp(1), Color.argb(255, 255, 255, 255))
+        }
+    }
+
+    private fun primaryInk(): Int =
+        if (isNightMode()) Color.rgb(250, 247, 245) else Color.rgb(29, 25, 24)
+
+    private fun secondaryInk(): Int =
+        if (isNightMode()) Color.rgb(163, 155, 151) else Color.rgb(115, 106, 102)
+
+    private fun coralPill(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 12f
+        typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        setTextColor(Color.WHITE)
+        gravity = Gravity.CENTER
+        setPadding(dp(18), dp(12), dp(18), dp(12))
+        background = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(Color.rgb(244, 151, 126), Color.rgb(232, 130, 103))
+        ).apply { cornerRadius = dp(999).toFloat() }
+    }
+
+    private fun circleAction(label: String, description: String): TextView = TextView(this).apply {
+        text = label
+        contentDescription = description
+        textSize = 15f
+        setTextColor(primaryInk())
+        gravity = Gravity.CENTER
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            if (isNightMode()) {
+                setColor(Color.rgb(35, 32, 32))
+                setStroke(dp(1), Color.argb(40, 255, 255, 255))
+            } else {
+                setColor(Color.rgb(255, 255, 255))
+                setStroke(dp(1), Color.argb(28, 29, 25, 24))
+            }
+        }
+    }
+
+    /** Portrait feed: header, actions, AI tip, and suggested channels. */
     private fun renderTheatre() {
         if (!::theatreBody.isInitialized) return
         theatreBody.removeAllViews()
+        theatreBody.setBackgroundColor(
+            if (isNightMode()) Color.rgb(18, 16, 16) else Color.rgb(250, 247, 245)
+        )
+        theatreBody.setPadding(dp(16), dp(14), dp(16), dp(112))
 
-        // Brand eyebrow + match title
-        theatreBody.addView(theatreLabel("MATCH THEATRE"))
-        val title = intent.getStringExtra("title").orEmpty().ifBlank { "Match stream" }
-        theatreBody.addView(TextView(this).apply {
-            text = title
-            textSize = 17f
-            setTextColor(Color.rgb(245, 239, 234))
+        val title = intent.getStringExtra("title").orEmpty().ifBlank { "Live stream" }
+        val parts = title.split("•", "·").map { it.trim() }.filter { it.isNotEmpty() }
+        val channelName = parts.firstOrNull() ?: title
+        val matchName = if (parts.size > 1) parts.drop(1).joinToString(" · ") else ""
+
+        // ---- header row ----
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val avatar = TextView(this).apply {
+            text = channelName.trim().take(1).uppercase(Locale.ROOT)
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.rgb(232, 130, 103))
+                setStroke(dp(2), Color.argb(160, 255, 255, 255))
+            }
+        }
+        header.addView(avatar, LinearLayout.LayoutParams(dp(40), dp(40)))
+        val titles = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        titles.addView(TextView(this).apply {
+            text = channelName
+            textSize = 15f
             setTypeface(typeface, Typeface.BOLD)
-            maxLines = 2
+            setTextColor(primaryInk())
+            maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, 0, 0, dp(2))
         })
-        theatreBody.addView(TextView(this).apply {
-            text = if (serverLabel(displayServerIndex()).isNotBlank())
-                "Now on ${serverLabel(displayServerIndex())}" else "Streaming"
-            textSize = 11f
-            setTextColor(Color.rgb(163, 152, 147))
-            setPadding(0, 0, 0, dp(18))
+        titles.addView(TextView(this).apply {
+            text = if (matchName.isNotBlank()) matchName else "Now on " + serverLabel(displayServerIndex())
+            textSize = 11.5f
+            setTextColor(secondaryInk())
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
         })
-
-        // Line switcher pills
-        val indices = visibleServerIndices()
-        if (indices.size > 1) {
-            theatreBody.addView(theatreLabel("LINES"))
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            val activeIndex = displayServerIndex()
-            for (index in indices) {
-                val pill = TextView(this).apply {
-                    text = serverLabel(index)
-                    textSize = 11.5f
-                    setPadding(dp(14), dp(9), dp(14), dp(9))
-                    setTextColor(
-                        if (index == activeIndex) Color.rgb(29, 25, 24)
-                        else Color.rgb(245, 239, 234)
-                    )
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(999).toFloat()
-                        if (index == activeIndex) {
-                            setColor(Color.rgb(232, 130, 103))
-                        } else {
-                            setColor(Color.argb(255, 35, 32, 32))
-                            setStroke(dp(1), Color.argb(60, 255, 255, 255))
-                        }
-                    }
-                    setOnClickListener {
-                        playServer(index)
-                        renderTheatre()
-                    }
-                }
-                row.addView(pill, LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { rightMargin = dp(8) })
+        header.addView(titles, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(TextView(this).apply {
+            text = "● LIVE"
+            textSize = 9.5f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.rgb(232, 130, 103))
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(999).toFloat()
+                setColor(Color.argb(36, 232, 130, 103))
+                setStroke(dp(1), Color.argb(90, 232, 130, 103))
             }
-            theatreBody.addView(HorizontalScrollView(this).apply {
-                isHorizontalScrollBarEnabled = false
-                addView(row)
-            })
-            theatreBody.addView(TextView(this).apply {
-                text = " "
-                textSize = 4f
-            })
-        }
+        })
+        theatreBody.addView(header, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(2) })
 
-        // YouTube-style recommendations: the other broadcasters carrying this
-        // match, as tappable rows with a poster tile.
-        val others = indices.filter { it != displayServerIndex() }
-        if (others.isNotEmpty()) {
-            theatreBody.addView(theatreLabel("MORE CHANNELS & LINES"))
-            for (index in others) {
-                val label = serverLabel(index)
-                val row = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(0, dp(6), 0, dp(6))
-                }
-                val tile = TextView(this).apply {
-                    text = label.trim().take(1).uppercase(java.util.Locale.ROOT)
-                    textSize = 15f
-                    gravity = Gravity.CENTER
-                    setTextColor(Color.rgb(29, 25, 24))
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(12).toFloat()
-                        setColor(Color.rgb(232, 130, 103))
-                    }
-                }
-                row.addView(tile, LinearLayout.LayoutParams(dp(56), dp(38)))
-                val column = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(dp(12), 0, 0, 0)
-                }
-                column.addView(TextView(this).apply {
-                    text = label
-                    textSize = 13f
-                    setTextColor(Color.rgb(245, 239, 234))
-                    setTypeface(typeface, Typeface.BOLD)
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                })
-                column.addView(TextView(this).apply {
-                    text = "${safeLineFormat(index)} · tap to switch line"
-                    textSize = 10.5f
-                    setTextColor(Color.rgb(163, 152, 147))
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                })
-                row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                val switchBtn = TextView(this).apply {
-                    text = "▶"
-                    textSize = 12f
-                    gravity = Gravity.CENTER
-                    setTextColor(Color.rgb(232, 130, 103))
-                    setPadding(dp(10), dp(6), dp(10), dp(6))
-                }
-                row.addView(switchBtn, LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                ))
-                row.setOnClickListener {
-                    playServer(index)
-                    renderTheatre()
-                }
-                theatreBody.addView(row)
-            }
-            theatreBody.addView(TextView(this).apply {
-                text = " "
-                textSize = 4f
-            })
+        // ---- action row: switch line + audio + settings ----
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
-
-        // AI pick card, only when the app hands one over
-        val pickText = intent.getStringExtra("pickText").orEmpty()
-        if (pickText.isNotBlank()) {
-            theatreBody.addView(theatreLabel("AI PICK"))
-            val card = TextView(this).apply {
-                text = pickText
-                textSize = 12.5f
-                setTextColor(Color.rgb(245, 239, 234))
-                setLineSpacing(dp(4).toFloat(), 1f)
-                setPadding(dp(14), dp(12), dp(14), dp(12))
+        val lineCount = visibleServerIndices().size
+        val switchPill = coralPill(
+            if (lineCount > 1) "Switch line · $lineCount lines"
+            else "Line: " + serverLabel(displayServerIndex())
+        ).apply {
+            setOnClickListener { if (lineCount > 1) showServerMenu() }
+        }
+        actions.addView(switchPill, LinearLayout.LayoutParams(
+            0, dp(46), 1f
+        ))
+        val audioButton = circleAction("\u266A", "Audio only mode").apply {
+            if (audioOnlyMode) {
                 background = GradientDrawable().apply {
-                    cornerRadius = dp(18).toFloat()
-                    setColor(Color.rgb(29, 25, 24))
-                    setStroke(dp(1), Color.argb(90, 232, 130, 103))
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.rgb(232, 130, 103))
                 }
+            }
+            setOnClickListener { setAudioOnly(!audioOnlyMode); renderTheatre() }
+        }
+        actions.addView(audioButton, LinearLayout.LayoutParams(dp(46), dp(46)).apply {
+            leftMargin = dp(10)
+        })
+        val settingsButton = circleAction("\u22EE", "Video settings").apply {
+            setOnClickListener {
+                if (::settingsPanel.isInitialized) openSettingsMenu("video")
+            }
+        }
+        actions.addView(settingsButton, LinearLayout.LayoutParams(dp(46), dp(46)).apply {
+            leftMargin = dp(10)
+        })
+        theatreBody.addView(actions, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(16) })
+
+        // ---- AI tip card ----
+        val pick = featuredPick()
+        if (pick != null) {
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                background = cardBackground(18)
+            }
+            card.addView(TextView(this).apply {
+                text = "NOELLYNE AI PICK"
+                textSize = 9.5f
+                letterSpacing = 0.16f
+                setTextColor(Color.rgb(232, 130, 103))
+            })
+            card.addView(TextView(this).apply {
+                text = pick.optString("match").ifBlank { "Today's pick" }
+                textSize = 13f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(primaryInk())
+                setPadding(0, dp(6), 0, 0)
+                maxLines = 2
+            })
+            val pickLine = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(4), 0, 0)
+            }
+            pickLine.addView(TextView(this).apply {
+                text = pick.optString("pick")
+                textSize = 12f
+                setTextColor(secondaryInk())
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val odds = pick.optString("odds")
+            if (odds.isNotBlank()) {
+                pickLine.addView(TextView(this).apply {
+                    text = odds
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(primaryInk())
+                    setPadding(dp(10), 0, 0, 0)
+                })
+            }
+            card.addView(pickLine)
+            val copyText = pick.optString("copyText").ifBlank {
+                pick.optString("match") + " — " + pick.optString("pick") + " " + odds
+            }
+            card.addView(TextView(this).apply {
+                text = "Copy"
+                textSize = 11f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(Color.rgb(232, 130, 103))
+                setPadding(0, dp(8), 0, 0)
                 setOnClickListener {
                     try {
                         val clipboard = this@NativePlayerActivity
                             .getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
                         clipboard.setPrimaryClip(
-                            android.content.ClipData.newPlainText("Noellyne pick", pickText)
+                            android.content.ClipData.newPlainText("Noellyne pick", copyText)
                         )
-                        android.widget.Toast
-                            .makeText(this@NativePlayerActivity, "Pick copied", android.widget.Toast.LENGTH_SHORT)
-                            .show()
+                        android.widget.Toast.makeText(
+                            this@NativePlayerActivity, "Copied to clipboard",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
                     } catch (_: Throwable) {
                     }
                 }
-            }
-            theatreBody.addView(card)
-            theatreBody.addView(TextView(this).apply {
-                text = "Tap the card to copy · 18+ play responsibly"
-                textSize = 9.5f
-                setTextColor(Color.rgb(163, 152, 147))
-                setPadding(0, dp(6), 0, 0)
             })
+            theatreBody.addView(card, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(14) })
         }
 
-        // Footer hint
-        theatreBody.addView(TextView(this).apply {
-            text = "Tap the picture for controls · Rotate for full screen"
-            textSize = 10.5f
-            setTextColor(Color.rgb(163, 152, 147))
-            setPadding(0, dp(18), 0, 0)
+        // ---- suggested channels ----
+        val suggested = suggestedChannels()
+        if (suggested.isNotEmpty()) {
+            theatreBody.addView(TextView(this).apply {
+                text = "UP NEXT & SUGGESTED"
+                textSize = 9.5f
+                letterSpacing = 0.18f
+                setTextColor(secondaryInk())
+                setPadding(0, dp(20), 0, dp(10))
+            })
+            for (item in suggested.take(12)) {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                    background = cardBackground(16)
+                }
+                val stage = TextView(this).apply {
+                    text = item.optString("name").trim().take(1).uppercase(Locale.ROOT)
+                    textSize = 18f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.rgb(29, 25, 24))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(14).toFloat()
+                        setColor(Color.rgb(244, 151, 126))
+                    }
+                }
+                row.addView(stage, LinearLayout.LayoutParams(dp(108), dp(62)))
+                val column = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(12), 0, 0, 0)
+                }
+                column.addView(TextView(this).apply {
+                    text = item.optString("name").ifBlank { "Channel" }
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(primaryInk())
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                })
+                column.addView(TextView(this).apply {
+                    text = item.optString("subtitle").ifBlank { "Live match" }
+                    textSize = 11f
+                    setTextColor(secondaryInk())
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    setPadding(0, dp(3), 0, 0)
+                })
+                row.addView(column, LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                ))
+                val id = item.optString("id")
+                row.setOnClickListener {
+                    if (id.isNotBlank()) {
+                        MainActivity.emitPlayerEvent("openMatch", mapOf("matchId" to id))
+                        finish()
+                    }
+                }
+                theatreBody.addView(row, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(10) })
+            }
+        } else {
+            theatreBody.addView(TextView(this).apply {
+                text = "Switch line or rotate for full screen. Suggested channels appear " +
+                    "here once the feed hands them over."
+                textSize = 11f
+                setTextColor(secondaryInk())
+                setPadding(0, dp(18), 0, 0)
+            })
+        }
+    }
+
+    /** Floating stadium dock for portrait; hidden in landscape / PiP. */
+    private fun buildDock(root: FrameLayout) {
+        playerDock = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(999).toFloat()
+                if (isNightMode()) {
+                    setColor(Color.argb(228, 28, 25, 24))
+                    setStroke(dp(1), Color.argb(30, 255, 255, 255))
+                } else {
+                    setColor(Color.argb(236, 255, 255, 255))
+                    setStroke(dp(1), Color.argb(40, 29, 25, 24))
+                }
+            }
+            visibility = View.GONE
+        }
+        val tabs = listOf("Live", "Matches", "Channels", "More")
+        val activeIndex = intent.getIntExtra("activeTabIndex", 0)
+        for (index in tabs.indices) {
+            val tab = TextView(this).apply {
+                text = tabs[index]
+                textSize = 10.5f
+                gravity = Gravity.CENTER
+                setTypeface(typeface, if (index == activeIndex) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(
+                    if (index == activeIndex) Color.rgb(232, 130, 103) else secondaryInk()
+                )
+                setPadding(0, dp(10), 0, dp(10))
+            }
+            tab.setOnClickListener {
+                MainActivity.emitPlayerEvent("navigateToTab", mapOf("index" to index))
+                finish()
+            }
+            playerDock.addView(tab, LinearLayout.LayoutParams(0, dp(44), 1f))
+        }
+        val ai = TextView(this).apply {
+            text = "\u2726"
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.rgb(244, 151, 126), Color.rgb(232, 130, 103))
+            ).apply { shape = GradientDrawable.OVAL }
+            setOnClickListener {
+                MainActivity.emitPlayerEvent("navigateToTab", mapOf("index" to 4))
+                finish()
+            }
+        }
+        playerDock.addView(ai, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+            leftMargin = dp(8)
+        })
+        root.addView(playerDock, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM
+        ).apply {
+            leftMargin = dp(12)
+            rightMargin = dp(12)
+            bottomMargin = dp(14)
         })
     }
 
@@ -1947,16 +2311,13 @@ class NativePlayerActivity : Activity() {
 
     private fun showStatus(text: String) {
         runOnUiThread {
-            if (::statusText.isInitialized) {
-                statusText.text = text
-                statusText.visibility = View.VISIBLE
-            }
+            if (::playerLoader.isInitialized) playerLoader.show(text)
         }
     }
 
     private fun hideStatus() {
         runOnUiThread {
-            if (::statusText.isInitialized) statusText.visibility = View.GONE
+            if (::playerLoader.isInitialized) playerLoader.hide()
         }
     }
 
@@ -1987,10 +2348,11 @@ class NativePlayerActivity : Activity() {
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
+            // Frosted circular chrome, matching the Flutter design system.
             background = GradientDrawable().apply {
-                cornerRadius = dp(7).toFloat()
-                setColor(Color.rgb(30, 30, 41))
-                setStroke(dp(1), Color.rgb(57, 57, 69))
+                shape = GradientDrawable.OVAL
+                setColor(Color.argb(132, 0, 0, 0))
+                setStroke(dp(1), Color.argb(36, 255, 255, 255))
             }
             isClickable = true
             isFocusable = true
@@ -2042,8 +2404,16 @@ class NativePlayerActivity : Activity() {
     }
 
     override fun onDestroy() {
-        PlaybackAudioService.stop(this)
-        PlaybackAudioBridge.player = null
+        // Audio mode: the foreground service keeps the stream audible after the
+        // player screen is dismissed, so the player is handed to the bridge
+        // instead of being released.
+        val keepPlaying = audioOnlyMode && player != null
+        if (keepPlaying) {
+            PlaybackAudioBridge.player = player
+        } else {
+            PlaybackAudioService.stop(this)
+            PlaybackAudioBridge.player = null
+        }
         clearControlsHideTimer()
         sourceSessions.close(sessionId)
         if (activePlayer.get() === this) activePlayer.clear()
@@ -2052,7 +2422,7 @@ class NativePlayerActivity : Activity() {
         pendingFallback = null
         playbackGeneration += 1
         if (::playerView.isInitialized) playerView.player = null
-        player?.release()
+        if (!keepPlaying) player?.release()
         player = null
         trackSelector = null
         super.onDestroy()

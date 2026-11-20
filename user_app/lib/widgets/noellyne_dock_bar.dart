@@ -47,6 +47,18 @@ class NoellyneDockBar extends StatelessWidget {
   static void goHome(BuildContext context, LobbyFilter filter) =>
       _replace(context, HomePage(initialFilter: filter));
 
+  /// Replace the shell with [tab] — used by the native player's dock.
+  static void goTab(BuildContext context, NoellyneTab tab) {
+    switch (tab) {
+      case NoellyneTab.home:
+        _replace(context, const HomePage());
+      case NoellyneTab.channels:
+        _replace(context, const ChannelsPage());
+      case NoellyneTab.picks:
+        _replace(context, const DailyPicksPage());
+    }
+  }
+
   void _handle(BuildContext context, int index) {
     if (index == 3) {
       showNoellyneMoreSheet(context);

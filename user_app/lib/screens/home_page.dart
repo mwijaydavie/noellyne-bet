@@ -225,6 +225,37 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     unawaited(MatchReminders.instance.load());
+    // The native player hands tab taps and suggested-channel taps back here.
+    NativePlayer.onNavigateToTab = (index) {
+      if (!mounted) return;
+      switch (index) {
+        case 0:
+          setState(() {
+            _lobbyFilter = LobbyFilter.liveNow;
+            _leagueFilter = null;
+          });
+        case 1:
+          setState(() {
+            _lobbyFilter = LobbyFilter.all;
+            _leagueFilter = null;
+          });
+        case 2:
+          NoellyneDockBar.goTab(context, NoellyneTab.channels);
+        case 3:
+          showNoellyneMoreSheet(context);
+        case 4:
+          openAiChat(context);
+      }
+    };
+    NativePlayer.onOpenMatch = (id) {
+      if (!mounted) return;
+      for (final m in [...?_feed.data]) {
+        if (m['id']?.toString() == id) {
+          unawaited(openPlayer(m));
+          return;
+        }
+      }
+    };
     _reminderTick = Timer.periodic(const Duration(seconds: 30), (_) {
       if (!mounted) return;
       final due = MatchReminders.instance.takeDue();
@@ -1036,6 +1067,34 @@ class _HomePageState extends State<HomePage> {
     return 'http://www.fawanews.sc/$slug.html';
   }
 
+  /// Shape the native portrait feed understands: id/name/subtitle/isLive.
+  List<Map<String, dynamic>> _suggestedChannels(Map<String, dynamic> current) {
+    final rows = [...?_feed.data];
+    final currentId = current['id']?.toString();
+    final out = <Map<String, dynamic>>[];
+    for (final m in rows) {
+      if (m['id']?.toString() == currentId) continue;
+      final home = englishKnownFootballName((m['home_team'] ?? '').toString());
+      final away = englishKnownFootballName((m['away_team'] ?? '').toString());
+      final league = englishKnownFootballName(
+        (m['league'] ?? '').toString(),
+        kind: 'league',
+      );
+      final lines = _lineCountFor(m);
+      out.add({
+        'id': m['id']?.toString() ?? '',
+        'name': league.isEmpty ? '$home vs $away' : league,
+        'subtitle': _isOnAir(m)
+            ? '$home vs $away · LIVE'
+            : '$home vs $away · $lines line${lines == 1 ? '' : 's'}',
+        'isLive': _isOnAir(m),
+        'lineCount': lines,
+      });
+      if (out.length >= 12) break;
+    }
+    return out;
+  }
+
   Future<void> openPlayer(Map<String, dynamic> match) async {
     if (_openingPlayer || !mounted) return;
     _openingPlayer = true;
@@ -1348,6 +1407,8 @@ class _HomePageState extends State<HomePage> {
         selectedIndex: selectedIndex,
         title: _matchTitle(match),
         matchId: matchId,
+        suggestedChannels: _suggestedChannels(match),
+        activeTabIndex: _lobbyFilter == LobbyFilter.liveNow ? 0 : 1,
       );
       await AnalyticsService.capture(
         'player opened',
@@ -2015,6 +2076,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    NativePlayer.onNavigateToTab = null;
+    NativePlayer.onOpenMatch = null;
     _reminderTick?.cancel();
     _feed.dispose();
     _debounce?.cancel();

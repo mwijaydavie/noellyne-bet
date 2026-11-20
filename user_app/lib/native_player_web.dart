@@ -48,6 +48,9 @@ class NativePlayer {
     String? title,
     String? matchId,
     String? sessionId,
+    List<Map<String, dynamic>>? suggestedChannels,
+    Map<String, dynamic>? featuredPick,
+    int activeTabIndex = 0,
   }) async {
     if (sources.isNotEmpty &&
         selectedIndex >= 0 &&
