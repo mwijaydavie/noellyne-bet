@@ -44,30 +44,36 @@ class PremiumMatchCard extends StatelessWidget {
     return RepaintBoundary(
       child: Container(
         decoration: BoxDecoration(
+          // Noellyne glass: fake frosted surface (no backdrop blur in lists).
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              colors.surface,
-              colors.surfaceContainerHighest.withValues(alpha: dark ? .64 : .42),
-            ],
+            colors: dark
+                ? const [Color(0x14FFFFFF), Color(0x06FFFFFF)]
+                : const [Color(0xC4FFFFFF), Color(0xA8FFFFFF)],
           ),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(24),
           border: Border.all(
-            color: accent.withValues(alpha: isLive ? .34 : .16),
+            color: isLive
+                ? accent.withValues(alpha: dark ? .34 : .46)
+                : (dark
+                    ? const Color(0x14FFFFFF)
+                    : const Color(0xA6FFFFFF)),
           ),
           boxShadow: [
             BoxShadow(
               color: isLive
-                  ? Colors.redAccent.withValues(alpha: dark ? .08 : .05)
-                  : Colors.black.withValues(alpha: dark ? .13 : .05),
-              blurRadius: 22,
-              offset: const Offset(0, 10),
+                  ? Colors.redAccent.withValues(alpha: dark ? .10 : .07)
+                  : (dark
+                      ? Colors.black.withValues(alpha: .30)
+                      : const Color(0x0D1D1918)),
+              blurRadius: 30,
+              offset: const Offset(0, 12),
             ),
           ],
         ),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 13),
           child: Column(
             children: [
               Row(

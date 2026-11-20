@@ -9,6 +9,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../analytics_service.dart';
+import '../app_theme.dart';
 import '../backend_endpoint.dart';
 import '../network_endpoints.dart';
 import '../playback_routes.dart';
@@ -17,10 +18,12 @@ import 'source_browser_page.dart';
 import '../viewer_navigation.dart';
 import 'channels_page.dart';
 import 'network_diagnostics_page.dart';
+import '../design/noellyne_ui.dart';
 import '../widgets/theme_mode_button.dart';
-import '../widgets/premium_bottom_nav.dart';
+import '../widgets/noellyne_lobby.dart';
 import '../widgets/premium_match_card.dart';
 import '../widgets/compact_stream_line_title.dart';
+import 'daily_picks_page.dart';
 import '../app_update_service.dart';
 import '../live_feed_controller.dart';
 import '../player_loading.dart';
@@ -75,6 +78,8 @@ class _HomePageState extends State<HomePage> {
       DateTime.now().difference(_lastLiveSuccess!) >=
           const Duration(seconds: 60);
   bool _openingPlayer = false;
+  LobbyFilter _lobbyFilter = LobbyFilter.all;
+  String? _leagueFilter;
   late Future<String> _versionLabel;
   late Future<String> _updateVersionLabel;
   final Map<String, _StreamCacheEntry> _streamLinkCache = {};
@@ -1437,6 +1442,274 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// Matches visible under the current lobby filter pill.
+  List<Map<String, dynamic>> _visibleMatches(List<Map<String, dynamic>> all) {
+    var rows = all;
+    final league = _leagueFilter;
+    if (league != null && league.isNotEmpty) {
+      rows = rows
+          .where((m) => (m['league'] ?? '').toString() == league)
+          .toList(growable: true);
+    }
+    switch (_lobbyFilter) {
+      case LobbyFilter.liveNow:
+        rows = rows.where((m) => m['is_live'] == true).toList(growable: true);
+      case LobbyFilter.upcoming:
+        rows = rows.where((m) => m['is_live'] != true).toList(growable: true);
+      case LobbyFilter.all:
+        break;
+    }
+    return rows;
+  }
+
+  /// The hero slot: first live match, otherwise the next fixture.
+  Map<String, dynamic>? _featuredMatch(List<Map<String, dynamic>> all) {
+    if (all.isEmpty) return null;
+    for (final m in all) {
+      if (m['is_live'] == true) return m;
+    }
+    return all.first;
+  }
+
+  int _lineCountFor(Map<String, dynamic> m) {
+    final links = playableLinks(m['stream_links']);
+    final nativeLinkCount = links.where((x) {
+      if (x['use_webview'] == true) return false;
+      return (x['stream_url']?.toString() ?? '').trim().isNotEmpty;
+    }).length;
+    final fallbackCount = (m['stream_count'] as num?)?.toInt() ?? 0;
+    return nativeLinkCount > fallbackCount ? nativeLinkCount : fallbackCount;
+  }
+
+  List<String> _leagueNames(List<Map<String, dynamic>> all) {
+    final seen = <String>{};
+    for (final m in all) {
+      final league = englishKnownFootballName(
+        (m['league'] ?? '').toString(),
+        kind: 'league',
+      );
+      if (league.trim().isNotEmpty) seen.add(league);
+    }
+    final list = seen.toList()..sort();
+    return list;
+  }
+
+  Widget _buildLobbyHeader(
+    BuildContext context,
+    List<Map<String, dynamic>> all,
+    Map<String, dynamic> featured,
+    int visibleCount,
+  ) {
+    final featuredLinks = _lineCountFor(featured);
+    final kickoff = DateTime.tryParse(
+      featured['kickoff_at']?.toString() ?? '',
+    )?.toLocal();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        HeroMatchCard(
+          league: englishKnownFootballName(
+            (featured['league'] ?? 'Football').toString(),
+            kind: 'league',
+          ),
+          homeName: englishKnownFootballName(
+            (featured['home_team'] ?? 'Home').toString(),
+          ),
+          awayName: englishKnownFootballName(
+            (featured['away_team'] ?? 'Away').toString(),
+          ),
+          homeLogo: featured['home_logo_url']?.toString(),
+          awayLogo: featured['away_logo_url']?.toString(),
+          kickoff: kickoff,
+          isLive: featured['is_live'] == true,
+          canWatch: featuredLinks > 0,
+          lineCount: featuredLinks,
+          onWatch: () => openPlayer(featured),
+        ),
+        const SizedBox(height: 14),
+        LobbyFilterRail(
+          selected: _lobbyFilter,
+          onSelected: (value) => setState(() => _lobbyFilter = value),
+          extraLeagues: _leagueNames(all),
+          selectedLeague: _leagueFilter,
+          onLeagueSelected: (league) =>
+              setState(() => _leagueFilter = league),
+        ),
+        const SizedBox(height: 6),
+        SectionHeader(
+          title: switch (_lobbyFilter) {
+            LobbyFilter.liveNow => 'Live now',
+            LobbyFilter.upcoming => 'Upcoming',
+            LobbyFilter.all => 'All matches',
+          },
+          actionLabel: visibleCount == 1 ? '1 match' : '$visibleCount matches',
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEmptyLobby(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 36, 16, 24),
+      child: Column(
+        children: [
+          Icon(
+            Icons.sports_soccer_outlined,
+            size: 36,
+            color: NoellyneColors.glowDeep.withValues(alpha: .85),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            _leagueFilter == null
+                ? 'Nothing in this filter'
+                : 'No $_leagueFilter matches',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+              color: scheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Try “All” — new matches appear automatically.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Opens the n8n Daily Picks feed; a pick's CTA jumps straight into the
+  /// matching stream when its `stream_id` is still in the current feed.
+  Future<void> _openDailyPicks() async {
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DailyPicksPage(
+          onWatchMatch: (streamId) {
+            Navigator.of(context).pop();
+            _focusMatch(streamId);
+          },
+        ),
+      ),
+    );
+  }
+
+  void _focusMatch(String streamId) {
+    final rows = _feed.data;
+    if (rows == null) return;
+    for (final m in rows) {
+      if (m['id']?.toString() == streamId) {
+        unawaited(openPlayer(m));
+        return;
+      }
+    }
+  }
+
+  void _openStreamSource(int index) {
+    final source = viewerSourceAt(index);
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute<void>(
+            builder: (_) => SourceBrowserPage(source: source),
+          ),
+        )
+        .then((_) {
+      if (mounted && _liveNeedsRefresh) unawaited(refresh(silent: true));
+    });
+  }
+
+  Future<void> _openMoreSheet() async {
+    const extraSources = <(int, String, IconData)>[
+      (1, 'Live 2', Icons.live_tv_rounded),
+      (2, 'Soco', Icons.sports_soccer_rounded),
+      (3, 'YYZB', Icons.sensors_rounded),
+      (4, 'ColaTV', Icons.tv_rounded),
+      (5, 'Fawa', Icons.language_rounded),
+    ];
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return GlassBlur(
+          radius: 28,
+          padding: const EdgeInsets.fromLTRB(8, 4, 8, 20),
+          sigma: 24,
+          child: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 4, 16, 8),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'More sources',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -.3,
+                      ),
+                    ),
+                  ),
+                ),
+                for (final (index, label, icon) in extraSources)
+                  ListTile(
+                    leading: Icon(icon),
+                    title: Text(
+                      label,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () {
+                      Navigator.of(sheetContext).pop();
+                      _openStreamSource(index);
+                    },
+                  ),
+                const Divider(height: 12),
+                ListTile(
+                  leading: const Icon(Icons.auto_awesome_rounded),
+                  title: const Text(
+                    'Daily Picks',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: const Text('AI slips from n8n'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    _openDailyPicks();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.settings_outlined),
+                  title: const Text(
+                    'Settings & updates',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    _openAppMenu();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
     _feed.dispose();
@@ -1452,16 +1725,9 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: 52,
+        toolbarHeight: 56,
         titleSpacing: 14,
-        title: Text(
-          'Live',
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w900,
-            letterSpacing: -.25,
-          ),
-        ),
+        title: const LobbyBrand(),
         actions: [
           IconButton(
             tooltip: 'Refresh',
@@ -1503,15 +1769,38 @@ class _HomePageState extends State<HomePage> {
             );
           }
 
-          return RefreshIndicator(
-            onRefresh: refresh,
-            child: ListView.separated(
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(10, 6, 10, 16),
-              itemCount: matches.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                final m = matches[index];
+          final visible = _visibleMatches(matches);
+          final featured = _featuredMatch(matches);
+          final emptyLobby = visible.isEmpty;
+          if (featured == null) {
+            return _StateMessage(
+              icon: Icons.sports_soccer_outlined,
+              title: 'No matches now',
+              subtitle: 'New matches will appear here automatically.',
+              onPressed: refresh,
+            );
+          }
+
+          return NoellyneBackground(
+            child: RefreshIndicator(
+              onRefresh: refresh,
+              color: NoellyneColors.glowDeep,
+              child: ListView.separated(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+                itemCount: 1 + (emptyLobby ? 1 : visible.length),
+                separatorBuilder: (_, _) => const SizedBox(height: 10),
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    return _buildLobbyHeader(
+                      context,
+                      matches,
+                      featured,
+                      visible.length,
+                    );
+                  }
+                  if (emptyLobby) return _buildEmptyLobby(context);
+                  final m = visible[index - 1];
                 final links = playableLinks(m['stream_links']);
                 final nativeLinkCount = links.where((x) {
                   if (x['use_webview'] == true) return false;
@@ -1551,37 +1840,60 @@ class _HomePageState extends State<HomePage> {
                       : 'NOT READY',
                   onWatch: () => openPlayer(m),
                 );
-              },
+                },
+              ),
             ),
           );
         },
       ),
-      bottomNavigationBar: PremiumBottomNav(
-        selectedIndex: 0,
-        onSelected: (index) async {
-          if (index == 0) {
-            await refresh(silent: true);
-            return;
-          }
-          if (index == 6) {
-            await Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const ChannelsPage()),
-            );
-            if (mounted && _liveNeedsRefresh) {
-              await refresh(silent: true);
-            }
-            return;
-          }
-          final source = viewerSourceAt(index);
-          await Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => SourceBrowserPage(source: source),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: FloatingDock(
+          items: const [
+            DockItem(
+              icon: Icons.live_tv_outlined,
+              activeIcon: Icons.live_tv_rounded,
+              label: 'Live',
             ),
-          );
-          if (mounted && _liveNeedsRefresh) {
-            await refresh(silent: true);
-          }
-        },
+            DockItem(
+              icon: Icons.sports_soccer_outlined,
+              activeIcon: Icons.sports_soccer_rounded,
+              label: 'Matches',
+            ),
+            DockItem(
+              icon: Icons.tv_outlined,
+              activeIcon: Icons.tv_rounded,
+              label: 'Channels',
+            ),
+            DockItem(icon: Icons.menu_rounded, label: 'More'),
+          ],
+          index: 0,
+          onSelected: (index) async {
+            if (index == 0) {
+              await refresh(silent: true);
+              return;
+            }
+            if (index == 1) {
+              setState(() {
+                _lobbyFilter = LobbyFilter.all;
+                _leagueFilter = null;
+              });
+              return;
+            }
+            if (index == 2) {
+              await Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const ChannelsPage()),
+              );
+              if (mounted && _liveNeedsRefresh) {
+                await refresh(silent: true);
+              }
+              return;
+            }
+            await _openMoreSheet();
+          },
+          onAiPressed: _openDailyPicks,
+          aiTooltip: 'Daily Picks',
+        ),
       ),
     );
   }

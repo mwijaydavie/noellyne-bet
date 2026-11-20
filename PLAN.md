@@ -179,12 +179,19 @@ Each sprint ends with a working preview you can tap through on your phone.
 - [x] `docs/N8N_DAILY_PICKS.md` — JSON contract + n8n wiring (direct Supabase or Edge Function).
 - [x] Interactive design preview `preview/` — Lobby, Daily Picks, Match Theatre; light/dark.
 
-### Next (Sprint 2 — Lobby & player)
+### Sprint 2 — Lobby & navigation 🚧 (this turn)
 
-- [ ] Home lobby rebuild using the new kit (hero banker slip, filter rail, stream cards v2).
-- [ ] Bottom nav → `FloatingDock` (Live / Picks / Channels / More) + AI button routing to Daily Picks.
-- [ ] Match Theatre: obsidian player + draggable pick sheet (replace `ios_player_page` chrome).
-- [ ] Wire `DailyPicksPage.onWatchMatch` to the existing playback route by `stream_id`.
+- [x] Home lobby rebuilt: brand header, **hero featured-match card** (crests, LIVE pill, server count, obsidian CTA), **filter rail** (Live Now / Upcoming / All + league pills), restyled `PremiumMatchCard` glass.
+- [x] Bottom nav → **`FloatingDock`** (Live / Matches / Channels / More) + detached glowing AI button → Daily Picks.
+- [x] "More" sheet keeps every legacy source reachable (Live 2, Soco, YYZB, ColaTV, Fawa) plus settings.
+- [x] `DailyPicksPage.onWatchMatch` → matches `stream_id` against the live feed and opens the player directly.
+- [x] Branded launcher icon (`assets/noellyne_icon.*`) + Android label "Noellyne Bet" in CI.
+- [x] **`build-noellyne-apk.yml`** — push builds a release APK, uploads an artifact and publishes a GitHub Release with a direct download link.
+
+### Next (Sprint 3)
+
+- [ ] Match Theatre: obsidian player surface + draggable pick sheet.
+- [ ] Favorites / history / kickoff reminders.
 - [ ] Admin: Daily Picks moderation screen; n8n `ingest-daily-picks` Edge Function.
 
 ### Deferred / decided against

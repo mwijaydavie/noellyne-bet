@@ -1,4 +1,4 @@
-import 'dart:ui' as ui;
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 
@@ -237,9 +237,8 @@ class _GlowOrb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ImageFilter.blur(
-      blurX: 70,
-      blurY: 70,
+    return ImageFiltered(
+      imageFilter: ImageFilter.blur(sigmaX: 70, sigmaY: 70),
       child: Container(
         width: size,
         height: size,
