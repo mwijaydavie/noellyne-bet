@@ -1173,13 +1173,10 @@ class _SourceLoading extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            SizedBox(
+            const SizedBox(
               width: 20,
               height: 20,
-              child: CircularProgressIndicator(
-                strokeWidth: 2.4,
-                color: colors.primary,
-              ),
+              child: SkeletonInline(width: 20, height: 20),
             ),
             const SizedBox(width: 12),
             Text(

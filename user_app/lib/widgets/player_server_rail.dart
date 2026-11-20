@@ -103,12 +103,8 @@ class PlayerServerRail extends StatelessWidget {
         trailing: loadingIndex == current
             ? SizedBox(
                 key: ValueKey('player-line-loading-$current'),
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: colors.primary,
-                ),
+                width: 44,
+                child: const SkeletonInline(width: 44, height: 10),
               )
             : const Icon(Icons.expand_more),
         onTap: () => showModalBottomSheet<void>(
