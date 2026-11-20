@@ -783,8 +783,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
                     itemCount: group.value.length,
                     itemBuilder: (context, index) {
                       final channel = group.value[index];
-                      final dark =
-                          Theme.of(context).brightness == Brightness.dark;
+                      final theme = Theme.of(context);
+                      final dark = theme.brightness == Brightness.dark;
+                      final accent = theme.colorScheme.primary;
                       final image = channel['image_url']?.toString() ?? '';
                       final title = channel['name']?.toString() ?? 'Channel';
                       return SizedBox(
@@ -855,8 +856,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                 ),
                               ),
                               if (guideLoaded && epgLinkedIds.contains(channel['id']?.toString()))
-                                const Text('● EPG',
-                                  style: TextStyle(color: Theme.of(context).colorScheme.primary,
+                                Text('● EPG',
+                                  style: TextStyle(color: accent,
                                       fontSize: 9, fontWeight: FontWeight.w700)),
                               if (nextFootball.containsKey(channel['id']?.toString()))
                                 Padding(
@@ -866,8 +867,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     textAlign: TextAlign.center,
-                                    style: const TextStyle(
-                                      color: Theme.of(context).colorScheme.primary,
+                                    style: TextStyle(
+                                      color: accent,
                                       fontSize: 10,
                                       fontWeight: FontWeight.w700,
                                     ),
@@ -886,6 +887,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
         );
       },
     ),
+    extendBody: true,
     bottomNavigationBar: NoellyneDockBar(
       current: NoellyneTab.channels,
       onSelect: (tab) {

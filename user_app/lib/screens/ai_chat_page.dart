@@ -69,7 +69,7 @@ class _AiChatPageState extends State<AiChatPage> {
       }
       setState(() {
         // ~4 chars per tick reads like a fast model stream.
-        _typingChars = (_typingChars + 4).clamp(0, full.length);
+        _typingChars = (_typingChars + 4).clamp(0, full.length).toInt();
       });
       if (_typingChars >= full.length) {
         timer.cancel();
@@ -336,7 +336,7 @@ class _Bubble extends StatelessWidget {
                         ? message.text
                         : message.text.substring(
                             0,
-                            visibleChars!.clamp(0, message.text.length),
+                            visibleChars!.clamp(0, message.text.length).toInt(),
                           ),
                   ),
                   if (typing)
