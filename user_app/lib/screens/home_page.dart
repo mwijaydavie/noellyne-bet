@@ -1473,6 +1473,14 @@ class _HomePageState extends State<HomePage> {
   /// The hero slot: first live match, otherwise the next fixture.
   Map<String, dynamic>? _featuredMatch(List<Map<String, dynamic>> all) {
     if (all.isEmpty) return null;
+    if (_lobbyFilter == LobbyFilter.all) {
+      // Fixture hub: lead with the next kickoff, not with a live match that
+      // the Live tab already owns.
+      for (final m in all) {
+        if (m['is_live'] != true) return m;
+      }
+      return all.first;
+    }
     for (final m in all) {
       if (m['is_live'] == true) return m;
     }
@@ -1548,12 +1556,121 @@ class _HomePageState extends State<HomePage> {
         SectionHeader(
           title: switch (_lobbyFilter) {
             LobbyFilter.liveNow => 'Live now',
-            LobbyFilter.upcoming => 'Upcoming',
-            LobbyFilter.all => 'All matches',
+            LobbyFilter.upcoming => 'Upcoming fixtures',
+            LobbyFilter.all => 'Fixtures by day',
           },
-          actionLabel: visibleCount == 1 ? '1 match' : '$visibleCount matches',
+          actionLabel: _lobbyCountLabel(all, visibleCount),
         ),
       ],
+    );
+  }
+
+  String _lobbyCountLabel(List<Map<String, dynamic>> all, int visible) {
+    final live = all.where((m) => m['is_live'] == true).length;
+    if (_lobbyFilter == LobbyFilter.liveNow) {
+      return live == 1 ? '1 streaming' : '$live streaming';
+    }
+    final total = visible == 1 ? '1 match' : '$visible matches';
+    return live > 0 ? '$total · $live live' : total;
+  }
+
+  /// One row per fixture, prefixed by a day header in the `Matches` view.
+  List<Widget> _groupedRows(List<Map<String, dynamic>> visible) {
+    final rows = <Widget>[];
+    final showGroups = _lobbyFilter == LobbyFilter.all ||
+        _lobbyFilter == LobbyFilter.upcoming;
+    String? lastBucket;
+    for (final m in visible) {
+      if (showGroups) {
+        final bucket = _dayBucket(m);
+        if (bucket != lastBucket) {
+          if (rows.isNotEmpty) rows.add(const SizedBox(height: 2));
+          rows.add(
+            FixtureDayHeader(
+              label: _dayLabel(bucket, m),
+              live: bucket == 'live',
+            ),
+          );
+          lastBucket = bucket;
+        }
+      }
+      rows.add(_matchCard(m));
+      rows.add(const SizedBox(height: 10));
+    }
+    return rows;
+  }
+
+  String _dayBucket(Map<String, dynamic> m) {
+    if (m['is_live'] == true) return 'live';
+    final kickoff =
+        DateTime.tryParse(m['kickoff_at']?.toString() ?? '')?.toLocal();
+    if (kickoff == null) return 'later';
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(kickoff.year, kickoff.month, kickoff.day);
+    final diff = day.difference(today).inDays;
+    if (diff <= 0) return 'today';
+    if (diff == 1) return 'tomorrow';
+    return 'd$diff';
+  }
+
+  String _dayLabel(String bucket, Map<String, dynamic> m) {
+    switch (bucket) {
+      case 'live':
+        return 'LIVE NOW';
+      case 'today':
+        return 'TODAY';
+      case 'tomorrow':
+        return 'TOMORROW';
+      case 'later':
+        return 'LATER';
+    }
+    final kickoff =
+        DateTime.tryParse(m['kickoff_at']?.toString() ?? '')?.toLocal();
+    if (kickoff == null) return 'LATER';
+    const days = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+    const months = [
+      'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+      'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC',
+    ];
+    return '${days[kickoff.weekday - 1]} ${kickoff.day} ${months[kickoff.month - 1]}';
+  }
+
+  Widget _matchCard(Map<String, dynamic> m) {
+    final links = playableLinks(m['stream_links']);
+    final nativeLinkCount = links.where((x) {
+      if (x['use_webview'] == true) return false;
+      return (x['stream_url']?.toString() ?? '').trim().isNotEmpty;
+    }).length;
+    final fallbackCount = (m['stream_count'] as num?)?.toInt() ?? 0;
+    final displayCount =
+        nativeLinkCount > fallbackCount ? nativeLinkCount : fallbackCount;
+    final kickoff =
+        DateTime.tryParse(m['kickoff_at']?.toString() ?? '')?.toLocal();
+    final canWatch = displayCount > 0;
+
+    return PremiumMatchCard(
+      league: englishKnownFootballName(
+        (m['league'] ?? 'Football').toString(),
+        kind: 'league',
+      ),
+      homeName: englishKnownFootballName(
+        (m['home_team'] ?? 'Home').toString(),
+      ),
+      awayName: englishKnownFootballName(
+        (m['away_team'] ?? 'Away').toString(),
+      ),
+      homeLogo: m['home_logo_url']?.toString(),
+      awayLogo: m['away_logo_url']?.toString(),
+      kickoff: kickoff,
+      isLive: m['is_live'] == true,
+      canWatch: canWatch,
+      actionLabel: canWatch
+          ? (displayCount > 1
+              ? 'WATCH LIVE  •  ' + displayCount.toString() + ' LINES'
+              : 'WATCH LIVE')
+          : 'NOT READY',
+      onWatch: () => openPlayer(m),
     );
   }
 
@@ -1797,67 +1914,28 @@ class _HomePageState extends State<HomePage> {
             child: RefreshIndicator(
               onRefresh: refresh,
               color: NoellyneColors.glowDeep,
-              child: ListView.separated(
+              child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
-                itemCount: 1 + (emptyLobby ? 1 : visible.length),
-                separatorBuilder: (_, _) => const SizedBox(height: 10),
-                itemBuilder: (context, index) {
-                  if (index == 0) {
-                    return _buildLobbyHeader(
-                      context,
-                      matches,
-                      featured,
-                      visible.length,
-                    );
-                  }
-                  if (emptyLobby) return _buildEmptyLobby(context);
-                  final m = visible[index - 1];
-                final links = playableLinks(m['stream_links']);
-                final nativeLinkCount = links.where((x) {
-                  if (x['use_webview'] == true) return false;
-                  return (x['stream_url']?.toString() ?? '').trim().isNotEmpty;
-                }).length;
-                final fallbackCount = (m['stream_count'] as num?)?.toInt() ?? 0;
-                final displayCount = nativeLinkCount > fallbackCount
-                    ? nativeLinkCount
-                    : fallbackCount;
-                final kickoff = DateTime.tryParse(
-                  m['kickoff_at']?.toString() ?? '',
-                )?.toLocal();
-                final canWatch = displayCount > 0;
-
-                return PremiumMatchCard(
-                  league: englishKnownFootballName(
-                    (m['league'] ?? 'Football').toString(),
-                    kind: 'league',
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 108),
+                // Fixtures are grouped by day so `Matches` reads as a
+                // schedule, while `Live` stays a single live strip.
+                children: [
+                  _buildLobbyHeader(
+                    context,
+                    matches,
+                    featured,
+                    visible.length,
                   ),
-                  homeName: englishKnownFootballName(
-                    (m['home_team'] ?? 'Home').toString(),
-                  ),
-                  awayName: englishKnownFootballName(
-                    (m['away_team'] ?? 'Away').toString(),
-                  ),
-                  homeLogo: m['home_logo_url']?.toString(),
-                  awayLogo: m['away_logo_url']?.toString(),
-                  kickoff: kickoff,
-                  isLive: m['is_live'] == true,
-                  canWatch: canWatch,
-                  actionLabel: canWatch
-                      ? (displayCount > 1
-                            ? 'WATCH LIVE  •  ' +
-                                  displayCount.toString() +
-                                  ' LINES'
-                            : 'WATCH LIVE')
-                      : 'NOT READY',
-                  onWatch: () => openPlayer(m),
-                );
-                },
+                  if (emptyLobby) _buildEmptyLobby(context) else ...[
+                    for (final row in _groupedRows(visible)) row,
+                  ],
+                ],
               ),
             ),
           );
         },
       ),
+      extendBody: true,
       bottomNavigationBar: SafeArea(
         top: false,
         child: FloatingDock(

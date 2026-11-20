@@ -13,6 +13,9 @@ import 'theme_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Edge-to-edge so the floating dock blurs the content behind it instead of
+  // sitting on a solid black system bar.
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   final backendReady = _initializeBackend();
   runApp(FootballViewerApp(backendReady: backendReady));
 
@@ -74,8 +77,11 @@ class FootballViewerApp extends StatelessWidget {
                       : SystemUiOverlayStyle.dark)
                   .copyWith(
                 statusBarColor: Colors.transparent,
-                systemNavigationBarColor:
-                    Theme.of(context).colorScheme.surface,
+                // Edge-to-edge: the dock's glass must sample real content, so
+                // never paint a solid bar behind it.
+                systemNavigationBarColor: Colors.transparent,
+                systemNavigationBarDividerColor: Colors.transparent,
+                systemNavigationBarContrastEnforced: false,
                 systemNavigationBarIconBrightness:
                     dark ? Brightness.light : Brightness.dark,
               ),

@@ -28,8 +28,8 @@ class NoellyneColors {
   static const innerDark = Color(0xFF241E1C);
   static const mutedDark = Color(0xFFA89C96);
   static const glowDark = Color(0xFFD96B52);
-  static const glassDark = Color(0x12FFFFFF); // rgba(255,255,255,0.07)
-  static const glassBorderDark = Color(0x14FFFFFF); // rgba(255,255,255,0.08)
+  static const glassDark = Color(0x1FFFFFFF); // rgba(255,255,255,0.12)
+  static const glassBorderDark = Color(0x33FFFFFF); // rgba(255,255,255,0.20)
 
   // Live / highlight tint.
   static const liveBg = Color(0xFFFCE5DC);

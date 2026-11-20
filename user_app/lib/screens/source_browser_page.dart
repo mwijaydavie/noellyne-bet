@@ -1098,7 +1098,7 @@ class _SourceBrowserPageState extends State<SourceBrowserPage> {
                   )
                 else
                   SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(10, 6, 10, 16),
+                    padding: const EdgeInsets.fromLTRB(10, 6, 10, 104),
                     sliver: SliverList.separated(
                       itemCount: matches.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 8),
@@ -1140,6 +1140,7 @@ class _SourceBrowserPageState extends State<SourceBrowserPage> {
         },
         ),
       ),
+      extendBody: true,
       bottomNavigationBar: PremiumBottomNav(
         selectedIndex: navIndex,
         onSelected: _select,

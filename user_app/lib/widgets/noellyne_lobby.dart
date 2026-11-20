@@ -364,3 +364,58 @@ class LobbyFilterRail extends StatelessWidget {
     );
   }
 }
+
+/// Small caps divider that separates fixture days ("TODAY", "TOMORROW", …).
+class FixtureDayHeader extends StatelessWidget {
+  const FixtureDayHeader({super.key, required this.label, this.live = false});
+
+  final String label;
+  final bool live;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 6, 4, 8),
+      child: Row(
+        children: [
+          if (live) ...[
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: NoellyneColors.glowDeep,
+                boxShadow: [
+                  BoxShadow(
+                    color: NoellyneColors.glowDeep.withValues(alpha: .55),
+                    blurRadius: 8,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 7),
+          ],
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 9.5,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.3,
+              color: live
+                  ? NoellyneColors.glowDeep
+                  : scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Container(
+              height: 1,
+              color: scheme.onSurfaceVariant.withValues(alpha: .18),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
