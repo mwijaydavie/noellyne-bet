@@ -10,6 +10,7 @@ import '../screens/network_diagnostics_page.dart';
 import '../screens/reminders_page.dart';
 import '../screens/settings_page.dart';
 import '../screens/home_page.dart';
+import 'root_back_guard.dart';
 import 'noellyne_lobby.dart';
 import 'theme_mode_button.dart';
 
@@ -38,8 +39,15 @@ class NoellyneDockBar extends StatelessWidget {
       };
 
   static void _replace(BuildContext context, Widget page) {
+    // Every root tab is wrapped so Android Back returns Home (or asks for a
+    // second press) instead of closing the app.
     Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute<void>(builder: (_) => page),
+      MaterialPageRoute<void>(
+        builder: (_) => RootBackGuard(
+          isHome: page is HomePage,
+          child: page,
+        ),
+      ),
       (route) => false,
     );
   }

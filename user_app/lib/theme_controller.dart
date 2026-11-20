@@ -7,7 +7,8 @@ class AppThemeController extends ChangeNotifier {
   static final AppThemeController instance = AppThemeController._();
 
   static const _storageKey = 'theme_mode';
-  ThemeMode _mode = ThemeMode.system;
+  // Noellyne Bet opens in the warm alabaster light theme.
+  ThemeMode _mode = ThemeMode.light;
   int _modeVersion = 0;
 
   ThemeMode get mode => _mode;
@@ -20,7 +21,8 @@ class AppThemeController extends ChangeNotifier {
     _mode = switch (saved) {
       'light' => ThemeMode.light,
       'dark' => ThemeMode.dark,
-      _ => ThemeMode.system,
+      'system' => ThemeMode.system,
+      _ => ThemeMode.light,
     };
     notifyListeners();
   }

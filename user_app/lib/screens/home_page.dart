@@ -1429,6 +1429,9 @@ class _HomePageState extends State<HomePage> {
 
     try {
       if (!mounted) return;
+      debugPrint(
+        'NoellynePlayer: sending ${_suggestedChannels(match).length} suggested channels',
+      );
       await NativePlayer.open(
         context: context,
         sources: nativeSources,
