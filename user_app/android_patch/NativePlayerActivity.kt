@@ -6,6 +6,7 @@ import android.app.PictureInPictureParams
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Color
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -2546,15 +2547,6 @@ class NativePlayerActivity : Activity() {
         }
         settingsScroll.scrollTo(0, 0)
         compactControls.visibility = View.VISIBLE
-    }
-
-    @Deprecated("Deprecated in Android SDK")
-    override fun onBackPressed() {
-        if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
-            closeSettingsMenu()
-        } else {
-            super.onBackPressed()
-        }
     }
 
     private fun toggleDisplayMode() {

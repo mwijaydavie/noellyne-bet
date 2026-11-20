@@ -57,32 +57,24 @@ class MainActivity : FlutterActivity() {
 
             val sessionId = call.argument<String>("sessionId").orEmpty()
             NativePlayerActivity.prepareOpeningSession(sessionId)
+            val playerIntent = Intent(this, NativePlayerActivity::class.java).apply {
+                putExtra("sourcesJson", sourcesJson)
+                putExtra("selectedIndex", call.argument<Int>("selectedIndex") ?: 0)
+                putExtra("title", call.argument<String>("title").orEmpty())
+                putExtra("matchId", call.argument<String>("matchId").orEmpty())
+                putExtra("sessionId", sessionId)
+                putExtra(
+                    "suggestedChannels",
+                    call.argument<String>("suggestedChannels").orEmpty()
+                )
+                putExtra("featuredPick", call.argument<String>("featuredPick").orEmpty())
+                putExtra("activeTabIndex", call.argument<Int>("activeTabIndex") ?: 0)
+                // The player follows the in-app theme, never the system one.
+                putExtra("isDark", call.argument<Boolean>("isDark") ?: false)
+            }
             try {
-                startActivityForResult(
-                    Intent(this, NativePlayerActivity::class.java).apply {
-                    putExtra("sourcesJson", sourcesJson)
-                    putExtra(
-                        "selectedIndex",
-                        call.argument<Int>("selectedIndex") ?: 0
-                    )
-                    putExtra("title", call.argument<String>("title").orEmpty())
-                    putExtra("matchId", call.argument<String>("matchId").orEmpty())
-                    putExtra("sessionId", sessionId)
-                    putExtra(
-                        "suggestedChannels",
-                        call.argument<String>("suggestedChannels").orEmpty()
-                    )
-                    putExtra(
-                        "featuredPick",
-                        call.argument<String>("featuredPick").orEmpty()
-                    )
-                    putExtra(
-                        "activeTabIndex",
-                        call.argument<Int>("activeTabIndex") ?: 0
-                    )
-                    // The player follows the in-app theme, never the system one.
-                    putExtra("isDark", call.argument<Boolean>("isDark") ?: false)
-                })
+                // Result comes back with `navigateToTab` so real tabs open.
+                startActivityForResult(playerIntent, PLAYER_REQUEST)
             } catch (_: Exception) {
                 NativePlayerActivity.cancelOpeningSession(sessionId)
                 result.error("PLAYER_OPEN_FAILED", "Could not open player.", null)
