@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'widgets/noellyne_stream_loader.dart';
+
 // Surface only locally-authored, fixed source error text. Never echo raw
 // upstream exceptions, private stream URLs, tokens, or response payloads.
 String safeLineLoadError(Object? error) {
@@ -22,16 +24,13 @@ Future<T?> loadPlayerSources<T>(
     context: context,
     barrierDismissible: false,
     builder: (dialogContext) => AlertDialog(
-      content: const Row(
-        children: [
-          SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(strokeWidth: 2.5),
-          ),
-          SizedBox(width: 16),
-          Flexible(child: Text('Loading lines…')),
-        ],
+      content: const Padding(
+        padding: EdgeInsets.symmetric(vertical: 6),
+        child: NoellyneStreamLoader(
+          size: 58,
+          label: 'Loading lines…',
+          optimizingLabel: 'Optimizing HD stream…',
+        ),
       ),
       actions: [
         TextButton(

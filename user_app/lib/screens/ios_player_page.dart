@@ -9,6 +9,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../analytics_service.dart';
 import '../native_playback_progress.dart';
 import '../playback_routes.dart';
+import '../widgets/noellyne_stream_loader.dart';
 import '../widgets/player_server_rail.dart';
 import '../widgets/compact_stream_line_title.dart';
 import '../widgets/ios_compact_player_controls.dart';
@@ -795,23 +796,12 @@ class _IOSPlayerPageState extends State<IOSPlayerPage>
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.2,
-                                  color: const Color(0xFF54E6C1),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Text(
-                                _progress?.started == true
+                              NoellyneStreamLoader(
+                                size: 54,
+                                label: 'Connecting to line…',
+                                optimizingLabel: _progress?.started == true
                                     ? 'Buffering…'
                                     : 'Starting stream…',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w700,
-                                ),
                               ),
                             ],
                           ),

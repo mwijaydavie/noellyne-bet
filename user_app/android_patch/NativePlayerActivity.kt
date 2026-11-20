@@ -147,6 +147,8 @@ class NativePlayerActivity : Activity() {
     private lateinit var compactTime: TextView
     private lateinit var compactSeek: SeekBar
     private lateinit var displayModeButton: TextView
+    private lateinit var theatrePanel: ScrollView
+    private lateinit var theatreBody: LinearLayout
     private lateinit var settingsPanel: LinearLayout
     private lateinit var settingsScroll: ScrollView
     private lateinit var settingsItems: LinearLayout
@@ -605,6 +607,15 @@ class NativePlayerActivity : Activity() {
                     bottomMargin = dp(36)
                 }
             serverRailScroll.visibility = if (hasLines && controlsVisible) View.VISIBLE else View.GONE
+            if (::theatrePanel.isInitialized) {
+                theatrePanel.layoutParams = (theatrePanel.layoutParams as FrameLayout.LayoutParams).apply {
+                    width = ViewGroup.LayoutParams.MATCH_PARENT
+                    height = ViewGroup.LayoutParams.MATCH_PARENT
+                    gravity = Gravity.TOP
+                    topMargin = if (landscape) 0 else portraitHeight
+                }
+                theatrePanel.visibility = if (landscape) View.GONE else View.VISIBLE
+            }
             if (::settingsPanel.isInitialized) positionSettingsPanel(root, landscape)
         }
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutPlayer() }
@@ -649,6 +660,10 @@ class NativePlayerActivity : Activity() {
                 Gravity.CENTER
             )
         )
+
+        // Portrait companion panel: the 16:9 picture stays pinned to the top
+        // and everything below it becomes the Match Theatre.
+        buildTheatrePanel(root)
 
         // Web-style settings are a dark native overlay, not Android PopupMenu.
         // Add last so the panel remains above playback/status without replacing Media3.
@@ -1197,7 +1212,7 @@ class NativePlayerActivity : Activity() {
             contentDescription = "Current line ${serverLabel(selectedServerIndex)}. Change line"
             background = GradientDrawable().apply {
                 cornerRadius = dp(8).toFloat()
-                setColor(Color.argb(235, 19, 48, 37))
+                setColor(Color.argb(235, 29, 25, 24))
                 setStroke(dp(1), Color.rgb(232, 117, 88))
             }
             setOnClickListener { showServerMenu() }
@@ -1205,6 +1220,155 @@ class NativePlayerActivity : Activity() {
         serverRail.addView(current, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)
         ))
+        renderTheatre()
+    }
+
+    // ---------------- Match Theatre (portrait companion panel) ----------------
+
+    private fun buildTheatrePanel(root: FrameLayout) {
+        theatreBody = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(20, 18, 18))
+            setPadding(dp(18), dp(16), dp(18), dp(28))
+        }
+        theatrePanel = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            addView(theatreBody)
+            visibility = View.GONE
+        }
+        root.addView(
+            theatrePanel,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.TOP
+            )
+        )
+    }
+
+    private fun theatreLabel(text: String): TextView {
+        val label = TextView(this)
+        label.text = text
+        label.textSize = 9.5f
+        label.letterSpacing = 0.16f
+        label.setTextColor(Color.rgb(232, 130, 103))
+        label.setPadding(0, 0, 0, dp(8))
+        return label
+    }
+
+    private fun renderTheatre() {
+        if (!::theatreBody.isInitialized) return
+        theatreBody.removeAllViews()
+
+        // Brand eyebrow + match title
+        theatreBody.addView(theatreLabel("MATCH THEATRE"))
+        val title = intent.getStringExtra("title").orEmpty().ifBlank { "Match stream" }
+        theatreBody.addView(TextView(this).apply {
+            text = title
+            textSize = 17f
+            setTextColor(Color.rgb(245, 239, 234))
+            setTypeface(typeface, Typeface.BOLD)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, 0, 0, dp(2))
+        })
+        theatreBody.addView(TextView(this).apply {
+            text = if (serverLabel(displayServerIndex()).isNotBlank())
+                "Now on ${serverLabel(displayServerIndex())}" else "Streaming"
+            textSize = 11f
+            setTextColor(Color.rgb(163, 152, 147))
+            setPadding(0, 0, 0, dp(18))
+        })
+
+        // Line switcher pills
+        val indices = visibleServerIndices()
+        if (indices.size > 1) {
+            theatreBody.addView(theatreLabel("LINES"))
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val activeIndex = displayServerIndex()
+            for (index in indices) {
+                val pill = TextView(this).apply {
+                    text = serverLabel(index)
+                    textSize = 11.5f
+                    setPadding(dp(14), dp(9), dp(14), dp(9))
+                    setTextColor(
+                        if (index == activeIndex) Color.rgb(29, 25, 24)
+                        else Color.rgb(245, 239, 234)
+                    )
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(999).toFloat()
+                        if (index == activeIndex) {
+                            setColor(Color.rgb(232, 130, 103))
+                        } else {
+                            setColor(Color.argb(255, 35, 32, 32))
+                            setStroke(dp(1), Color.argb(60, 255, 255, 255))
+                        }
+                    }
+                    setOnClickListener {
+                        playServer(index)
+                        renderTheatre()
+                    }
+                }
+                row.addView(pill, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { rightMargin = dp(8) })
+            }
+            theatreBody.addView(HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(row)
+            })
+            theatreBody.addView(TextView(this).apply {
+                text = " "
+                textSize = 4f
+            })
+        }
+
+        // AI pick card, only when the app hands one over
+        val pickText = intent.getStringExtra("pickText").orEmpty()
+        if (pickText.isNotBlank()) {
+            theatreBody.addView(theatreLabel("AI PICK"))
+            val card = TextView(this).apply {
+                text = pickText
+                textSize = 12.5f
+                setTextColor(Color.rgb(245, 239, 234))
+                setLineSpacing(dp(4).toFloat(), 1f)
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(18).toFloat()
+                    setColor(Color.rgb(29, 25, 24))
+                    setStroke(dp(1), Color.argb(90, 232, 130, 103))
+                }
+                setOnClickListener {
+                    try {
+                        val clipboard = this@NativePlayerActivity
+                            .getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        clipboard.setPrimaryClip(
+                            android.content.ClipData.newPlainText("Noellyne pick", pickText)
+                        )
+                        android.widget.Toast
+                            .makeText(this@NativePlayerActivity, "Pick copied", android.widget.Toast.LENGTH_SHORT)
+                            .show()
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+            theatreBody.addView(card)
+            theatreBody.addView(TextView(this).apply {
+                text = "Tap the card to copy · 18+ play responsibly"
+                textSize = 9.5f
+                setTextColor(Color.rgb(163, 152, 147))
+                setPadding(0, dp(6), 0, 0)
+            })
+        }
+
+        // Footer hint
+        theatreBody.addView(TextView(this).apply {
+            text = "Tap the picture for controls · Rotate for full screen"
+            textSize = 10.5f
+            setTextColor(Color.rgb(163, 152, 147))
+            setPadding(0, dp(18), 0, 0)
+        })
     }
 
     private fun rebuildQualityOptions(tracks: Tracks) {

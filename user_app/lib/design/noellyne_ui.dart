@@ -773,3 +773,100 @@ class _DockTile extends StatelessWidget {
     );
   }
 }
+
+/// Sliding segmented control (999 capsule with a spring-glide indicator).
+///
+/// Used for the Channels library (All / Favorites / Recent). The indicator is
+/// an [AnimatedAlign] + [FractionallySizedBox] pair, so it slides without
+/// rebuilding the labels and without clipping on either edge.
+class SegmentedPill extends StatelessWidget {
+  const SegmentedPill({
+    super.key,
+    required this.labels,
+    required this.index,
+    required this.onChanged,
+    this.height = 42,
+  });
+
+  final List<String> labels;
+  final int index;
+  final ValueChanged<int> onChanged;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final count = labels.isEmpty ? 1 : labels.length;
+    final clamped = index.clamp(0, count - 1);
+    final alignX = count == 1 ? 0.0 : -1 + (2 * clamped) / (count - 1);
+
+    return Container(
+      height: height,
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: dark ? NoellyneColors.innerDark : const Color(0xFFF0E8E4),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: dark ? NoellyneColors.glassBorderDark : const Color(0xFFE6DAD4),
+        ),
+      ),
+      child: Stack(
+        children: [
+          AnimatedAlign(
+            duration: const Duration(milliseconds: 240),
+            curve: NoellyneMotion.tapCurve,
+            alignment: Alignment(alignX, 0),
+            child: FractionallySizedBox(
+              widthFactor: 1 / count,
+              heightFactor: 1,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: dark ? const Color(0xFF2C2726) : Colors.white,
+                  borderRadius: BorderRadius.circular(999),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: dark ? .35 : .08),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Row(
+            children: [
+              for (var i = 0; i < labels.length; i++)
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () {
+                      if (i == clamped) return;
+                      HapticFeedback.selectionClick();
+                      onChanged(i);
+                    },
+                    child: Center(
+                      child: AnimatedDefaultTextStyle(
+                        duration: const Duration(milliseconds: 180),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight:
+                              i == clamped ? FontWeight.w800 : FontWeight.w600,
+                          letterSpacing: -.1,
+                          color: i == clamped
+                              ? scheme.onSurface
+                              : scheme.onSurfaceVariant,
+                        ),
+                        child: Text(labels[i]),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}

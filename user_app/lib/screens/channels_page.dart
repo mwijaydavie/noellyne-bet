@@ -14,6 +14,7 @@ import '../network_endpoints.dart';
 import '../playback_routes.dart';
 import '../public_guide_cache.dart';
 import '../channel_match_search.dart';
+import '../design/noellyne_ui.dart';
 import '../widgets/noellyne_dock_bar.dart';
 import '../widgets/noellyne_lobby.dart';
 import 'daily_picks_page.dart';
@@ -733,14 +734,19 @@ class _ChannelsPageState extends State<ChannelsPage> {
                           ],
                         ),
                       ),
-                      Wrap(spacing: 8, children: [
-                        for (final entry in const {'favorites': 'Favorites', 'recent': 'Recently watched'}.entries)
-                          FilterChip(label: Text(entry.value),
-                            selected: libraryFilter == entry.key,
-                            onSelected: (selected) => setState(() {
-                              libraryFilter = selected ? entry.key : 'all'; selectedGroup = 'All';
-                            })),
-                      ]),
+                      SegmentedPill(
+                        labels: const ['All', 'Favorites', 'Recent'],
+                        index: libraryFilter == 'favorites'
+                            ? 1
+                            : libraryFilter == 'recent'
+                                ? 2
+                                : 0,
+                        onChanged: (i) => setState(() {
+                          libraryFilter =
+                              const ['all', 'favorites', 'recent'][i];
+                          selectedGroup = 'All';
+                        }),
+                      ),
                     ],
                   ),
                 ),
