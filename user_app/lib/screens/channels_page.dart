@@ -14,7 +14,8 @@ import '../network_endpoints.dart';
 import '../playback_routes.dart';
 import '../public_guide_cache.dart';
 import '../channel_match_search.dart';
-import '../widgets/premium_bottom_nav.dart';
+import '../widgets/noellyne_dock_bar.dart';
+import '../widgets/noellyne_lobby.dart';
 import 'home_page.dart';
 import 'source_browser_page.dart';
 import '../viewer_navigation.dart';
@@ -427,33 +428,6 @@ class _ChannelsPageState extends State<ChannelsPage> {
     }
   }
 
-  void navigate(int index) {
-    ViewerTabCache.channelUi = ViewerChannelsUiState(
-      search: search.text,
-      group: selectedGroup,
-      matchId: selectedMatchId,
-      libraryFilter: libraryFilter,
-      scrollOffset: _channelScroll.hasClients
-          ? _channelScroll.offset
-          : ViewerTabCache.channelUi.scrollOffset,
-    );
-    if (index == 6) {
-      unawaited(refresh());
-      return;
-    }
-    if (index == 0) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(builder: (_) => const HomePage()),
-      );
-      return;
-    }
-    final source = viewerSourceAt(index);
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute<void>(
-        builder: (_) => SourceBrowserPage(source: source),
-      ),
-    );
-  }
 
   Future<void> _channelAction(String action, Map<String, dynamic> channel) async {
     final id = channel['id'].toString();
@@ -511,8 +485,24 @@ class _ChannelsPageState extends State<ChannelsPage> {
                     ),
               isDense: true,
               filled: true,
+              fillColor: Theme.of(context)
+                  .colorScheme
+                  .surfaceContainerHighest
+                  .withValues(alpha: .6),
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(999),
+                borderSide: BorderSide.none,
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(999),
+                borderSide: BorderSide.none,
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(999),
+                borderSide: BorderSide(
+                  color: Theme.of(context).colorScheme.primary,
+                  width: 1.2,
+                ),
               ),
             ),
           )),
@@ -617,8 +607,13 @@ class _ChannelsPageState extends State<ChannelsPage> {
                               decoration: const InputDecoration(
                                 labelText: 'Channel group',
                                 labelStyle: TextStyle(fontSize: 11),
-                                border: OutlineInputBorder(),
+                                border: OutlineInputBorder(
+                                  borderRadius:
+                                      BorderRadius.all(Radius.circular(999)),
+                                  borderSide: BorderSide.none,
+                                ),
                                 isDense: true,
+                                filled: true,
                                 contentPadding: EdgeInsets.symmetric(
                                   horizontal: 10, vertical: 10,
                                 ),
@@ -664,8 +659,13 @@ class _ChannelsPageState extends State<ChannelsPage> {
                               decoration: const InputDecoration(
                                 labelText: 'Match',
                                 labelStyle: TextStyle(fontSize: 11),
-                                border: OutlineInputBorder(),
+                                border: OutlineInputBorder(
+                                  borderRadius:
+                                      BorderRadius.all(Radius.circular(999)),
+                                  borderSide: BorderSide.none,
+                                ),
                                 isDense: true,
+                                filled: true,
                                 contentPadding: EdgeInsets.symmetric(
                                   horizontal: 8, vertical: 10,
                                 ),
@@ -790,12 +790,32 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                 child: Card(
                                   clipBehavior: Clip.antiAlias,
                                   child: Stack(fit: StackFit.expand, children: [
-                                    Center(child: image.startsWith('https://')
-                                        ? ResilientLogo(
-                                            value: image, channelId: channel['id']?.toString(),
-                                            fallback: const Icon(Icons.tv),
-                                          )
-                                        : const Icon(Icons.tv, size: 38)),
+                                    // Uniform logo stage: every broadcaster,
+                                    // wide or square, sits in the same frame.
+                                    Center(
+                                      child: Container(
+                                        margin: const EdgeInsets.all(10),
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius:
+                                              BorderRadius.circular(16),
+                                        ),
+                                        child: image.startsWith('https://')
+                                            ? ResilientLogo(
+                                                value: image,
+                                                channelId:
+                                                    channel['id']?.toString(),
+                                                fallback: const Icon(
+                                                    Icons.tv_rounded,
+                                                    size: 26,
+                                                    color: Color(0xFF736A66)),
+                                              )
+                                            : const Icon(Icons.tv_rounded,
+                                                size: 30,
+                                                color: Color(0xFF736A66)),
+                                      ),
+                                    ),
                                     Positioned(top: 0, right: 0, child: PopupMenuButton<String>(
                                       tooltip: 'Channel options',
                                       icon: Icon(library.favorites.contains(channel['id'].toString())
@@ -852,9 +872,27 @@ class _ChannelsPageState extends State<ChannelsPage> {
         );
       },
     ),
-    bottomNavigationBar: PremiumBottomNav(
-      selectedIndex: 6,
-      onSelected: navigate,
+    bottomNavigationBar: NoellyneDockBar(
+      current: NoellyneTab.channels,
+      onSelect: (tab) {
+        if (tab == NoellyneTab.channels) {
+          unawaited(refresh());
+          return;
+        }
+        ViewerTabCache.channelUi = ViewerChannelsUiState(
+          search: search.text,
+          group: selectedGroup,
+          matchId: selectedMatchId,
+          libraryFilter: libraryFilter,
+          scrollOffset: _channelScroll.hasClients
+              ? _channelScroll.offset
+              : ViewerTabCache.channelUi.scrollOffset,
+        );
+        NoellyneDockBar.goHome(
+          context,
+          tab == NoellyneTab.live ? LobbyFilter.liveNow : LobbyFilter.all,
+        );
+      },
     ),
   );
 }

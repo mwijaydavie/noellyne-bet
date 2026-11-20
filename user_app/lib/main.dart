@@ -8,6 +8,7 @@ import 'backend_endpoint.dart';
 import 'app_theme.dart';
 import 'noellyne_config.dart';
 import 'screens/home_page.dart';
+import 'screens/splash_screen.dart';
 import 'theme_controller.dart';
 
 Future<void> main() async {
@@ -21,6 +22,10 @@ Future<void> main() async {
 }
 
 Future<void> _initializeBackend() async {
+  // Supabase is optional: with no project configured the app runs on the
+  // public feed + local AI fallback instead of blocking startup.
+  if (!NoellyneConfig.supabaseEnabled) return;
+
   const directUrl = NoellyneConfig.supabaseUrl;
   const anonKey = NoellyneConfig.supabaseAnonKey;
 
@@ -77,8 +82,10 @@ class FootballViewerApp extends StatelessWidget {
               child: child ?? const SizedBox.shrink(),
             );
           },
-          home: HomePage(backendReady: backendReady,
-            initialMatchId: Uri.base.queryParameters['match']),
+          home: SplashGate(
+            backendReady: backendReady,
+            initialMatchId: Uri.base.queryParameters['match'],
+          ),
         );
       },
     );

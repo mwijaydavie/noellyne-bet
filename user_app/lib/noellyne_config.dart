@@ -12,15 +12,28 @@
 class NoellyneConfig {
   const NoellyneConfig._();
 
-  /// Supabase project used for auth, realtime and the Daily Picks feed.
+  /// Supabase is OPTIONAL. Leave both empty (the default) and the app still
+  /// runs: the match feed, playback and AI chat work without it. Only
+  /// realtime updates and cloud Daily Picks need a project.
   static const supabaseUrl = String.fromEnvironment(
     'SUPABASE_URL',
-    defaultValue: 'https://woggzixprvyjnfjzsglz.supabase.co',
+    defaultValue: '',
   );
 
   static const supabaseAnonKey = String.fromEnvironment(
     'SUPABASE_ANON_KEY',
-    defaultValue: 'sb_publishable_ka-rZxHdJUMYng6WJDDQUg_ZcWZJl3O',
+    defaultValue: '',
+  );
+
+  static bool get supabaseEnabled =>
+      supabaseUrl.trim().isNotEmpty && supabaseAnonKey.trim().isNotEmpty;
+
+  /// n8n webhook that powers the in-app Noellyne AI chat. Point this at a
+  /// `Webhook` node wired to your Hermes prompt + provider fallback chain.
+  /// Empty → the app uses its built-in offline betting assistant.
+  static const aiChatWebhook = String.fromEnvironment(
+    'AI_CHAT_WEBHOOK',
+    defaultValue: '',
   );
 
   /// Cloudflare / Vercel match feed.

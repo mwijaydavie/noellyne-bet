@@ -21,6 +21,7 @@ import 'channels_page.dart';
 import 'network_diagnostics_page.dart';
 import '../design/noellyne_ui.dart';
 import '../widgets/theme_mode_button.dart';
+import '../widgets/noellyne_dock_bar.dart';
 import '../widgets/noellyne_lobby.dart';
 import '../widgets/premium_match_card.dart';
 import '../widgets/compact_stream_line_title.dart';
@@ -59,10 +60,19 @@ class _PersistedMatchCache {
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, this.backendReady, this.initialMatchId});
+  const HomePage({
+    super.key,
+    this.backendReady,
+    this.initialMatchId,
+    this.initialFilter,
+  });
 
   final Future<void>? backendReady;
   final String? initialMatchId;
+
+  /// `Live` dock tab opens with [LobbyFilter.liveNow], `Matches` with
+  /// [LobbyFilter.all] — that is the whole difference between the two tabs.
+  final LobbyFilter? initialFilter;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -79,7 +89,7 @@ class _HomePageState extends State<HomePage> {
       DateTime.now().difference(_lastLiveSuccess!) >=
           const Duration(seconds: 60);
   bool _openingPlayer = false;
-  LobbyFilter _lobbyFilter = LobbyFilter.all;
+  late LobbyFilter _lobbyFilter = widget.initialFilter ?? LobbyFilter.all;
   String? _leagueFilter;
   late Future<String> _versionLabel;
   late Future<String> _updateVersionLabel;
@@ -1584,6 +1594,10 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// Opens the AI chat (n8n brain with an offline fallback); the chat has a
+  /// shortcut to the Daily Picks feed.
+  Future<void> _openAiChat() => openAiChat(context);
+
   /// Opens the n8n Daily Picks feed; a pick's CTA jumps straight into the
   /// matching stream when its `stream_id` is still in the current feed.
   Future<void> _openDailyPicks() async {
@@ -1854,8 +1868,8 @@ class _HomePageState extends State<HomePage> {
               label: 'Live',
             ),
             DockItem(
-              icon: Icons.sports_soccer_outlined,
-              activeIcon: Icons.sports_soccer_rounded,
+              icon: Icons.calendar_month_outlined,
+              activeIcon: Icons.calendar_month_rounded,
               label: 'Matches',
             ),
             DockItem(
@@ -1889,8 +1903,8 @@ class _HomePageState extends State<HomePage> {
             }
             await _openMoreSheet();
           },
-          onAiPressed: _openDailyPicks,
-          aiTooltip: 'Daily Picks',
+          onAiPressed: _openAiChat,
+          aiTooltip: 'Noellyne AI',
         ),
       ),
     );

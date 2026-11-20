@@ -627,11 +627,17 @@ class NativePlayerActivity : Activity() {
         playerView.post { setControlsVisible(true) }
 
         statusText = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 14f
+            setTextColor(Color.rgb(244, 162, 140))
+            textSize = 13f
             gravity = Gravity.CENTER
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-            setBackgroundColor(Color.argb(165, 0, 0, 0))
+            setPadding(dp(18), dp(11), dp(18), dp(11))
+            letterSpacing = 0.02f
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = dp(999).toFloat()
+                setColor(Color.argb(200, 29, 25, 24))
+                setStroke(dp(1), Color.argb(90, 232, 130, 103))
+            }
             visibility = View.GONE
         }
 
