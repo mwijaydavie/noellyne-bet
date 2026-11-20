@@ -21,6 +21,8 @@ import '../viewer_navigation.dart';
 import 'channels_page.dart';
 import 'network_diagnostics_page.dart';
 import '../design/noellyne_ui.dart';
+import '../services/daily_picks_repository.dart';
+import '../models/daily_pick.dart';
 import '../widgets/theme_mode_button.dart';
 import '../services/match_reminders.dart';
 import '../widgets/noellyne_dock_bar.dart';
@@ -93,6 +95,7 @@ class _HomePageState extends State<HomePage> {
       DateTime.now().difference(_lastLiveSuccess!) >=
           const Duration(seconds: 60);
   bool _openingPlayer = false;
+  Map<String, dynamic>? _featuredPick;
   late LobbyFilter _lobbyFilter = widget.initialFilter ?? LobbyFilter.all;
   String? _leagueFilter;
   late Future<String> _versionLabel;
@@ -225,28 +228,6 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     unawaited(MatchReminders.instance.load());
-    // The native player hands tab taps and suggested-channel taps back here.
-    NativePlayer.onNavigateToTab = (index) {
-      if (!mounted) return;
-      switch (index) {
-        case 0:
-          setState(() {
-            _lobbyFilter = LobbyFilter.liveNow;
-            _leagueFilter = null;
-          });
-        case 1:
-          setState(() {
-            _lobbyFilter = LobbyFilter.all;
-            _leagueFilter = null;
-          });
-        case 2:
-          NoellyneDockBar.goTab(context, NoellyneTab.channels);
-        case 3:
-          showNoellyneMoreSheet(context);
-        case 4:
-          openAiChat(context);
-      }
-    };
     NativePlayer.onOpenMatch = (id) {
       if (!mounted) return;
       for (final m in [...?_feed.data]) {
@@ -281,6 +262,7 @@ class _HomePageState extends State<HomePage> {
     // finishes; the real authoritative response then replaces it, even [].
     unawaited(_restoreSavedLive());
     unawaited(_feed.refresh());
+    unawaited(_loadFeaturedPick());
     _versionLabel = _loadVersionLabel();
     _updateVersionLabel = AppUpdateService.versionSummary();
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -446,14 +428,14 @@ class _HomePageState extends State<HomePage> {
       throw Exception('Public API returned HTTP ${response.statusCode}');
     }
 
-    final decoded = jsonDecode(response.body);
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
     if (decoded is Map && decoded['source']?.toString() == 'github') {
       // Do not let the Worker's emergency GitHub mirror beat a fresher direct
       // database response. The mirror is still used explicitly as last resort.
       throw const FormatException('Public API is using the backup mirror.');
     }
 
-    return _decodeMatches(response.body);
+    return _decodeMatches(utf8.decode(response.bodyBytes, allowMalformed: true));
   }
 
   Future<List<Map<String, dynamic>>> _loadPublicApi() {
@@ -488,7 +470,7 @@ class _HomePageState extends State<HomePage> {
       throw Exception('Public stream API returned HTTP ${response.statusCode}');
     }
 
-    final decoded = jsonDecode(response.body);
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
     final raw = decoded is Map<String, dynamic> ? decoded['streams'] : decoded;
     if (raw is! List) {
       throw const FormatException('Stream response is invalid.');
@@ -707,7 +689,7 @@ class _HomePageState extends State<HomePage> {
       if (response.statusCode < 200 || response.statusCode >= 300) {
         return null;
       }
-      final decoded = jsonDecode(response.body);
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
       if (decoded is! Map) return null;
       final text = decoded['updated_at']?.toString();
       return text == null ? null : DateTime.tryParse(text)?.toUtc();
@@ -739,7 +721,7 @@ class _HomePageState extends State<HomePage> {
       throw Exception('Mirror returned HTTP ${response.statusCode}');
     }
 
-    final rows = _decodeMatches(response.body);
+    final rows = _decodeMatches(utf8.decode(response.bodyBytes, allowMalformed: true));
     // The mirror may contain safe non-keyed direct backup lines. Protected
     // Cloudflare playback remains first choice; these are used only when that
     // API is unreachable on restricted networks.
@@ -1068,6 +1050,28 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// Shape the native portrait feed understands: id/name/subtitle/isLive.
+  Future<void> _loadFeaturedPick() async {
+    try {
+      final picks = await DailyPicksRepository().fetch(limit: 5);
+      if (picks.isEmpty || !mounted) return;
+      final DailyPick pick = picks.first;
+      setState(() {
+        _featuredPick = <String, dynamic>{
+          'match': pick.match,
+          'league': pick.league,
+          'selection': pick.pick,
+          'odds': pick.odds,
+          'confidence': pick.confidence,
+          'units': pick.units,
+          'reasoning': pick.reasoning,
+          'tier': pick.tier,
+        };
+      });
+    } catch (_) {
+      // Picks are optional chrome inside the player.
+    }
+  }
+
   List<Map<String, dynamic>> _suggestedChannels(Map<String, dynamic> current) {
     final rows = [...?_feed.data];
     final currentId = current['id']?.toString();
@@ -1081,14 +1085,36 @@ class _HomePageState extends State<HomePage> {
         kind: 'league',
       );
       final lines = _lineCountFor(m);
+      final carried = <Map<String, dynamic>>[];
+      for (final entry in playableLinks(m['stream_links']).asMap().entries) {
+        final x = entry.value;
+        final url = (x['stream_url'] ?? '').toString();
+        if (url.isEmpty || x['use_webview'] == true) continue;
+        carried.add(<String, dynamic>{
+          'label': _streamDisplayLabel(x, entry.key),
+          'streamType': (x['stream_type'] ?? 'auto').toString(),
+          'url': url,
+          'referer': _normalizedWebReferer(x, m),
+          'origin': (x['origin'] ?? '').toString(),
+          'keyId': (x['key_id'] ?? '').toString(),
+          'keyData': (x['key_data'] ?? '').toString(),
+          'resolution': (x['resolution'] ?? '').toString(),
+        });
+        if (carried.length >= 12) break;
+      }
+      if (carried.isEmpty) continue;
       out.add({
         'id': m['id']?.toString() ?? '',
         'name': league.isEmpty ? '$home vs $away' : league,
+        'epgTitle': _matchTitle(m),
+        'logoUrl': (m['home_logo_url'] ?? m['home_logo'] ?? '').toString(),
+        'category': league,
         'subtitle': _isOnAir(m)
-            ? '$home vs $away · LIVE'
-            : '$home vs $away · $lines line${lines == 1 ? '' : 's'}',
+            ? '$home vs $away \u00B7 LIVE'
+            : '$home vs $away \u00B7 $lines line${lines == 1 ? '' : 's'}',
         'isLive': _isOnAir(m),
         'lineCount': lines,
+        'sourcesJson': jsonEncode(carried),
       });
       if (out.length >= 12) break;
     }
@@ -1408,7 +1434,9 @@ class _HomePageState extends State<HomePage> {
         title: _matchTitle(match),
         matchId: matchId,
         suggestedChannels: _suggestedChannels(match),
+        featuredPick: _featuredPick,
         activeTabIndex: _lobbyFilter == LobbyFilter.liveNow ? 0 : 1,
+        isDark: Theme.of(context).brightness == Brightness.dark,
       );
       await AnalyticsService.capture(
         'player opened',
@@ -2076,7 +2104,6 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
-    NativePlayer.onNavigateToTab = null;
     NativePlayer.onOpenMatch = null;
     _reminderTick?.cancel();
     _feed.dispose();

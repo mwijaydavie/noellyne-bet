@@ -1,70 +1,79 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:football_viewer/app_update_service.dart';
+import 'package:football_viewer/noellyne_config.dart';
 
 void main() {
-  test('GitHub Pages APK downloads stay on the reachable GitHub host', () {
+  test('Viewer checks only our own rolling manifest', () {
+    expect(AppUpdateService.manifestUrls, hasLength(1));
+    expect(AppUpdateService.manifestUrls.single,
+        NoellyneConfig.updateManifestUrl);
+  });
+
+  const digest =
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  final ownApk = 'https://github.com/mwijaydavie/noellyne-bet/releases/'
+      'download/apk-18/NoellyneBet-10.0.0-40018.apk';
+
+  test('Our own signed release is accepted', () {
     expect(
-      vpnFreeUpdateUrl(
-        'https://nyeinchanaung75299-eng.github.io/'
-        'football-stream-app/releases/NCA-arm64-v8a-latest.apk?build=30695',
-      ),
-      'https://nyeinchanaung75299-eng.github.io/'
-      'football-stream-app/releases/NCA-arm64-v8a-latest.apk?build=30695',
+      validViewerRelease(<String, dynamic>{
+        'app': 'noellyne_viewer',
+        'version_name': '10.0.0',
+        'build_number': 40018,
+        'apk_url': ownApk,
+        'sha256': digest,
+        'size_bytes': 30000000,
+      }),
+      isTrue,
     );
   });
 
-  test('Cloudflare release URLs fall back to the reachable GitHub host', () {
-    expect(
-      vpnFreeUpdateUrl(
-        'https://nca.nyeinchanaung.us.ci/'
-        'football-stream-app/releases/NCA-arm64-v8a-latest.apk',
-      ),
-      'https://nyeinchanaung75299-eng.github.io/'
-      'football-stream-app/releases/NCA-arm64-v8a-latest.apk',
-    );
-  });
-
-  test('non-viewer update URLs remain unchanged', () {
-    const url = 'https://downloads.example.com/NCA-latest.apk';
-    expect(vpnFreeUpdateUrl(url), url);
-  });
-
-  const digest = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-  const canonicalApk =
+  test('Upstream project releases can never be offered again', () {
+    for (final foreign in <String>[
       'https://raw.githubusercontent.com/nyeinchanaung75299-eng/'
-      'football-stream-app/feed/public/releases/NCA-arm64-v8a-latest.apk';
-
-  test('Viewer update first checks canonical signed-release feed', () {
-    expect(AppUpdateService.manifestUrls.first,
-      'https://raw.githubusercontent.com/nyeinchanaung75299-eng/'
-      'football-stream-app/feed/public/releases/latest.json');
+          'football-stream-app/feed/public/releases/NCA-arm64-v8a-latest.apk',
+      'https://github.com/nyeinchanaung75299-eng/football-stream-app/'
+          'releases/download/apk-1/NCA.apk',
+      'https://nca.nyeinchanaung.us.ci/football-stream-app/releases/x.apk',
+      'https://untrusted.example/NoellyneBet.apk',
+    ]) {
+      expect(
+        validViewerRelease(<String, dynamic>{
+          'app': 'noellyne_viewer',
+          'version_name': '10.0.0',
+          'build_number': 40018,
+          'apk_url': foreign,
+          'sha256': digest,
+          'size_bytes': 30000000,
+        }),
+        isFalse,
+        reason: foreign,
+      );
+    }
   });
 
-  test('Only the expected ARM64 Viewer APK and verified metadata are accepted', () {
-    final manifest = <String, dynamic>{
-      'version_name': '9.8.0',
-      'build_number': 30746,
-      'abi': 'arm64-v8a',
-      'apk_url': canonicalApk,
-      'sha256': digest,
-      'size_bytes': 21350466,
-    };
-    expect(validViewerRelease(manifest), isTrue);
+  test('Broken metadata is rejected', () {
     for (final changes in <Map<String, dynamic>>[
       {'app': 'nca_admin'},
-      {'abi': 'universal'},
-      {'apk_url': canonicalApk.replaceFirst('raw.githubusercontent.com',
-          'untrusted.example')},
-      {'apk_url': canonicalApk.replaceFirst('NCA-arm64', 'NCA-admin-arm64')},
-      {'apk_url': '$canonicalApk?download=1'},
       {'sha256': 'invalid'},
       {'build_number': 0},
       {'size_bytes': 0},
-      {'size_bytes': 51 * 1024 * 1024},
       {'version_name': 'latest'},
+      {'apk_url': '$ownApk?download=1'},
     ]) {
-      expect(validViewerRelease({...manifest, ...changes}), isFalse,
-        reason: changes.toString());
+      expect(
+        validViewerRelease(<String, dynamic>{
+          'app': 'noellyne_viewer',
+          'version_name': '10.0.0',
+          'build_number': 40018,
+          'apk_url': ownApk,
+          'sha256': digest,
+          'size_bytes': 30000000,
+          ...changes,
+        }),
+        isFalse,
+        reason: changes.toString(),
+      );
     }
   });
 }

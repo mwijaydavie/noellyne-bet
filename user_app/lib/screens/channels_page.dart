@@ -229,7 +229,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
           if (response.statusCode != 200) {
             throw StateError('HTTP ${response.statusCode}');
           }
-          final decoded = jsonDecode(response.body);
+          final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
           if (decoded is! Map || decoded['ok'] != true) {
             throw const FormatException('Invalid channel response');
           }
@@ -409,6 +409,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
         selectedIndex: 0,
         title: channel['name']?.toString() ?? 'Channel',
         matchId: id,
+        activeTabIndex: 1,
+        isDark: Theme.of(context).brightness == Brightness.dark,
       );
     } catch (_) {
       if (mounted) {

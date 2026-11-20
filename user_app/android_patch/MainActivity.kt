@@ -76,6 +76,8 @@ class MainActivity : FlutterActivity() {
                         "activeTabIndex",
                         call.argument<Int>("activeTabIndex") ?: 0
                     )
+                    // The player follows the in-app theme, never the system one.
+                    putExtra("isDark", call.argument<Boolean>("isDark") ?: false)
                 })
             } catch (_: Exception) {
                 NativePlayerActivity.cancelOpeningSession(sessionId)

@@ -10,30 +10,6 @@ import 'analytics_service.dart';
 import 'app_update_installer.dart';
 import 'noellyne_config.dart';
 
-const _vpnFreeViewerOrigin = 'https://nca.nyeinchanaung.us.ci';
-
-@visibleForTesting
-String vpnFreeUpdateUrl(String value) {
-  final trimmed = value.trim();
-  final uri = Uri.tryParse(trimmed);
-  if (uri == null ||
-      uri.host != Uri.parse(_vpnFreeViewerOrigin).host ||
-      !uri.path.startsWith('/football-stream-app/releases/')) {
-    return trimmed;
-  }
-  return uri
-      .replace(
-        scheme: 'https',
-        host: 'nyeinchanaung75299-eng.github.io',
-        port: null,
-      )
-      .toString();
-}
-
-const _viewerReleaseApkPath =
-    '/nyeinchanaung75299-eng/football-stream-app/feed/public/releases/'
-    'NCA-arm64-v8a-latest.apk';
-
 /// Refuse unrelated or corrupted manifests before comparing version codes.
 /// Noellyne Bet manifests are served from OUR GitHub releases, not the
 /// upstream NCA feed.
@@ -58,31 +34,10 @@ bool isNoellyneRelease(Map<String, dynamic> release) {
       build > 0;
 }
 
+/// Only our own signed release may be offered to the user.
 @visibleForTesting
 bool validViewerRelease(Map<String, dynamic> release) =>
-    isNoellyneRelease(release) || _legacyNcaRelease(release);
-
-@visibleForTesting
-bool _legacyNcaRelease(Map<String, dynamic> release) {
-  final uri = Uri.tryParse(release['apk_url']?.toString() ?? '');
-  final digest = (release['sha256'] ?? '').toString().trim().toLowerCase();
-  final version = (release['version_name'] ?? '').toString().trim();
-  final size = int.tryParse(release['size_bytes']?.toString() ?? '') ?? 0;
-  final build = int.tryParse(release['build_number']?.toString() ?? '') ?? 0;
-  return (release['app'] == null || release['app'] == 'nca_viewer') &&
-      release['abi'] == 'arm64-v8a' &&
-      uri != null &&
-      uri.scheme == 'https' &&
-      uri.host == 'raw.githubusercontent.com' &&
-      uri.path == _viewerReleaseApkPath &&
-      !uri.hasQuery &&
-      !uri.hasFragment &&
-      RegExp(r'^[0-9a-f]{64}$').hasMatch(digest) &&
-      RegExp(r'^\d+\.\d+\.\d+$').hasMatch(version) &&
-      size > 0 &&
-      size <= 45 * 1024 * 1024 &&
-      build > 0;
-}
+    isNoellyneRelease(release);
 
 class AppUpdateService {
   AppUpdateService._();
@@ -90,17 +45,11 @@ class AppUpdateService {
   static bool _checked = false;
   static bool _downloading = false;
 
-  // Prefer the release feed written atomically with signed APKs; Pages lags.
+  /// ONLY our own rolling manifest. The upstream MIT project's feeds used to
+  /// be fallbacks here, which let its releases (and its build hashes) show up
+  /// in our update dialog — that leak is now gone.
   static const _manifestUrls = <String>[
-    // Noellyne Bet's own rolling manifest (primary).
     NoellyneConfig.updateManifestUrl,
-    // Legacy upstream feeds kept as fallbacks until the old installs age out.
-    'https://raw.githubusercontent.com/'
-        'nyeinchanaung75299-eng/football-stream-app/'
-        'feed/public/releases/latest.json',
-    'https://nyeinchanaung75299-eng.github.io/'
-        'football-stream-app/releases/latest.json',
-    '$_vpnFreeViewerOrigin/football-stream-app/releases/latest.json',
   ];
 
   @visibleForTesting
@@ -138,7 +87,7 @@ class AppUpdateService {
             continue;
           }
 
-          final decoded = jsonDecode(response.body);
+          final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
           if (decoded is! Map ||
               !validViewerRelease(Map<String, dynamic>.from(decoded))) {
             continue;
@@ -198,7 +147,7 @@ class AppUpdateService {
             continue;
           }
 
-          final decoded = jsonDecode(response.body);
+          final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
           if (decoded is Map) {
             final candidate = Map<String, dynamic>.from(decoded);
             if (!validViewerRelease(candidate)) continue;
@@ -249,9 +198,8 @@ class AppUpdateService {
       final version = data['version_name']?.toString().trim().isNotEmpty == true
           ? data['version_name'].toString()
           : 'new version';
-      final apkUrl = vpnFreeUpdateUrl(
-        data['apk_url']?.toString().trim() ?? '',
-      );
+      // Release URLs come from our own signed manifest only.
+      final apkUrl = data['apk_url']?.toString().trim() ?? '';
       final apkSha256 = data['sha256']?.toString().trim().toLowerCase() ?? '';
       final notes = data['notes']?.toString().trim() ?? '';
       final mandatory = data['mandatory'] == true;
