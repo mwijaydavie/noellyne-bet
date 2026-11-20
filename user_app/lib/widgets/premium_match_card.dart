@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../app_theme.dart';
 import 'team_crest.dart';
 import 'package:intl/intl.dart';
 
@@ -18,6 +19,8 @@ class PremiumMatchCard extends StatelessWidget {
     this.metaLabel,
     this.timeLabel,
     this.timeZoneLabel = '',
+    this.onRemind,
+    this.reminded = false,
   });
 
   final String league;
@@ -33,6 +36,8 @@ class PremiumMatchCard extends StatelessWidget {
   final String? metaLabel;
   final String? timeLabel;
   final String timeZoneLabel;
+  final VoidCallback? onRemind;
+  final bool reminded;
 
   @override
   Widget build(BuildContext context) {
@@ -97,6 +102,25 @@ class PremiumMatchCard extends StatelessWidget {
                     timeLabel: timeLabel,
                     timeZoneLabel: timeZoneLabel,
                   ),
+                  if (onRemind != null) ...[
+                    const SizedBox(width: 2),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: onRemind,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(6, 2, 0, 2),
+                        child: Icon(
+                          reminded
+                              ? Icons.notifications_active_rounded
+                              : Icons.notifications_none_rounded,
+                          size: 17,
+                          color: reminded
+                              ? NoellyneColors.glowDeep
+                              : colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
               const SizedBox(height: 10),
@@ -194,6 +218,8 @@ class _StatusPill extends StatelessWidget {
   final DateTime? kickoff;
   final String? timeLabel;
   final String timeZoneLabel;
+  final VoidCallback? onRemind;
+  final bool reminded;
 
   @override
   Widget build(BuildContext context) {

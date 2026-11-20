@@ -6,10 +6,10 @@ import '../noellyne_config.dart';
 import '../screens/ai_chat_page.dart';
 import '../screens/channels_page.dart';
 import '../screens/daily_picks_page.dart';
+import '../screens/network_diagnostics_page.dart';
+import '../screens/reminders_page.dart';
 import '../screens/settings_page.dart';
 import '../screens/home_page.dart';
-import '../screens/source_browser_page.dart';
-import '../viewer_navigation.dart';
 import 'noellyne_lobby.dart';
 import 'theme_mode_button.dart';
 
@@ -119,16 +119,11 @@ Future<void> openAiChat(BuildContext context) async {
   );
 }
 
-/// Shared "More" sheet: stream sources, picks, AI, channels, theme.
+/// Shared "More" sheet.
+///
+/// Deliberately short: Channels, Picks and stream sources already have proper
+/// homes, so More is the settings/utility surface (and no longer buries it).
 Future<void> showNoellyneMoreSheet(BuildContext context) async {
-  const sources = <(int, String, IconData)>[
-    (1, 'Live 2', Icons.live_tv_rounded),
-    (2, 'Soco', Icons.sports_soccer_rounded),
-    (3, 'YYZB', Icons.sensors_rounded),
-    (4, 'ColaTV', Icons.tv_rounded),
-    (5, 'Fawa', Icons.language_rounded),
-  ];
-
   void push(Widget page) {
     Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
   }
@@ -138,158 +133,146 @@ Future<void> showNoellyneMoreSheet(BuildContext context) async {
     showDragHandle: true,
     backgroundColor: Colors.transparent,
     builder: (sheetContext) {
+      final scheme = Theme.of(context).colorScheme;
       return GlassBlur(
         radius: 28,
-        padding: const EdgeInsets.fromLTRB(8, 0, 8, 18),
+        padding: const EdgeInsets.fromLTRB(8, 0, 8, 16),
         sigma: 24,
         child: SafeArea(
           top: false,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 0, 16, 6),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      'More',
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'More',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -.3,
+                    ),
+                  ),
+                ),
+              ),
+              _MoreTile(
+                icon: Icons.notifications_active_rounded,
+                title: 'Reminders',
+                subtitle: 'Nudges before your kickoffs',
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  push(const RemindersPage());
+                },
+              ),
+              _MoreTile(
+                icon: Icons.auto_awesome_rounded,
+                title: 'Noellyne AI',
+                subtitle: 'Chat: picks, NBA, stake split',
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  openAiChat(context);
+                },
+              ),
+              _MoreTile(
+                icon: Icons.tune_rounded,
+                title: 'Settings',
+                subtitle: 'Profile, alerts, pinned teams, updates',
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  push(const SettingsPage());
+                },
+              ),
+              _MoreTile(
+                icon: Icons.speed_rounded,
+                title: 'Diagnostics',
+                subtitle: 'Check routes, lines and backend health',
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  push(const NetworkDiagnosticsPage());
+                },
+              ),
+              const Divider(height: 18),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Row(
+                  children: [
+                    Icon(Icons.palette_outlined,
+                        size: 17, color: scheme.onSurfaceVariant),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Appearance',
                       style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -.3,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
+                        color: scheme.onSurface,
                       ),
                     ),
+                    const Spacer(),
+                    const ThemeModeButton(),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 6, 16, 2),
+                child: Text(
+                  'Realtime: ${NoellyneConfig.supabaseLabel}',
+                  style: TextStyle(
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurfaceVariant,
                   ),
                 ),
-                ListTile(
-                  leading: const Icon(Icons.auto_awesome_rounded),
-                  title: const Text(
-                    'Noellyne AI',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: const Text('Chat: picks, NBA, mgao wa mtaji'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () {
-                    Navigator.of(sheetContext).pop();
-                    openAiChat(context);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.receipt_long_rounded),
-                  title: const Text(
-                    'Daily Picks',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: const Text('Slips from the n8n pipeline'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () {
-                    Navigator.of(sheetContext).pop();
-                    push(const DailyPicksPage());
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.tv_rounded),
-                  title: const Text(
-                    'Channels',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: const Text('All broadcaster channels'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () {
-                    Navigator.of(sheetContext).pop();
-                    push(const ChannelsPage());
-                  },
-                ),
-                const Divider(height: 14),
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 0, 16, 2),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      'STREAM SOURCES',
-                      style: TextStyle(
-                        fontSize: 9.5,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.1,
-                      ),
-                    ),
-                  ),
-                ),
-                for (final (index, label, icon) in sources)
-                  ListTile(
-                    dense: true,
-                    leading: Icon(icon, size: 20),
-                    title: Text(
-                      label,
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    trailing: const Icon(Icons.chevron_right_rounded, size: 18),
-                    onTap: () {
-                      Navigator.of(sheetContext).pop();
-                      push(
-                        SourceBrowserPage(source: viewerSourceAt(index)),
-                      );
-                    },
-                  ),
-                const Divider(height: 14),
-                ListTile(
-                  leading: const Icon(Icons.tune_rounded),
-                  title: const Text(
-                    'Settings',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: const Text(
-                    'Profile, reminders, notifications, pinned teams',
-                  ),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () {
-                    Navigator.of(sheetContext).pop();
-                    push(const SettingsPage());
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.palette_outlined),
-                  title: const Text(
-                    'Appearance',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: const Text('System, light or dark'),
-                  trailing: const ThemeModeButton(),
-                ),
-                const SizedBox(height: 6),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Noellyne Bet · made for match day',
-                        style: TextStyle(
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w600,
-                          color:
-                              Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Realtime: ${NoellyneConfig.supabaseLabel}',
-                        style: TextStyle(
-                          fontSize: 9.5,
-                          fontWeight: FontWeight.w600,
-                          color:
-                              Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       );
     },
   );
+}
+
+class _MoreTile extends StatelessWidget {
+  const _MoreTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return ListTile(
+      onTap: onTap,
+      leading: Container(
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(11),
+          color: NoellyneColors.glowDeep.withValues(alpha: .12),
+        ),
+        child: Icon(icon, size: 18, color: NoellyneColors.glowDeep),
+      ),
+      title: Text(
+        title,
+        style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(
+          fontSize: 10.5,
+          fontWeight: FontWeight.w600,
+          color: scheme.onSurfaceVariant,
+        ),
+      ),
+      trailing: Icon(Icons.chevron_right_rounded, color: scheme.onSurfaceVariant),
+    );
+  }
 }

@@ -2,6 +2,7 @@ package com.example.football_viewer
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.PictureInPictureParams
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Color
@@ -15,6 +16,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.text.TextUtils
 import android.util.Base64
+import android.util.Rational
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -415,6 +417,11 @@ class NativePlayerActivity : Activity() {
             )
         )
 
+        val miniButton = overlayButton("⤡").apply {
+            contentDescription = "Play in mini player"
+            setOnClickListener { enterMiniPlayer() }
+        }
+        topBar.addView(miniButton, LinearLayout.LayoutParams(dp(36), dp(36)))
         topBar.addView(rotateButton, LinearLayout.LayoutParams(dp(36), dp(36)))
 
         root.addView(
@@ -593,11 +600,14 @@ class NativePlayerActivity : Activity() {
                 intArrayOf(Color.argb(192, 0, 0, 0), Color.argb(24, 0, 0, 0))
             )
             topBar.visibility = if (controlsVisible) View.VISIBLE else View.GONE
+            // Portrait: leave the status bar alone and hang the picture from
+            // its bottom edge, like a video page rather than a full-bleed app.
+            val topInset = if (landscape) 0 else statusBarHeightPx()
             videoHost.layoutParams = (videoHost.layoutParams as FrameLayout.LayoutParams).apply {
                 width = ViewGroup.LayoutParams.MATCH_PARENT
                 height = if (landscape) root.height else portraitHeight
                 gravity = Gravity.TOP
-                topMargin = 0
+                topMargin = topInset
             }
             serverRailScroll.layoutParams =
                 (serverRailScroll.layoutParams as FrameLayout.LayoutParams).apply {
@@ -612,7 +622,7 @@ class NativePlayerActivity : Activity() {
                     width = ViewGroup.LayoutParams.MATCH_PARENT
                     height = ViewGroup.LayoutParams.MATCH_PARENT
                     gravity = Gravity.TOP
-                    topMargin = if (landscape) 0 else portraitHeight
+                    topMargin = if (landscape) 0 else portraitHeight + topInset
                 }
                 theatrePanel.visibility = if (landscape) View.GONE else View.VISIBLE
             }
@@ -652,13 +662,18 @@ class NativePlayerActivity : Activity() {
             visibility = View.GONE
         }
 
-        root.addView(
+        // Inside the picture, bottom-left: a quiet status chip instead of a
+        // centred spinner over a wall of black.
+        videoHost.addView(
             statusText,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            )
+                Gravity.BOTTOM or Gravity.START
+            ).apply {
+                leftMargin = dp(12)
+                bottomMargin = dp(54)
+            }
         )
 
         // Portrait companion panel: the 16:9 picture stays pinned to the top
@@ -702,6 +717,38 @@ class NativePlayerActivity : Activity() {
             safeHideSystemBars()
             root.requestApplyInsets()
             playServer(selectedServerIndex)
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // Leaving the app (home / recents) drops into the floating mini player
+        // instead of killing playback.
+        if (::playerView.isInitialized) enterMiniPlayer()
+    }
+
+    private fun enterMiniPlayer() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        try {
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+                .build()
+            enterPictureInPictureMode(params)
+        } catch (_: Throwable) {
+            // OEMs without PiP support simply stay full screen.
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            if (::theatrePanel.isInitialized) theatrePanel.visibility = View.GONE
+            setControlsVisible(false)
+        } else {
+            setControlsVisible(true)
         }
     }
 
@@ -1324,6 +1371,71 @@ class NativePlayerActivity : Activity() {
             })
         }
 
+        // YouTube-style recommendations: the other broadcasters carrying this
+        // match, as tappable rows with a poster tile.
+        val others = indices.filter { it != displayServerIndex() }
+        if (others.isNotEmpty()) {
+            theatreBody.addView(theatreLabel("MORE CHANNELS & LINES"))
+            for (index in others) {
+                val label = serverLabel(index)
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(6), 0, dp(6))
+                }
+                val tile = TextView(this).apply {
+                    text = label.trim().take(1).uppercase(java.util.Locale.ROOT)
+                    textSize = 15f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.rgb(29, 25, 24))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(12).toFloat()
+                        setColor(Color.rgb(232, 130, 103))
+                    }
+                }
+                row.addView(tile, LinearLayout.LayoutParams(dp(56), dp(38)))
+                val column = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(12), 0, 0, 0)
+                }
+                column.addView(TextView(this).apply {
+                    text = label
+                    textSize = 13f
+                    setTextColor(Color.rgb(245, 239, 234))
+                    setTypeface(typeface, Typeface.BOLD)
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                })
+                column.addView(TextView(this).apply {
+                    text = "${safeLineFormat(index)} · tap to switch line"
+                    textSize = 10.5f
+                    setTextColor(Color.rgb(163, 152, 147))
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                })
+                row.addView(column, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                val switchBtn = TextView(this).apply {
+                    text = "▶"
+                    textSize = 12f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.rgb(232, 130, 103))
+                    setPadding(dp(10), dp(6), dp(10), dp(6))
+                }
+                row.addView(switchBtn, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ))
+                row.setOnClickListener {
+                    playServer(index)
+                    renderTheatre()
+                }
+                theatreBody.addView(row)
+            }
+            theatreBody.addView(TextView(this).apply {
+                text = " "
+                textSize = 4f
+            })
+        }
+
         // AI pick card, only when the app hands one over
         val pickText = intent.getStringExtra("pickText").orEmpty()
         if (pickText.isNotBlank()) {
@@ -1802,27 +1914,44 @@ class NativePlayerActivity : Activity() {
         }
     }
 
+    private fun statusBarHeightPx(): Int {
+        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
+    }
+
+    private fun isLandscapeNow(): Boolean =
+        resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
     private fun safeHideSystemBars() {
+        // Portrait behaves like YouTube: the status bar stays visible and the
+        // picture starts underneath it. Only full-screen landscape goes
+        // immersive.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 window.setDecorFitsSystemWindows(false)
                 window.insetsController?.let { c ->
-                    c.hide(
-                        WindowInsets.Type.statusBars() or
-                            WindowInsets.Type.navigationBars()
-                    )
-                    c.systemBarsBehavior =
-                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    if (isLandscapeNow()) {
+                        c.hide(
+                            WindowInsets.Type.statusBars() or
+                                WindowInsets.Type.navigationBars()
+                        )
+                        c.systemBarsBehavior =
+                            WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    } else {
+                        c.show(WindowInsets.Type.statusBars())
+                    }
                 }
             } else {
                 @Suppress("DEPRECATION")
-                window.decorView.systemUiVisibility =
+                window.decorView.systemUiVisibility = if (isLandscapeNow())
                     View.SYSTEM_UI_FLAG_FULLSCREEN or
                         View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
                         View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
                         View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
                         View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
                         View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                else
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             }
         } catch (_: Throwable) {
             // Fullscreen behavior is optional; playback should still continue.

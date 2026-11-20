@@ -87,6 +87,8 @@ jobs:
               '        <activity android:name=".NativePlayerActivity" '
               'android:screenOrientation="unspecified" '
               'android:configChanges="orientation|screenSize|keyboardHidden" '
+              'android:supportsPictureInPicture="true" '
+              'android:resizeableActivity="true" '
               'android:exported="false" android:theme="@style/LaunchTheme" />\n'
           )
           if 'NativePlayerActivity' not in s:

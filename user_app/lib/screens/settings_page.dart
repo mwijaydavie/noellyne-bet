@@ -8,6 +8,7 @@ import '../channel_library.dart';
 import '../design/noellyne_ui.dart';
 import '../noellyne_config.dart';
 import '../widgets/theme_mode_button.dart';
+import 'reminders_page.dart';
 
 /// Dedicated settings screen: profile, reminders, notifications, pinned teams,
 /// appearance, updates and data hygiene. No legacy branding anywhere.
@@ -276,6 +277,21 @@ class _SettingsPageState extends State<SettingsPage> {
                     padding: EdgeInsets.zero,
                     child: Column(
                       children: [
+                        ListTile(
+                          leading:
+                              const _TileIcon(Icons.notifications_active_rounded),
+                          title: const _TileTitle('Reminders'),
+                          subtitle: _TileSub(
+                            'Fixtures you asked to be nudged about',
+                          ),
+                          trailing: const Icon(Icons.chevron_right_rounded),
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const RemindersPage(),
+                            ),
+                          ),
+                        ),
+                        const Divider(height: 1, indent: 16, endIndent: 16),
                         ListTile(
                           leading: const _TileIcon(Icons.system_update_rounded),
                           title: const _TileTitle('Check for updates'),

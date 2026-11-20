@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -21,7 +22,9 @@ import 'channels_page.dart';
 import 'network_diagnostics_page.dart';
 import '../design/noellyne_ui.dart';
 import '../widgets/theme_mode_button.dart';
+import '../services/match_reminders.dart';
 import '../widgets/noellyne_dock_bar.dart';
+import 'reminders_page.dart';
 import 'settings_page.dart';
 import '../widgets/noellyne_lobby.dart';
 import '../widgets/premium_match_card.dart';
@@ -216,9 +219,32 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Timer? _reminderTick;
+
   @override
   void initState() {
     super.initState();
+    unawaited(MatchReminders.instance.load());
+    _reminderTick = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!mounted) return;
+      final due = MatchReminders.instance.takeDue();
+      if (due.isEmpty) return;
+      final first = due.first;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 8),
+            content: Text('🔔 ${first.title} starts ${first.countdown}'),
+            action: SnackBarAction(
+              label: 'Reminders',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const RemindersPage()),
+              ),
+            ),
+          ),
+        );
+    });
     _feed = LiveFeedController(_loadAndRememberMatches);
     // The saved public match list paints before a slow VPN/DNS connection
     // finishes; the real authoritative response then replaces it, even [].
@@ -1703,7 +1729,62 @@ class _HomePageState extends State<HomePage> {
               : 'WATCH LIVE')
           : 'NOT READY',
       onWatch: () => openPlayer(m),
+      reminded: MatchReminders.instance.isReminded(m['id'].toString()),
+      onRemind: kickoff == null
+          ? null
+          : () => _toggleReminder(m, kickoff),
     );
+  }
+
+  Future<void> _toggleReminder(
+    Map<String, dynamic> m,
+    DateTime kickoff,
+  ) async {
+    final id = m['id'].toString();
+    final lead = await MatchReminders.leadMinutes();
+    final home = englishKnownFootballName(
+      (m['home_team'] ?? 'Home').toString(),
+    );
+    final away = englishKnownFootballName(
+      (m['away_team'] ?? 'Away').toString(),
+    );
+    await MatchReminders.instance.toggle(
+      MatchReminder(
+        matchId: id,
+        title: '$home vs $away',
+        league: englishKnownFootballName(
+          (m['league'] ?? '').toString(),
+          kind: 'league',
+        ),
+        kickoff: kickoff,
+        leadMinutes: lead,
+      ),
+    );
+    if (!mounted) return;
+    final on = MatchReminders.instance.isReminded(id);
+    setState(() {});
+    HapticFeedback.lightImpact();
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            on
+                ? 'Reminder set — we will nudge you $lead min before kickoff'
+                : 'Reminder removed',
+          ),
+          action: on
+              ? SnackBarAction(
+                  label: 'View',
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const RemindersPage(),
+                    ),
+                  ),
+                )
+              : null,
+        ),
+      );
   }
 
   Widget _buildEmptyLobby(
@@ -1934,6 +2015,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _reminderTick?.cancel();
     _feed.dispose();
     _debounce?.cancel();
     _feedRefresh?.cancel();
