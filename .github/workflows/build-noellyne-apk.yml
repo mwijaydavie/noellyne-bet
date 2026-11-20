@@ -180,11 +180,28 @@ jobs:
 
       - name: Build release APK
         working-directory: user_app
+        env:
+          # Set these as repository Variables to repoint the build at the new
+          # Noellyne Supabase project / API without touching code.
+          CFG_SUPABASE_URL: ${{ vars.NOELLYNE_SUPABASE_URL }}
+          CFG_SUPABASE_KEY: ${{ vars.NOELLYNE_SUPABASE_ANON_KEY }}
+          CFG_API_BASE: ${{ vars.NOELLYNE_PUBLIC_API_BASE }}
         run: |
+          DEFINES=()
+          if [ -n "$CFG_SUPABASE_URL" ]; then
+            DEFINES+=("--dart-define=SUPABASE_URL=$CFG_SUPABASE_URL")
+          fi
+          if [ -n "$CFG_SUPABASE_KEY" ]; then
+            DEFINES+=("--dart-define=SUPABASE_ANON_KEY=$CFG_SUPABASE_KEY")
+          fi
+          if [ -n "$CFG_API_BASE" ]; then
+            DEFINES+=("--dart-define=PUBLIC_API_BASE=$CFG_API_BASE")
+          fi
           BUILD_NUMBER=$((40000 + GITHUB_RUN_NUMBER))
           flutter build apk --release \
             --build-name "$APK_VERSION" \
-            --build-number "$BUILD_NUMBER"
+            --build-number "$BUILD_NUMBER" \
+            "${DEFINES[@]}"
           ls -lh build/app/outputs/flutter-apk/
           mkdir -p /tmp/apk
           cp build/app/outputs/flutter-apk/app-release.apk \
