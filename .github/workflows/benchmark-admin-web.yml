@@ -1,0 +1,118 @@
+name: Compare NCA Admin and Viewer Web startup (Web only)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'admin_app/**'
+      - 'user_app/**'
+      - 'scripts/compare_admin_web_startup.mjs'
+      - '.github/workflows/benchmark-admin-web.yml'
+  workflow_dispatch:
+    inputs:
+      baseline_sha:
+        description: 'Exact pre-change commit (never origin/main)'
+        type: string
+        required: false
+        default: '3aad3985cd490793338102aba17e1896d1c74c70'
+
+permissions:
+  contents: read
+
+jobs:
+  compare-web:
+    name: Compare cold/warm first Flutter frames, P50/P95 and bytes
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      BASELINE_SHA: ${{ inputs.baseline_sha || '3aad3985cd490793338102aba17e1896d1c74c70' }}
+      NCA_BENCHMARK_SAMPLES: '10'
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate browser benchmark script
+        run: node --check scripts/compare_admin_web_startup.mjs
+
+      - name: Checkout immutable pre-change baseline
+        run: |
+          git cat-file -e "${BASELINE_SHA}^{commit}"
+          git worktree add --detach /tmp/nca-web-before "$BASELINE_SHA"
+          echo "Baseline: $(git -C /tmp/nca-web-before rev-parse HEAD)"
+          echo "Candidate: $(git rev-parse HEAD)"
+
+      - name: Build baseline Admin Web (never APK)
+        working-directory: /tmp/nca-web-before/admin_app
+        run: |
+          flutter create --platforms=web .
+          flutter pub get
+          flutter build web --release --base-href "/football-stream-app/admin/" --pwa-strategy=none --no-web-resources-cdn
+          python3 ../scripts/stamp_flutter_web_cache.py build/web baseline-web
+
+      - name: Build candidate Admin Web (never APK)
+        working-directory: admin_app
+        run: |
+          flutter create --platforms=web .
+          flutter pub get
+          flutter test --platform chrome test/admin_web_source_cache_test.dart test/admin_private_route_guard_test.dart
+          flutter build web --release --base-href "/football-stream-app/admin/" --pwa-strategy=none --no-web-resources-cdn
+          python3 ../scripts/stamp_flutter_web_cache.py build/web candidate-web
+
+      - name: Compare Admin Web P50/P95 (10 cold and 10 warm samples per build)
+        env:
+          NCA_WEB_BASE_PATH: /football-stream-app/admin/
+          NCA_BENCHMARK_OUTPUT: admin-startup-comparison.json
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          test -n "$CHROME_BIN"
+          node scripts/compare_admin_web_startup.mjs \
+            /tmp/nca-web-before/admin_app/build/web admin_app/build/web
+
+      - name: Build baseline Viewer Web (never APK)
+        working-directory: /tmp/nca-web-before/user_app
+        run: |
+          flutter pub get
+          flutter build web --release --base-href "/football-stream-app/" --pwa-strategy=none --no-web-resources-cdn
+          python3 ../scripts/stamp_flutter_web_cache.py build/web baseline-web
+
+      - name: Build candidate Viewer Web (never APK)
+        working-directory: user_app
+        run: |
+          flutter pub get
+          flutter build web --release --base-href "/football-stream-app/" --pwa-strategy=none --no-web-resources-cdn
+          python3 ../scripts/stamp_flutter_web_cache.py build/web candidate-web
+
+      - name: Compare Viewer Web P50/P95 (10 cold and 10 warm samples per build)
+        env:
+          NCA_WEB_BASE_PATH: /football-stream-app/
+          NCA_BENCHMARK_OUTPUT: viewer-startup-comparison.json
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          test -n "$CHROME_BIN"
+          node scripts/compare_admin_web_startup.mjs \
+            /tmp/nca-web-before/user_app/build/web user_app/build/web
+
+      - name: Retain Admin and Viewer benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nca-web-startup-comparison
+          path: |
+            admin-startup-comparison.json
+            viewer-startup-comparison.json
+          if-no-files-found: warn
+
+      # No Android generation, APK compilation, signing or release operations.

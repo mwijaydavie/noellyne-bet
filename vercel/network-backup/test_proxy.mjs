@@ -1,0 +1,375 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { GET as proxy } from './api/proxy.js';
+import { GET as logo } from './api/channel-logo.js';
+
+const origin = 'https://backup.example';
+
+test('team logos use the cached Worker image without forwarding caller credentials', async () => {
+  await withFetch(async (url, init) => {
+    assert.equal(String(url), 'https://football-api.nyeinchanaung.us.ci/team-logos/2964');
+    assert.equal(init.headers.Authorization, undefined);
+    assert.equal(init.redirect, 'error');
+    return new Response(Buffer.from('89504e470d0a1a0a', 'hex'), {headers:{'Content-Type':'image/png'}});
+  }, async () => {
+    const response=await logo(new Request(origin+'/api/channel-logo?team=2964&url=https://other.example', {headers:{Authorization:'Bearer fixture'}}));
+    assert.equal(response.status,200);
+    assert.equal(response.headers.get('Content-Type'),'image/png');
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'),'*');
+    assert.equal((await response.arrayBuffer()).byteLength,8);
+  });
+});
+
+test('team logos reject arbitrary identifiers and non-image upstream content', async () => {
+  let calls=0;
+  await withFetch(async()=>{calls++;return new Response('<html>unavailable</html>');}, async()=>{
+    assert.equal((await logo(new Request(origin+'/api/channel-logo?team=https://other.example'))).status,404);
+    assert.equal(calls,0);
+    assert.equal((await logo(new Request(origin+'/api/channel-logo?team=2964'))).status,502);
+    assert.equal(calls,1);
+  });
+});
+
+test('Live 2 GET and POST routes replace Totalsportek without opening arbitrary providers', async () => {
+  const calls=[];
+  await withFetch(async (url,init) => {
+    calls.push({path:new URL(url).pathname,method:init.method});
+    return Response.json({ok:true,streams:[]});
+  }, async () => {
+    for (const [action,method] of [['matches','GET'],['streams','POST']]) {
+      const response=await proxy(new Request(origin+'/sources/repository/'+action,
+        method==='POST'?{method,body:'{}'}:{}));
+      assert.equal(response.status,200);await response.body.cancel();
+    }
+    assert.equal((await proxy(new Request(origin+'/sources/unapproved-provider/matches'))).status,404);
+    assert.equal((await proxy(new Request(origin+'/sources/totalsportek/matches'))).status,404);
+  });
+  assert.deepEqual(calls,[{path:'/sources/repository/matches',method:'GET'},
+    {path:'/sources/repository/streams',method:'POST'}]);
+});
+const backend = 'https://woggzixprvyjnfjzsglz.supabase.co';
+test('Arena Koora match and stream requests retain the VPN-free public route', async () => {
+  const calls=[];
+  await withFetch(async (url,init)=>{
+    calls.push({path:new URL(url).pathname,method:init.method});
+    return Response.json({ok:true,streams:[]});
+  },async()=>{
+    for(const [action,method] of [['matches','GET'],['streams','POST']]) {
+      const response=await proxy(new Request(origin+'/sources/arena/'+action,
+        method==='POST'?{method,body:'{}'}:{}));
+      assert.equal(response.status,200);await response.body.cancel();
+    }
+  });
+  assert.deepEqual(calls,[{path:'/sources/arena/matches',method:'GET'},
+    {path:'/sources/arena/streams',method:'POST'}]);
+});
+const worker = 'https://football-api.nyeinchanaung.us.ci';
+
+test('private channel-source-sync uses the authenticated Admin gateway',async()=>{
+ let called=false;
+ await withFetch(async(url,init)=>{
+  called=true;assert.equal(String(url),worker+'/admin/functions/channel-source-sync');
+  assert.equal(init.headers.get('Authorization'),'Bearer operator-fixture');return Response.json({ok:true});
+ },async()=>{
+  const path=origin+'/admin/functions/channel-source-sync';
+  assert.equal((await proxy(new Request(path,{method:'POST',body:'{}'}))).status,401);
+  const result=await proxy(new Request(path,{method:'POST',headers:{Authorization:'Bearer operator-fixture'},body:'{}'}));
+  assert.equal(result.status,200);await result.body.cancel();assert(called);
+ });
+});
+
+async function withFetch(stub, action) {
+  const previous = globalThis.fetch;
+  globalThis.fetch = stub;
+  try { return await action(); } finally { globalThis.fetch = previous; }
+}
+
+test('Admin health checks real Supabase Auth with a caller-supplied public key', async () => {
+  await withFetch(async (url, init) => {
+    assert.equal(String(url), backend + '/auth/v1/health');
+    assert.equal(init.headers.get('apikey'), 'test-public-key');
+    return Response.json({name: 'GoTrue'});
+  }, async () => {
+    const response = await proxy(new Request(origin + '/backend-health', {
+      headers: {'apikey': 'test-public-key'},
+    }));
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).name, 'GoTrue');
+  });
+});
+
+test('Auth credentials, user JWTs, REST writes and count headers pass through unchanged', async () => {
+  const seen = [];
+  await withFetch(async (url, init) => {
+    seen.push({ url: String(url), method: init.method, headers: init.headers,
+      body: init.body ? await new Response(init.body).text() : null });
+    if (String(url).includes('/auth/')) return Response.json({ access_token: 'test-user-jwt' });
+    return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json', 'Content-Range': '0-0/12' } });
+  }, async () => {
+    const loginBody = JSON.stringify({ email: 'test@example.invalid', password: 'fixture-password' });
+    const login = await proxy(new Request(origin + '/api/proxy?route=auth/v1/token&grant_type=password', {
+      method: 'POST', headers: { apikey: 'test-publishable-key', 'Content-Type': 'application/json', Cookie: 'private-cookie' }, body: loginBody,
+    }));
+    assert.equal((await login.json()).access_token, 'test-user-jwt');
+    assert.equal(seen[0].url, backend + '/auth/v1/token?grant_type=password');
+    assert.equal(seen[0].body, loginBody);
+    assert.equal(seen[0].headers.get('apikey'), 'test-publishable-key');
+    assert.equal(seen[0].headers.has('Cookie'), false);
+
+    const write = await proxy(new Request(origin + '/api/proxy?route=rest/v1/matches&ncaPath=matches&id=eq.test&path=eq.fixture', {
+      method: 'PATCH', headers: { Authorization: 'Bearer test-user-jwt', apikey: 'test-publishable-key', Prefer: 'return=representation', 'Content-Type': 'application/json' },
+      body: '{"is_featured":true}',
+    }));
+    assert.equal(seen[1].method, 'PATCH');
+    assert.equal(seen[1].url, backend + '/rest/v1/matches?id=eq.test&path=eq.fixture');
+    assert.equal(seen[1].headers.get('Authorization'), 'Bearer test-user-jwt');
+    assert.equal(seen[1].headers.get('Prefer'), 'return=representation');
+    assert.equal(write.headers.get('Content-Range'), '0-0/12');
+    assert.equal(write.headers.get('Cache-Control'), 'no-store');
+    assert.match(write.headers.get('Access-Control-Expose-Headers'), /Content-Range/);
+    await write.body.cancel();
+  });
+});
+
+test('Admin authorization stays with the original Worker and unsupported proxy targets are rejected', async () => {
+  let requests = 0;
+  await withFetch(async (url, init) => {
+    requests += 1;
+    assert.equal(String(url), worker + '/admin/functions/football-fixtures');
+    assert.equal(init.headers.get('Authorization'), 'Bearer non-admin-fixture');
+    return Response.json({ error: 'Admin access required.' }, { status: 403 });
+  }, async () => {
+    const unauthenticated = await proxy(new Request(origin + '/admin/functions/football-fixtures', { method: 'POST', body: '{}' }));
+    assert.equal(unauthenticated.status, 401);
+    assert.equal(requests, 0);
+    const unauthorized = await proxy(new Request(origin + '/admin/functions/football-fixtures', {
+      method: 'POST', headers: { Authorization: 'Bearer non-admin-fixture' }, body: '{}',
+    }));
+    assert.equal(unauthorized.status, 403);
+    await unauthorized.body.cancel();
+    for (const path of ['/api/proxy?route=https://evil.invalid/', '/api/proxy?route=p/token/../../auth/v1/token', '/api/proxy?route=rest/v1/matches&route=p/token', '/functions/v1/unlisted-function']) {
+      const response = await proxy(new Request(origin + path));
+      assert.ok([400, 404].includes(response.status), path);
+    }
+    assert.equal(requests, 1);
+  });
+});
+
+test('TV schedule metadata forwards through Vercel without requiring VPN access to the client Worker', async () => {
+  await withFetch(async (url, init) => {
+    assert.equal(String(url), worker + '/tv-schedule?date=2026-11-01&days=8');
+    assert.equal(init.method, 'GET');
+    assert.equal(init.headers.has('Authorization'), false);
+    return Response.json({ channels: [], channel_count: 0 });
+  }, async () => {
+    const response = await proxy(new Request(origin +
+      '/tv-schedule?date=2026-11-01&days=8'));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { channels: [], channel_count: 0 });
+  });
+});
+
+test('Channel routes forward to the protected Worker', async () => {
+  const seen = [];
+  await withFetch(async (url, init) => {
+    seen.push({url: String(url), method: init.method});
+    return Response.json({ok: true});
+  }, async () => {
+    const catalog = await proxy(new Request(origin + '/api/proxy?route=channels'));
+    assert.equal(catalog.status, 200);
+    const streams = await proxy(new Request(origin +
+      '/api/proxy?route=channels/12345678-1234-1234-1234-123456789012/streams'));
+    assert.equal(streams.status, 200);
+    assert.equal(seen[0].url, worker + '/channels');
+    assert.equal(seen[1].method, 'GET');
+  });
+});
+
+test('Protected match metadata keeps the Worker playback origin; legacy Vercel range fallback remains intact', async () => {
+  await withFetch(async (url, init) => {
+    assert.equal(init.headers.has('Authorization'), false);
+    assert.equal(init.headers.has('apikey'), false);
+    if (String(url).includes('/matches/')) return Response.json({
+      ok: true, streams: [{ stream_url: worker + '/p/test-token/manifest.mpd' }],
+    });
+    assert.equal(init.headers.get('Range'), 'bytes=0-3');
+    return new Response(Uint8Array.from([0, 255, 1, 128]), { status: 206, headers: { 'Content-Type': 'video/mp4', 'Content-Range': 'bytes 0-3/100', 'Accept-Ranges': 'bytes' } });
+  }, async () => {
+    const lines = await proxy(new Request(origin + '/matches/test/streams', { headers: { Authorization: 'Bearer private-fixture', apikey: 'private-fixture' } }));
+    const streamUrl = (await lines.json()).streams[0].stream_url;
+    assert.equal(streamUrl, worker + '/p/test-token/manifest.mpd');
+    assert.ok(!streamUrl.startsWith(origin + '/p/'), 'Video must not loop through Vercel');
+    const data = await proxy(new Request(origin + '/p/test-token/segment.mp4', { headers: { Range: 'bytes=0-3' } }));
+    assert.equal(data.status, 206);
+    assert.equal(data.headers.get('Content-Range'), 'bytes 0-3/100');
+    assert.deepEqual(new Uint8Array(await data.arrayBuffer()), Uint8Array.from([0, 255, 1, 128]));
+  });
+});
+
+test('Channel and source metadata preserve canonical protected Worker URLs', async () => {
+  const channel = '12345678-1234-1234-1234-123456789012';
+  await withFetch(async (url) => {
+    assert.equal(new URL(String(url)).origin, worker);
+    return Response.json({
+      ok: true, streams: [{ stream_url: worker + '/p/signed-session' }],
+    });
+  }, async () => {
+    for (const path of [
+      '/channels/' + channel + '/streams',
+      '/sources/soco/streams',
+    ]) {
+      const isSource = path.startsWith('/sources/');
+      const response = await proxy(new Request(origin + path, isSource
+        ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+        : {}));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).streams[0].stream_url, worker + '/p/signed-session');
+    }
+  });
+});
+
+test('Explicit Vercel HLS and DASH fallbacks keep segment URLs on Vercel', async () => {
+  const url = worker + '/p/session/segment-00001.m4s';
+  for (const [type, body] of [
+    ['application/dash+xml', '<MPD><BaseURL>' + url + '</BaseURL></MPD>'],
+    ['application/vnd.apple.mpegurl', '#EXTM3U\\n' + url + '\\n'],
+  ]) {
+    await withFetch(async () => new Response(body, { headers: { 'Content-Type': type } }), async () => {
+      const response = await proxy(new Request(origin + '/p/session/playlist'));
+      assert.equal(response.status, 200);
+      const content = await response.text();
+      assert.ok(!content.includes(url));
+      assert.ok(content.includes(origin + '/p/session/segment-00001.m4s'));
+    });
+  }
+});
+
+test('Metadata HEAD works with a GET-only upstream and has no response body', async () => {
+  await withFetch(async (_, init) => {
+    assert.equal(init.method, 'GET');
+    return Response.json({ ok: true });
+  }, async () => {
+    const response = await proxy(new Request(origin + '/health', { method: 'HEAD' }));
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), '');
+  });
+});
+
+test('The header timeout does not cut a healthy continuous media stream after 20 seconds', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal;
+  let stream;
+  await withFetch(async (_, init) => {
+    signal = init.signal;
+    return new Response(new ReadableStream({ start(controller) { stream = controller; } }), { headers: { 'Content-Type': 'video/x-flv' } });
+  }, async () => {
+    const response = await proxy(new Request(origin + '/p/test-token/video.flv'));
+    t.mock.timers.tick(30000);
+    assert.equal(signal.aborted, false);
+    stream.enqueue(Uint8Array.from([70, 76, 86]));
+    stream.close();
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), Uint8Array.from([70, 76, 86]));
+  });
+});
+
+test('Metadata body stalls time out and public service probes cannot claim an OAuth connection', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const logged = [];
+  t.mock.method(console, 'error', (...args) => logged.push(args));
+  await withFetch(async (_, init) => new Response(new ReadableStream({
+    start(controller) { init.signal.addEventListener('abort', () => controller.error(new DOMException('fixture-token', 'AbortError'))); },
+  }), { headers: { 'Content-Type': 'application/json' } }), async () => {
+    const pending = proxy(new Request(origin + '/matches'));
+    await Promise.resolve(); await Promise.resolve();
+    t.mock.timers.tick(20000);
+    const response = await pending;
+    assert.equal(response.status, 504);
+    assert.equal(JSON.stringify(logged).includes('fixture-token'), false);
+  });
+  const targets = [];
+  await withFetch(async (url) => {
+    targets.push(String(url));
+    return new Response(null, { status: String(url).includes('googleapis') ? 401 : 200 });
+  }, async () => {
+    const response = await proxy(new Request(origin + '/service-health'));
+    const result = await response.json();
+    assert.equal(result.scope, 'service-reachability-via-vercel');
+    assert.equal(result.results.find(row => row.service === 'google-drive').http, 401);
+    assert.equal(targets.length, 4);
+    assert.equal(JSON.stringify(result).includes('connected'), false);
+  });
+});
+
+test('Browser Run scanner proxy preserves Admin authentication',async()=>{
+  const calls=[];
+  await withFetch(async(url,init)=>{
+    calls.push({url:String(url),auth:init.headers.get('Authorization')});
+    return Response.json({error:'Browser disabled'}, {status:503});
+  },async()=>{
+    const unauth=await proxy(new Request(origin+'/admin/stream-detect-browser',{
+      method:'POST',body:'{}',
+    }));
+    assert.equal(unauth.status,401);
+    const result=await proxy(new Request(origin+'/admin/stream-detect-browser',{
+      method:'POST',headers:{Authorization:'Bearer test-authenticated-admin'},
+      body:JSON.stringify({url:'https://video.example.org/watch',authorized:true}),
+    }));
+    assert.equal(result.status,503);
+    assert.deepEqual(calls,[{
+      url:worker+'/admin/stream-detect-browser',
+      auth:'Bearer test-authenticated-admin',
+    }]);
+  });
+});
+
+
+test('removed source aliases cannot reach a provider through the public proxy', async () => {
+  const seen=[];
+  await withFetch(async(url,init)=>{seen.push(String(url));return Response.json({ok:true,matches:[]});}, async()=>{
+    for(const source of ['xoilac','camel']){
+      const response=await proxy(new Request(origin+'/sources/'+source+'/matches'));
+      assert.equal(response.status,404);
+    }
+  });
+  assert.equal(seen.length,0);
+});
+
+
+test('Telegram connector forwards only an Admin bearer session to the trusted Supabase Edge Function', async () => {
+  const calls = [];
+  await withFetch(async (url, init) => {
+    calls.push({url:String(url),auth:init.headers.get('Authorization'),apiKey:init.headers.get('apikey')});
+    return Response.json({error:'Admin role required'}, {status:403});
+  }, async () => {
+    const result = await proxy(new Request(origin + '/functions/v1/telegram-connect', {
+      method:'POST',
+      headers: {
+        Authorization:'Bearer admin-session-fixture',
+        apikey:'public-key-fixture',
+        'Content-Type':'application/json',
+      }, body:'{}',
+    }));
+    assert.equal(result.status,403);
+    await result.body.cancel();
+  });
+  assert.deepEqual(calls,[{
+    url: backend + '/functions/v1/telegram-connect',
+    auth:'Bearer admin-session-fixture',apiKey:'public-key-fixture',
+  }]);
+  await withFetch(async () => { throw new Error('Unexpected upstream fetch'); }, async () => {
+    const response=await proxy(new Request(origin + '/functions/v1/unapproved-telegram-function', {
+      method:'POST',body:'{}',
+    }));
+    assert.equal(response.status,404);
+  });
+});
+
+test('the relay uses its server identity instead of forwarding a rejected client fingerprint',async()=>{
+ await withFetch(async(url,init)=>{
+  assert.equal(init.headers.get('User-Agent'),'NCA-Relay/1.0');
+  return Response.json({ok:true});
+ },async()=>{
+  const r=await proxy(new Request(origin+'/health',{headers:{'User-Agent':'Python-urllib/3.12'}}));
+  assert.equal(r.status,200);await r.body.cancel();
+ });
+});

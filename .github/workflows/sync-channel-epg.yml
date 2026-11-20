@@ -1,0 +1,58 @@
+name: Refresh verified channel EPG
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 */6 * * *'
+  push:
+    branches: [main]
+    paths: ['scripts/channel_epg.py', '.github/workflows/sync-channel-epg.yml']
+permissions:
+  contents: write
+concurrency:
+  group: verified-channel-epg
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test EPG identity and freshness checks
+        run: python3 -m unittest discover -s scripts -p 'test_channel_epg.py'
+      - name: Read public channel bindings
+        run: |
+          # A paused Vercel team must not stop GitHub's scheduled EPG refresh.
+          # Only public station bindings are read; no playback configuration.
+          catalog_ready=false
+          for attempt in $(seq 1 4); do
+            for origin in https://football-api.nyeinchanaung.us.ci https://football-api.nyeinchanaung.ccwu.cc https://nca-network-backup-test.vercel.app; do
+              if curl --fail --silent --show-error --max-time 20 "$origin/channels?fresh=1" -o /tmp/nca-channel-catalog.json &&
+                python3 -c 'import json; p=json.load(open("/tmp/nca-channel-catalog.json")); assert p.get("ok") and p.get("channels") and all("epg_source" in c for c in p["channels"])'; then
+                catalog_ready=true
+                break
+              fi
+            done
+            if [ "$catalog_ready" = true ]; then break; fi
+            sleep 10
+          done
+          if [ "$catalog_ready" != true ]; then exit 1; fi
+          git fetch origin feed:refs/remotes/origin/feed
+          git worktree add /tmp/nca-epg-feed origin/feed
+      - name: Refresh public programme metadata
+        run: |
+          python3 scripts/channel_epg.py --catalog /tmp/nca-channel-catalog.json --cache-dir /tmp/nca-public-epg-cache --previous /tmp/nca-epg-feed/public/channel-epg.json --out /tmp/nca-channel-epg.json
+      - name: Publish EPG snapshot
+        working-directory: /tmp/nca-epg-feed
+        run: |
+          mkdir -p public
+          cp /tmp/nca-channel-epg.json public/channel-epg.json
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add public/channel-epg.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Refresh verified channel programme metadata"
+          for attempt in 1 2 3; do
+            git pull --rebase origin feed
+            if git push origin HEAD:feed; then exit 0; fi
+          done
+          exit 1

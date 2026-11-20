@@ -1,0 +1,1312 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
+
+const htmlPath = fileURLToPath(new URL('../user_app/web/index.html', import.meta.url));
+const html = readFileSync(htmlPath, 'utf8');
+const playerScript = html.match(/<script>\s*(\(\(\) => \{[\s\S]*?\}\)\(\);)\s*<\/script>/)?.[1];
+assert.ok(playerScript, 'The shared browser player must remain extractable from its HTML');
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+async function flush() {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+}
+
+function createHarness({ ios = true, streaming = true, webCrypto = true, nativeHls = true, plans = {}, attachGate, engineLoads, pageBase } = {}) {
+  let clock = 0, nextTimer = 1;
+  const timers = new Map(), elements = new Map();
+  const events = [], loads = [], plays = [], players = [], flvPlayers = [], logs = [], scripts = [];
+
+  class Element {
+    constructor(id = '') {
+      this.id = id; this.children = []; this.style = {}; this.dataset = {};
+      this.listeners = new Map(); this.classes = new Set(); this.attributes = {};
+      this._text = ''; this._html = ''; this._src = '';
+      this.classList = {
+        add: (...names) => names.forEach(name => this.classes.add(name)),
+        remove: (...names) => names.forEach(name => this.classes.delete(name)),
+        contains: name => this.classes.has(name),
+        toggle: (name, force) => {
+          if (force !== undefined) { if (force) this.classes.add(name); else this.classes.delete(name); return !!force; }
+          if (this.classes.has(name)) { this.classes.delete(name); return false; }
+          this.classes.add(name); return true;
+        },
+      };
+    }
+    set className(value) { this.classes = new Set(value.split(/\s+/).filter(Boolean)); }
+    get className() { return [...this.classes].join(' '); }
+    set textContent(value) { this._text = String(value); this.children = []; }
+    get textContent() { return this._text; }
+    set innerHTML(value) { this._html = String(value); this.children = []; }
+    get innerHTML() { return this._html; }
+    set src(value) { this._src = value; this.playUrl = value; }
+    get src() { return this._src; }
+    appendChild(child) { this.children.push(child); return child; }
+    remove() { this.removed = true; }
+    setAttribute(name, value) { this.attributes[name] = value; }
+    removeAttribute(name) { delete this.attributes[name]; if (name === 'src') this.src = ''; }
+    addEventListener(type, fn, options = {}) {
+      const rows = this.listeners.get(type) || [];
+      rows.push({ fn, once: !!options.once }); this.listeners.set(type, rows);
+    }
+    removeEventListener(type, fn) {
+      this.listeners.set(type, (this.listeners.get(type) || []).filter(row => row.fn !== fn));
+    }
+    emit(type, properties = {}) {
+      const event = { type, target: this, stopPropagation() {}, ...properties };
+      const rows = [...(this.listeners.get(type) || [])];
+      for (const row of rows) {
+        if (row.once) this.removeEventListener(type, row.fn);
+        row.fn(event);
+      }
+      this[`on${type}`]?.(event);
+    }
+    click() { this.emit('click'); }
+  }
+
+  const ids = [...html.matchAll(/id="((?:football|nca)-[^"]+)"/g)].map(match => match[1]);
+  for (const id of ids) elements.set(id, new Element(id));
+  const video = elements.get('football-player-video');
+  const overlay = elements.get('football-player-overlay');
+  const message = elements.get('football-player-message');
+  elements.get('football-player-menu').classList.add('hidden');
+  video.paused = true;
+  video.canPlayType = mime => nativeHls && mime === 'application/vnd.apple.mpegurl' ? 'probably' : '';
+  video.pause = () => { video.paused = true; video.emit('pause'); };
+  video.load = () => {};
+  video.play = () => {
+    const url = video.playUrl;
+    plays.push(url);
+    const plan = plans[url] || {};
+    if (plan.playError) return Promise.reject(plan.playError);
+    video.ended = false;
+    video.paused = false;
+    if (!plan.noPlaying) video.emit('playing');
+    return Promise.resolve();
+  };
+
+  class Player {
+    static isBrowserSupported() { return streaming; }
+    constructor() { this.listeners = new Map(); this.configurations = []; this.destroyed = false; players.push(this); }
+    async attach(media) {
+      this.video = media;
+      if (attachGate && players.length === 1) await attachGate.promise;
+    }
+    configure(config) { this.config = config; this.configurations.push(config); }
+    addEventListener(name, fn) { this.listeners.set(name, fn); }
+    async load(url, start, mime) {
+      this.url = url; loads.push({ url, start, mime });
+      const plan = plans[url] || {};
+      if (plan.loadError) {
+        if (plan.emitError) this.listeners.get('error')?.({ detail: plan.loadError });
+        throw plan.loadError;
+      }
+      if (plan.loadGate) await plan.loadGate.promise;
+      this.video.playUrl = url;
+    }
+    getVariantTracks() { return plans[this.url]?.tracks || []; }
+    selectVariantTrack(track) { this.selectedTrack = track; }
+    drmInfo() { return this.drmState || null; }
+    async destroy() { this.destroyed = true; }
+  }
+  const shaka = { Player, polyfill: { installAll() {} } };
+  const mpegts = {
+    Events: { ERROR: 'error' },
+    isSupported: () => streaming,
+    createPlayer(source, config) {
+      const player = {
+        source, config, listeners: new Map(),
+        on(name, fn) { this.listeners.set(name, fn); },
+        attachMediaElement(media) { this.video = media; },
+        load() { this.video.playUrl = source.url; },
+        pause() {}, unload() {}, detachMediaElement() {}, destroy() {},
+      };
+      flvPlayers.push(player);
+      return player;
+    },
+  };
+  const document = new Element('document');
+  document.getElementById = id => elements.get(id);
+  document.createElement = () => new Element();
+  document.head = new Element('head');
+  document.baseURI = pageBase;
+  document.documentElement = {clientWidth:390,clientHeight:844};
+  document.fullscreenElement = null;
+  document.exitFullscreen = async () => {
+    document.fullscreenElement = null;
+    document.emit('fullscreenchange');
+  };
+  overlay.requestFullscreen = async () => {
+    document.fullscreenElement = overlay;
+    document.emit('fullscreenchange');
+  };
+  const window = new Element('window');
+  window.crypto = webCrypto ? { subtle: {} } : {};
+  window.performance = { now: () => clock };
+  window.posthog = { capture(name, properties) { events.push({ name, properties }); } };
+  if (!engineLoads) window.shaka = shaka;
+  if (!engineLoads) window.mpegts = mpegts;
+  if (streaming) window.ManagedMediaSource = class {};
+  const context = vm.createContext({
+    window, document, shaka, mpegts, URL,
+    ...(pageBase ? { location: new URL(pageBase) } : {}),
+    navigator: { userAgent: ios ? 'iPhone Safari' : 'Chrome Android', platform: ios ? 'iPhone' : 'Linux', maxTouchPoints: 1 },
+    btoa: value => Buffer.from(value, 'binary').toString('base64'),
+    console: { error: (...args) => logs.push(args) },
+    setTimeout(fn, delay = 0) { const id = nextTimer++; timers.set(id, { at: clock + delay, fn }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+  });
+  document.head.appendChild = script => {
+    scripts.push(script);
+    const result = engineLoads?.[scripts.length - 1];
+    Promise.resolve().then(() => {
+      if (result === 'hang') return;
+      if (result === 'fail') script.onerror?.();
+      else {
+        if (script.src.includes('mpegts')) window.mpegts = mpegts;
+        else window.shaka = shaka;
+        script.onload?.();
+      }
+    });
+    return script;
+  };
+  vm.runInContext(playerScript, context, { filename: htmlPath });
+
+  return {
+    video, overlay, message, elements, events, loads, plays, players, flvPlayers, logs, scripts, document, window,
+    async open(sources, index = 0, match = 'test-match', session = 'test-session') {
+      await window.openFootballPlayer(JSON.stringify(sources), index, 'Test match', match, session);
+      await flush();
+    },
+    update(sources, session = 'test-session') {
+      window.updateFootballPlayerSources(JSON.stringify(sources), session);
+    },
+    async choose(index) {
+      elements.get('football-player-server').click();
+      elements.get('football-player-menu-items').children[index].click();
+      await flush();
+    },
+    async close() { elements.get('football-player-close').click(); await flush(); },
+    async tick(duration) {
+      const end = clock + duration;
+      while (true) {
+        const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next) break;
+        const [id, timer] = next;
+        timers.delete(id); clock = timer.at; timer.fn(); await flush();
+      }
+      clock = end; await flush();
+    },
+  };
+}
+
+const source = (type, name = type) => ({
+  streamType: type, label: name, url: `https://api.example.invalid/p/test-${name}`,
+});
+const tests = [];
+function test(name, run) { tests.push({ name, run }); }
+const failures = h => h.events.filter(event => event.name === 'playback line failed');
+
+const routedSource = () => ({...source('hls','Sports'),
+  url:'https://football-api.nyeinchanaung.us.ci/p/opaque/index.m3u8',
+  routeFallbackUrl:'https://nca25-live-relay.vercel.app/p/opaque/index.m3u8'});
+
+test('healthy Cloudflare playback never loads Vercel media', async () => {
+  const line=routedSource(), h=createHarness({ios:false});
+  await h.open([line]);
+  h.video.currentTime=4;h.video.emit('timeupdate');await h.tick(5000);
+  assert.deepEqual(h.loads.map(x=>x.url),[line.url]);
+  assert.deepEqual(h.plays,[line.url]);
+  assert.equal(h.events.filter(e=>e.name==='playback route fallback').length,0);
+});
+test('failed primary changes route once before abandoning the real line', async () => {
+  const line=routedSource(), second=source('hls','second');
+  const h=createHarness({ios:false,plans:{[line.url]:{loadError:{category:1,code:1002}}}});
+  await h.open([line,second]);
+  assert.deepEqual(h.plays,[line.routeFallbackUrl]);assert.equal(failures(h).length,0);
+  assert.equal(h.events.filter(e=>e.name==='playback route fallback').length,1);
+  h.players.at(-1).listeners.get('error')({detail:{category:6,code:6001}});
+  await h.tick(1000);
+  assert.deepEqual(h.plays,[line.routeFallbackUrl,second.url]);
+  assert.equal(h.loads.filter(x=>x.url===line.routeFallbackUrl).length,1);
+});
+test('blocked primary has a deadline and late completion cannot restart it', async () => {
+  const line=routedSource(),gate=deferred();
+  const h=createHarness({ios:false,plans:{[line.url]:{loadGate:gate}}});
+  const opening=h.open([line]);await flush();await h.tick(7900);
+  assert.deepEqual(h.plays,[]);await h.tick(200);
+  assert.deepEqual(h.plays,[line.routeFallbackUrl]);
+  gate.resolve();await opening;
+  assert.deepEqual(h.plays,[line.routeFallbackUrl]);
+  await h.choose(0);
+  assert.equal(h.loads.at(-1).url,line.routeFallbackUrl);
+  await h.close();await h.open([line]);
+  assert.equal(h.loads.at(-1).url,line.url,'a new session retries Cloudflare');
+});
+test('closing during a blocked primary never starts the relay later', async () => {
+  const line=routedSource(),gate=deferred();
+  const h=createHarness({ios:false,plans:{[line.url]:{loadGate:gate}}});
+  const opening=h.open([line]);await flush();await h.close();await h.tick(20000);
+  gate.resolve();await opening;
+  assert.deepEqual(h.loads.map(x=>x.url),[line.url]);assert.deepEqual(h.plays,[]);
+});
+test('a failed active route reconnects the same line and ignores the old decoder', async () => {
+  const line=routedSource(),h=createHarness({ios:false});
+  await h.open([line]);
+  const old=h.players[0];
+  old.listeners.get('error')({detail:{category:6,code:6001}});await flush();
+  assert.deepEqual(h.plays,[line.url,line.routeFallbackUrl]);
+  old.listeners.get('error')({detail:{category:6,code:6001}});await flush();
+  assert.equal(h.loads.length,2);
+  assert.equal(failures(h).length,0);
+});
+
+test('viewer home keeps web player hidden until WATCH is explicitly requested', async () => {
+  // Regression: portrait @media once set display:flex even when .open was absent.
+  // It obscured the entire Flutter home on a cold Chrome/Safari page load.
+  const css=html.match(/<style id="nca-reference-player-style">([\s\S]*?)<\/style>/)?.[1]||'';
+  assert.match(html, /id="football-player-overlay" aria-hidden="true"/);
+  assert.match(html, /#football-player-overlay\{display:none;/);
+  assert.match(css, /#football-player-overlay\.open:not\(\.ios-native-mode\)\s*\{\s*display:flex/);
+  assert.match(css, /#football-player-overlay\[aria-hidden="true"\]\s*\{\s*display:none!important/);
+  assert.doesNotMatch(css, /#football-player-overlay:not\(\.ios-native-mode\)\s*\{\s*display:flex/);
+  const h = createHarness({ ios: false });
+  assert.equal(h.overlay.classList.contains('open'), false);
+  await h.open([source('hls')]);
+  assert.equal(h.overlay.classList.contains('open'), true);
+  assert.equal(h.overlay.attributes['aria-hidden'], 'false');
+  await h.close();
+  assert.equal(h.overlay.classList.contains('open'), false);
+  assert.equal(h.overlay.attributes['aria-hidden'], 'true');
+});
+
+test('settings show accessible Back and Close; closing never stops video', async () => {
+  const h=createHarness({ios:false});
+  await h.open([source('hls','Live 2')]);
+  const panel=h.elements.get('football-player-menu');
+  const back=h.elements.get('football-player-menu-back');
+  const close=h.elements.get('football-player-menu-close');
+  assert.equal(h.video.paused,false);
+  h.elements.get('nca-player-settings').click();
+  assert.equal(panel.classList.contains('hidden'),false);
+  assert.equal(panel.classList.contains('settings-open'),true);
+  assert.equal(h.elements.get('football-player-menu-title').textContent,'Player settings');
+  const tabs=h.elements.get('football-player-menu-items').children[0];
+  tabs.children[1].click(); // Audio
+  assert.equal(panel.classList.contains('hidden'),false);
+  back.click(); // Back to primary Video settings
+  assert.equal(panel.classList.contains('hidden'),false);
+  const videoTabs=h.elements.get('football-player-menu-items').children[0];
+  assert.match(videoTabs.children[0].className,/selected/);
+  back.click(); // Back from top-level Settings returns to the video
+  assert.equal(panel.classList.contains('hidden'),true);
+  h.elements.get('nca-player-settings').click();
+  close.click();
+  assert.equal(panel.classList.contains('hidden'),true);
+  assert.equal(h.overlay.classList.contains('open'),true);
+  assert.equal(h.video.paused,false);
+});
+
+test('all Safari web players have fullscreen in header with Fit and Rotate', async () => {
+  const css=html.match(/<style id="nca-reference-player-style">([\s\S]*?)<\/style>/)?.[1]||'';
+  const header=html.slice(
+    html.indexOf('<div id="football-player-topbar">'),
+    html.indexOf('<div id="football-player-menu"')
+  );
+  const frame=html.slice(
+    html.indexOf('<div id="football-player-video-frame">'),
+    html.indexOf('<div id="football-player-custom-controls"')
+  );
+  assert.ok(header.indexOf('id="football-player-fit"')>=0);
+  assert.ok(header.indexOf('id="football-player-rotate"')>=0);
+  assert.ok(header.indexOf('id="football-player-ios-fullscreen"')>header.indexOf('id="football-player-rotate"'));
+  assert.doesNotMatch(frame,/id="football-player-ios-fullscreen"/);
+  assert.match(css,/#football-player-overlay\.ios-native-mode #football-player-video\{\s*height:100%!important/);
+  assert.match(css,/#football-player-overlay\.ios-native-mode #football-player-ios-fullscreen\{\s*display:inline-flex!important/);
+  assert.match(css,/#football-player-overlay\.open:not\(\.ios-native-mode\)\{\s*padding-top:0;justify-content:flex-start!important/);
+  assert.match(css,/#football-player-overlay\[aria-hidden="true"\]\{\s*display:none!important/);
+});
+
+test('top aligned portrait player uses Fit by default and cycles Fit Full Zoom only', async () => {
+  const h = createHarness({ ios:false });
+  const wrap=h.elements.get('football-player-video-wrap');
+  const frame=h.elements.get('football-player-video-frame');
+  wrap.clientWidth=720;wrap.clientHeight=600;
+  await h.open([source('hls')]);
+  assert.equal(frame.style.width,'100%');
+  assert.equal(frame.style.height,'100%');
+  assert.equal(h.video.classList.contains('mode-fit'),true);
+  assert.equal(h.elements.get('football-player-fit').textContent,'Fit');
+  h.elements.get('football-player-fit').click();
+  assert.equal(h.video.classList.contains('mode-full'),true);
+  h.elements.get('football-player-fit').click();
+  assert.equal(h.video.classList.contains('mode-zoom'),true);
+  h.elements.get('football-player-fit').click();
+  assert.equal(h.video.classList.contains('mode-fit'),true);
+  assert.equal(html.includes('18.5:9'),false);
+  assert.match(html,/height:min\(56\.25vw,calc\(100dvh - 120px\)\)/);
+});
+
+test('compact player toolbar and bottom controls show de-duplicated provider lines', async () => {
+  const css=html.match(/<style id="nca-reference-player-style">([\s\S]*?)<\/style>/)?.[1]||'';
+  assert.match(html,/id="football-player-close"[^>]*aria-label="Back"[^>]*>←<\/button>/);
+  assert.match(html,/id="football-player-rotate"[^>]*aria-label="Rotate video"[^>]*><svg/);
+  assert.doesNotMatch(playerScript,/rotateButton\.textContent\s*=/);
+  assert.match(css,/#football-player-title\{[^}]*-webkit-line-clamp:2/);
+  assert.match(css,/#football-player-server\{display:none!important\}/);
+  assert.match(css,/#football-player-overlay:not\(\.ios-native-mode\) \.nca-playback-footer/);
+  assert.match(html,/id="nca-skip-back"[^>]*Back 5 seconds/);
+  assert.match(html,/id="nca-skip-next"[^>]*Forward 15 seconds/);
+  assert.doesNotMatch(html,/id="nca-previous-line"/);
+  assert.doesNotMatch(html,/id="nca-next-line"/);
+  const h=createHarness({ios:false});
+  await h.open([source('hls','ColaTV · ColaTV · Main')]);
+  h.elements.get('football-player-server').click();
+  const chip=h.elements.get('football-player-menu-items').children[0];
+  assert.match(chip.innerHTML,/ColaTV · Main/);
+  assert.doesNotMatch(chip.innerHTML,/ColaTV · ColaTV/);
+  assert.equal(h.elements.get('football-player-title').textContent,'Test match');
+});
+
+test('repository line chooser keeps the server name, without fixture prefix', async () => {
+  const h=createHarness({ios:false});
+  await h.open([
+    source('dash','Serbia vs Germany • FUBO SPORTS - AQ'),
+    source('hls','Serbia vs Germany • BEIN ARABIC HD'),
+  ]);
+  h.elements.get('football-player-server').click();
+  const choices=h.elements.get('football-player-menu-items').children;
+  assert.match(choices[0].innerHTML,/FUBO SPORTS - AQ/);
+  assert.match(choices[1].innerHTML,/BEIN ARABIC HD/);
+  assert.doesNotMatch(choices[0].innerHTML,/Serbia vs Germany/);
+  assert.doesNotMatch(choices[1].innerHTML,/Serbia vs Germany/);
+});
+
+test('compact player seek buttons move 5 seconds back and 15 seconds forward',async()=>{
+  const h=createHarness({ios:false});
+  await h.open([source('mp4','Direct')]);
+  h.video.duration=3600;h.video.currentTime=60;
+  h.elements.get('nca-skip-back').click();
+  assert.equal(h.video.currentTime,55);
+  h.elements.get('nca-skip-next').click();
+  assert.equal(h.video.currentTime,70);
+});
+
+test('four original ColaTV lines remain four visible entries while protected relays stay internal',async()=>{
+  const h=createHarness({ios:false});
+  const all=[];
+  for(let i=0;i<4;i++){
+    all.push({...source('hls','ColaTV '+i),id:'cola-'+i});
+    all.push({...source('hls','ColaTV '+i+' • Network backup'),id:'cola-'+i+'-cloudflare-alt',transport:'cloudflare-fallback'});
+    all.push({...source('hls','ColaTV '+i+' • VPN-free backup'),id:'cola-'+i+'-vpn-free',transport:'vercel-fallback'});
+  }
+  await h.open(all);
+  const rail=h.elements.get('football-player-line-items');
+  assert.equal(rail.children.length,1);
+  h.elements.get('football-player-server').click();
+  assert.equal(h.elements.get('football-player-menu-items').children.length,4);
+  assert.equal(h.video.controls,false,'Custom controls own non-iOS playback');
+});
+
+test('in-player controls show progress/time and Settings video audio speed tabs',async()=>{
+  const h=createHarness({ios:false});
+  await h.open([source('hls')]);
+  h.video.duration=3600;h.video.currentTime=120;
+  h.video.emit('timeupdate');
+  assert.equal(h.elements.get('nca-player-time').textContent,'2:00 / 1:00:00');
+  h.elements.get('nca-player-settings').click();
+  const tabs=h.elements.get('football-player-menu-items').children[0];
+  assert.equal(tabs.children.length,4);
+  tabs.children[1].click();
+  assert.equal(h.elements.get('football-player-menu-title').textContent,'Player settings');
+  tabs.children[2].click();
+  assert.equal(h.elements.get('football-player-menu-items').children.length>=2,true);
+  h.elements.get('football-player-menu-items').children[0].children[3].click();
+  assert.equal(h.elements.get('football-player-menu-items').children.length,7);
+  h.elements.get('football-player-menu-items').children[4].click();
+  assert.equal(h.elements.get('football-player-menu').classList.contains('hidden'),true);
+});
+
+test('server rail is inside the video, tap toggles everything, and idle hides at seven seconds', async () => {
+  const opening = html.indexOf('<div id="football-player-video-wrap">');
+  const railInVideo = html.indexOf('<div id="football-player-line-rail"', opening);
+  const endOfVideo = html.indexOf('</div>\n  </div>\n  <script>', opening);
+  assert.ok(railInVideo > opening && railInVideo < endOfVideo,
+    'The line rail must not occupy a separate black strip');
+  assert.match(html, /#football-player-video-wrap > #football-player-line-rail/);
+  assert.match(html, /bottom:41px!important/);
+  assert.match(html, /controlsTimer=setTimeout\(hideControls,7000\)/);
+
+  const h = createHarness({ ios:false });
+  const rail = h.elements.get('football-player-line-rail');
+  const topbar = h.elements.get('football-player-topbar');
+  const footer = h.elements.get('football-player-custom-controls');
+  await h.open([source('hls','Primary'), source('dash','Backup')]);
+  h.elements.get('football-player-fullscreen').click();
+  await flush();
+  assert.equal(h.document.fullscreenElement, h.overlay);
+  assert.equal(rail.classList.contains('controls-hidden'), false);
+  await h.tick(6999);
+  assert.equal(rail.classList.contains('controls-hidden'), false);
+  await h.tick(1);
+  for (const el of [rail, topbar, footer])
+    assert.equal(el.classList.contains('controls-hidden'), true);
+
+  h.overlay.emit('pointerup', { target:h.video, pointerType:'touch' });
+  for (const el of [rail, topbar, footer])
+    assert.equal(el.classList.contains('controls-hidden'), false);
+  h.overlay.emit('pointerup', { target:h.video, pointerType:'touch' });
+  for (const el of [rail, topbar, footer])
+    assert.equal(el.classList.contains('controls-hidden'), true,
+      'Second tap hides all overlays immediately');
+  h.overlay.emit('pointerup', { target:h.video, pointerType:'touch' });
+  await h.tick(7000);
+  assert.equal(rail.classList.contains('controls-hidden'), true);
+
+  h.overlay.emit('pointermove', {pointerType:'mouse'});
+  assert.equal(rail.classList.contains('controls-hidden'), false);
+  await h.close();
+});
+
+test('line chooser and settings stay visible while open, then restart seven-second timer', async () => {
+  const h = createHarness({ ios:false });
+  await h.open([source('hls'), source('hls','Backup')]);
+  const rail = h.elements.get('football-player-line-rail');
+  const server = h.elements.get('football-player-server');
+  server.click();
+  await h.tick(8000);
+  assert.equal(h.elements.get('football-player-menu').classList.contains('hidden'), false);
+  assert.equal(rail.classList.contains('controls-hidden'), false);
+  server.click();
+  await h.tick(6999);
+  assert.equal(rail.classList.contains('controls-hidden'), false);
+  await h.tick(1);
+  assert.equal(rail.classList.contains('controls-hidden'), true);
+
+  h.overlay.emit('pointerup', {target:h.video});
+  h.elements.get('nca-player-settings').click();
+  await h.tick(8000);
+  assert.equal(h.elements.get('football-player-menu').classList.contains('hidden'),false);
+  assert.equal(rail.classList.contains('controls-hidden'),false);
+  h.elements.get('football-player-menu-close').click();
+  await h.tick(7000);
+  assert.equal(rail.classList.contains('controls-hidden'),true);
+});
+
+test('current line stays compact and the vertical chooser exposes names, resolution and formats', async () => {
+  const h=createHarness({ios:false});
+  await h.open([
+    {...source('hls','beIN Sports En Español HD'),resolution:'1080p'},
+    {...source('dash','TNT Sports 1 HD · Server 1'),resolution:'720p'},
+    {...source('flv','TNT Sports 2 HD'),resolution:'1080p'}
+  ]);
+  const rail=h.elements.get('football-player-line-items');
+  assert.equal(rail.children.length,1);
+  assert.match(rail.children[0].innerHTML,/Change line/);
+  rail.children[0].click();
+  const choices=h.elements.get('football-player-menu-items');
+  assert.equal(choices.children.length,3);
+  for(const [i,type] of ['HLS','DASH','FLV'].entries())assert.match(choices.children[i].innerHTML,new RegExp(type));
+  assert.match(choices.children[1].innerHTML,/720p/);
+});
+
+test('single channel starts upright without a line chooser and rotates only on tap', async () => {
+  const h = createHarness({ios:false});
+  await h.open([{...source('hls'),portraitStart:true}]);
+  assert.equal(h.overlay.style.transform, '');
+  assert.equal(h.elements.get('football-player-server').style.display, 'none');
+  assert.equal(h.elements.get('football-player-line-rail').classList.contains('hidden'),true);
+  h.elements.get('football-player-rotate').click();await flush();
+  assert.ok(h.overlay.style.transform.includes('rotate(90deg)'));
+  assert.equal(h.elements.get('football-player-rotate').attributes['aria-label'],'Rotate video (90°)');
+  assert.equal(h.elements.get('football-player-rotate').textContent,'');
+});
+
+test('iPhone channel keeps its rotate icon through open, turns, reset and reopen', async () => {
+  const h=createHarness({ios:true});
+  const channel={...source('hls'),portraitStart:true};
+  await h.open([channel]);
+  const rotate=h.elements.get('football-player-rotate');
+  assert.equal(rotate.textContent,'');
+  assert.equal(rotate.attributes['aria-label'],'Rotate video');
+  for(const angle of [90,180,270,0]){
+    rotate.click();await flush();
+    assert.equal(rotate.textContent,'');
+    assert.equal(rotate.attributes['aria-label'],angle?'Rotate video ('+angle+'°)':'Rotate video');
+  }
+  await h.close();await h.open([channel]);
+  assert.equal(rotate.textContent,'');
+  assert.equal(rotate.attributes['aria-label'],'Rotate video');
+});
+
+test('current-line button opens the chooser and switches through the existing player path', async () => {
+  const first={...source('hls','Primary'),resolution:'720p'};
+  const second={...source('hls','Backup'),resolution:'1080p'};
+  const h=createHarness(); await h.open([first,second]);
+  const rail=h.elements.get('football-player-line-items');
+  assert.equal(rail.children.length,1);
+  assert.match(rail.children[0].innerHTML,/Primary/);
+  assert.match(rail.children[0].innerHTML,/720p.*HLS/);
+  rail.children[0].click();
+  h.elements.get('football-player-menu-items').children[1].click(); await flush();
+  assert.deepEqual(h.plays,[first.url,second.url]);
+  assert.equal(rail.children.length,1);
+  assert.match(rail.children[0].innerHTML,/Backup/);
+  assert.equal(h.elements.get('football-player-server').textContent,'Backup');
+  const selections=h.events.filter(event=>event.name==='playback line selected');
+  assert.equal(selections.length,1);
+  assert.equal(selections[0].properties.selected_index,1);
+});
+
+test('line controls never render source URLs, hosts, headers or credential-shaped metadata', async () => {
+  const secret = {
+    ...source('hls', 'https://private.example.invalid/watch?token=SECRET'),
+    url: 'https://stream.example.invalid/live.m3u8?token=SECRET',
+    resolution: 'SECRET',
+    referer: 'https://referer.example.invalid/SECRET',
+    origin: 'https://origin.example.invalid',
+    keyId: '00112233445566778899aabbccddeeff',
+    keyData: 'ffeeddccbbaa99887766554433221100',
+  };
+  const h = createHarness();
+  await h.open([secret]);
+  h.elements.get('football-player-server').click();
+
+  const chip = h.elements.get('football-player-line-items').children[0];
+  const menuItem = h.elements.get('football-player-menu-items').children[0];
+  const visible = [
+    chip?.innerHTML || '',
+    chip?.attributes['aria-label'] || '',
+    h.elements.get('football-player-server').textContent,
+    menuItem.innerHTML,
+  ].join(' ');
+  assert.match(visible, /Server 1/);
+  for (const forbidden of [
+    'SECRET', 'private.example.invalid', 'stream.example.invalid',
+    'referer.example.invalid', 'origin.example.invalid',
+    secret.keyId, secret.keyData,
+  ]) assert.ok(!visible.includes(forbidden), `Visible line UI leaked ${forbidden}`);
+});
+
+test('prewarming downloads only the Web engine and reuses it on first playback', async () => {
+  const line = source('hls', 'Primary');
+  const h = createHarness({ ios: false, engineLoads: ['ok'] });
+
+  h.window.prewarmFootballPlayer(JSON.stringify([line]));
+  await flush();
+
+  assert.equal(h.scripts.length, 1);
+  assert.deepEqual(h.plays, []);
+  assert.equal(h.overlay.classList.contains('open'), false);
+
+  await h.open([line]);
+  assert.equal(h.scripts.length, 1, 'Opening should reuse the prewarmed engine');
+  assert.deepEqual(h.plays, [line.url]);
+});
+
+test('HLS aliases select native HLS on an extensionless protected URL', async () => {
+  for (const type of ['hls', 'm3u8']) {
+    const line = source(type), h = createHarness();
+    await h.open([line]);
+    assert.equal(h.video.src, line.url);
+    assert.equal(h.players.length, 0);
+    assert.equal(h.events.filter(event => event.name === 'playback started').length, 1);
+  }
+});
+
+test('modern iOS preserves the chosen DASH line and supplies MPD MIME to Shaka', async () => {
+  for (const type of ['dash', 'mpd']) {
+    const line = source(type), backup = source('hls'), h = createHarness();
+    await h.open([backup, line], 1);
+    assert.equal(h.loads.length, 1);
+    assert.equal(h.loads[0].url, line.url);
+    assert.equal(h.loads[0].mime, 'application/dash+xml');
+    assert.deepEqual(h.plays, [line.url]);
+  }
+});
+
+test('modern iOS attempts the selected ClearKey DASH with Shaka WebCrypto', async () => {
+  const dash = {
+    ...source('dash', 'clearkey'),
+    keyId: '00112233445566778899aabbccddeeff',
+    keyData: 'ffeeddccbbaa99887766554433221100',
+  };
+  const hls = source('hls', 'backup');
+  const h = createHarness();
+  await h.open([dash, hls]);
+  assert.equal(failures(h).length, 0);
+  assert.equal(h.loads[0].url, dash.url);
+  const drm = h.players[0].configurations.find(config => config.drm)?.drm;
+  assert.equal(drm.clearKeys[dash.keyId], dash.keyData);
+  assert.deepEqual(h.plays, [dash.url]);
+});
+
+test('iOS retains its supplied WebCrypto key across repeated live MPD DRM updates', async () => {
+  const dash = { ...source('dash'), keyId: '00112233445566778899aabbccddeeff', keyData: 'ffeeddccbbaa99887766554433221100' };
+  const h = createHarness();
+  await h.open([dash]);
+  const player = h.players[0];
+  const kid = Buffer.from(dash.keyId, 'hex').toString('base64url');
+  const key = Buffer.from(dash.keyData, 'hex').toString('base64url');
+  for (let update = 0; update < 3; update++) {
+    const rebuiltInfo = { keySystem: 'org.w3.clearkey' };
+    player.drmState = rebuiltInfo;
+    player.listeners.get('manifestupdated')();
+    assert.equal(rebuiltInfo.clearKeys.get(kid), key);
+  }
+  const existingInfo = { keySystem: 'org.w3.clearkey', clearKeys: new Map([['existing-kid', 'existing-key']]) };
+  player.drmState = existingInfo;
+  player.listeners.get('drmsessionupdate')();
+  assert.equal(existingInfo.clearKeys.get('existing-kid'), 'existing-key');
+  assert.equal(existingInfo.clearKeys.get(kid), key);
+  await h.close();
+  const staleInfo = { keySystem: 'org.w3.clearkey' };
+  player.drmState = staleInfo;
+  player.listeners.get('manifestupdated')();
+  assert.equal(staleInfo.clearKeys, undefined, 'Closed playback must not restore an old line key');
+
+  const android = createHarness({ ios: false });
+  await android.open([dash]);
+  assert.equal(android.players[0].listeners.has('manifestupdated'), false);
+});
+
+test('iOS without WebCrypto selects a playable backup for ClearKey DASH', async () => {
+  const dash = { ...source('dash'), keyId: '00112233445566778899aabbccddeeff', keyData: 'ffeeddccbbaa99887766554433221100' };
+  const hls = source('hls'), h = createHarness({ webCrypto: false });
+  await h.open([dash, hls]);
+  assert.equal(h.loads.length, 0);
+  assert.deepEqual(h.plays, [hls.url]);
+});
+
+test('recoverable Shaka errors keep the active line playing', async () => {
+  const dash = source('dash'), backup = source('hls', 'backup');
+  const h = createHarness();
+  await h.open([dash, backup]);
+  const onError = h.players[0].listeners.get('error');
+  assert.ok(onError);
+  onError({ detail: { severity: 1, handled: true, category: 1, code: 1001 } });
+  await flush();
+  assert.equal(failures(h).length, 0);
+  assert.equal(h.video.paused, false);
+  assert.deepEqual(h.plays, [dash.url]);
+});
+
+test('iOS preserves Shaka zero playback rate while buffering without closing the player', async () => {
+  const dash = source('dash'), h = createHarness();
+  await h.open([dash]);
+  for (const event of ['ratechange', 'loadedmetadata', 'playing']) {
+    h.video.playbackRate = 0;
+    h.video.emit(event);
+    assert.equal(h.video.playbackRate, 0, `${event} must not fight Shaka's buffering rate`);
+  }
+  h.video.playbackRate = 1;
+  h.video.emit('ratechange');
+  assert.equal(h.video.playbackRate, 1);
+  assert.equal(h.overlay.classList.contains('open'), true);
+  assert.deepEqual(h.plays, [dash.url]);
+});
+
+test('iOS still corrects a positive playback speed without changing Android rates', async () => {
+  const dash = source('dash'), ios = createHarness();
+  await ios.open([dash]);
+  ios.video.playbackRate = 1.1;
+  ios.video.emit('ratechange');
+  assert.equal(ios.video.playbackRate, 1);
+  const android = createHarness({ ios: false });
+  await android.open([dash]);
+  for (const rate of [0, 1.1]) {
+    android.video.playbackRate = rate;
+    android.video.emit('ratechange');
+    assert.equal(android.video.playbackRate, rate);
+  }
+});
+
+test('a recoverable iOS Shaka error never reconnects a line that keeps advancing', async () => {
+  const dash = source('dash'), backup = source('hls'), h = createHarness();
+  h.video.currentTime = 0; h.video.readyState = 4;
+  await h.open([dash, backup]);
+  h.players[0].listeners.get('error')({ detail: { severity: 1, category: 1, code: 1001 } });
+  for (let second = 1; second <= 25; second++) {
+    h.video.currentTime = second;
+    h.video.emit('timeupdate');
+    await h.tick(1000);
+  }
+  assert.deepEqual(h.plays, [dash.url]);
+  assert.equal(failures(h).length, 0);
+});
+
+test('iOS HLS resumes after waiting without an old timer restarting it', async () => {
+  const hls = source('hls'), h = createHarness();
+  h.video.currentTime = 0; h.video.readyState = 4;
+  await h.open([hls]);
+  h.video.emit('waiting');
+  for (let second = 1; second <= 25; second++) {
+    h.video.currentTime = second;
+    h.video.emit('timeupdate');
+    await h.tick(1000);
+  }
+  assert.deepEqual(h.plays, [hls.url]);
+  assert.equal(failures(h).length, 0);
+});
+
+test('iOS tolerates a five second segment delay and detects a true empty-buffer freeze', async () => {
+  const hls = source('hls'), backup = source('hls', 'backup'), h = createHarness();
+  h.video.currentTime = 0; h.video.readyState = 4;
+  await h.open([hls, backup]);
+  h.video.readyState = 1;
+  h.video.emit('waiting');
+  await h.tick(5500);
+  assert.deepEqual(h.plays, [hls.url]);
+  h.video.currentTime = 6; h.video.readyState = 4;
+  h.video.emit('timeupdate');
+  await h.tick(1500);
+  assert.deepEqual(h.plays, [hls.url], 'A brief segment delay must not restart playback');
+  h.video.readyState = 1;
+  // Safari can freeze without sending another waiting/playing event.
+  await h.tick(20000);
+  assert.deepEqual(h.plays, [hls.url, hls.url]);
+});
+
+test('iOS FLV reconnects once after an early network EOF without duplicate fallback', async () => {
+  const flv = source('flv'), hls = source('hls'), h = createHarness();
+  await h.open([flv, hls]);
+  const error = h.flvPlayers[0].listeners.get('error');
+  error('NetworkError', 'UnrecoverableEarlyEof', { url: 'https://upstream.invalid/?key=SECRET' });
+  error('NetworkError', 'UnrecoverableEarlyEof');
+  await h.tick(1000);
+  assert.deepEqual(h.plays, [flv.url, flv.url]);
+  assert.equal(failures(h).length, 0);
+  h.flvPlayers[1].listeners.get('error')('NetworkError', 'UnrecoverableEarlyEof');
+  await h.tick(1000);
+  assert.deepEqual(h.plays, [flv.url, flv.url, hls.url]);
+  assert.equal(failures(h).length, 1);
+  assert.ok(!JSON.stringify(h.events).includes('SECRET'));
+});
+
+test('iOS reconnects an unexpectedly ended live stream and then falls back', async () => {
+  const primary = source('hls'), backup = source('hls', 'backup'), h = createHarness();
+  await h.open([primary, backup]);
+  h.video.currentTime = 5; h.video.ended = true; h.video.emit('ended');
+  await h.tick(1000);
+  assert.deepEqual(h.plays, [primary.url, primary.url]);
+  h.video.ended = true; h.video.emit('ended');
+  await h.tick(1000);
+  assert.deepEqual(h.plays, [primary.url, primary.url, backup.url]);
+  assert.equal(failures(h)[0].properties.reason, 'stream_ended');
+});
+
+test('manual line selection and Back cancel a pending iOS reconnect', async () => {
+  const primary = source('hls'), manual = source('hls', 'manual'), h = createHarness();
+  await h.open([primary, manual]);
+  h.video.emit('ended');
+  await h.choose(1); await h.tick(1000);
+  assert.deepEqual(h.plays, [primary.url, manual.url]);
+  h.video.emit('ended');
+  await h.close(); await h.tick(1000);
+  assert.deepEqual(h.plays, [primary.url, manual.url]);
+});
+
+test('Back exits overlay fullscreen before hiding the player', async () => {
+  const h = createHarness();
+  await h.open([source('hls')]);
+  h.elements.get('football-player-fullscreen').click();
+  await flush();
+  assert.equal(h.document.fullscreenElement, h.overlay);
+  await h.close();
+  assert.equal(h.document.fullscreenElement, null);
+  assert.equal(h.overlay.classList.contains('open'), false);
+});
+
+test('iOS fullscreen uses native video fullscreen so Safari chrome can disappear', async () => {
+  const dash = source('dash'), backup = source('hls', 'backup');
+  const tracks = [{ id: 1, height: 720, bandwidth: 1000000 }];
+  const h = createHarness({ plans: { [dash.url]: { tracks } } });
+  let nativeFullscreenCalls = 0;
+  h.video.webkitEnterFullscreen = () => {
+    nativeFullscreenCalls++;
+    h.video.webkitDisplayingFullscreen = true;
+    h.video.emit('webkitbeginfullscreen');
+  };
+  await h.open([dash, backup]);
+  h.elements.get('football-player-fullscreen').click(); await flush();
+
+  assert.equal(nativeFullscreenCalls, 1);
+  assert.equal(h.document.fullscreenElement, null);
+  assert.equal(h.elements.get('football-player-fullscreen').textContent, 'Exit');
+
+  h.video.webkitDisplayingFullscreen = false;
+  h.video.emit('webkitendfullscreen');
+  assert.equal(h.elements.get('football-player-fullscreen').textContent, 'Fullscreen');
+
+  h.elements.get('football-player-quality').click();
+  h.elements.get('football-player-menu-items').children[1].click(); await flush();
+  assert.equal(h.players[0].selectedTrack.height, 720);
+  await h.choose(1);
+  assert.deepEqual(h.plays, [dash.url, backup.url]);
+  await h.close();
+  assert.equal(h.overlay.classList.contains('open'), false);
+});
+
+test('iOS native fullscreen does not depend on container fullscreen support', async () => {
+  for (const support of ['missing', 'denied']) {
+    const dash = source('dash'), backup = source('hls', 'backup');
+    const h = createHarness({ plans: { [dash.url]: { tracks: [{ id: 1, height: 720, bandwidth: 1000000 }] } } });
+    let nativeFullscreenCalls = 0;
+    h.video.webkitEnterFullscreen = () => {
+      nativeFullscreenCalls++;
+      h.video.webkitDisplayingFullscreen = true;
+      h.video.emit('webkitbeginfullscreen');
+    };
+    if (support === 'missing') delete h.overlay.requestFullscreen;
+    else h.overlay.requestFullscreen = async () => { throw new Error('Fullscreen unavailable'); };
+
+    await h.open([dash, backup]);
+    h.elements.get('football-player-fullscreen').click(); await flush();
+
+    assert.equal(nativeFullscreenCalls, 1);
+    assert.equal(h.document.fullscreenElement, null);
+    assert.equal(h.overlay.classList.contains('open'), true);
+
+    h.video.webkitDisplayingFullscreen = false;
+    h.video.emit('webkitendfullscreen');
+    h.elements.get('football-player-quality').click();
+    h.elements.get('football-player-menu-items').children[1].click(); await flush();
+    assert.equal(h.players[0].selectedTrack.height, 720);
+    await h.choose(1);
+    assert.deepEqual(h.plays, [dash.url, backup.url]);
+  }
+});
+
+test('iOS keeps native controls plus compact line and quality strip during rotation', async () => {
+  const dash = source('dash'), h = createHarness();
+  await h.open([dash]);
+
+  assert.equal(h.overlay.classList.contains('ios-native-mode'), true);
+  assert.equal(h.video.controls, true);
+  assert.equal(h.video.classList.contains('nca-custom-fullscreen'), false);
+
+  const menu = h.elements.get('football-player-menu');
+  h.elements.get('football-player-server').click(); await flush();
+  assert.equal(menu.classList.contains('hidden'), false);
+  h.elements.get('football-player-server').click(); await flush();
+  assert.equal(menu.classList.contains('hidden'), true);
+
+  h.elements.get('football-player-quality').click(); await flush();
+  assert.equal(menu.classList.contains('hidden'), false);
+  h.elements.get('football-player-quality').click(); await flush();
+  assert.equal(menu.classList.contains('hidden'), true);
+
+  h.window.emit('resize'); await flush();
+
+  assert.equal(h.overlay.classList.contains('ios-native-mode'), true);
+  assert.deepEqual(h.plays, [dash.url]);
+  assert.equal(failures(h).length, 0);
+});
+
+test('Android Chromium uses Shaka for live HLS even when canPlayType claims native HLS', async () => {
+  const line = source('hls'), h = createHarness({ nativeHls: true, ios: false });
+  await h.open([line]);
+  assert.equal(h.players.length, 1);
+  assert.equal(h.loads[0].mime, 'application/vnd.apple.mpegurl');
+  assert.equal(h.loads[0].url, line.url);
+});
+
+test('Android recoverable errors never replace a stream whose playback keeps advancing', async () => {
+  const dash = source('dash'), backup = source('hls', 'backup');
+  const h = createHarness({ ios: false });
+  h.video.currentTime = 0; h.video.readyState = 4;
+  await h.open([dash, backup]);
+  h.players[0].listeners.get('error')({ detail: { severity: 1, category: 1, code: 1001 } });
+  await h.tick(10000);
+  h.video.currentTime = 10;
+  await h.tick(10000);
+  assert.equal(failures(h).length, 0);
+  assert.deepEqual(h.plays, [dash.url]);
+});
+
+test('Chromium progress watchdog falls back after a true no-progress freeze', async () => {
+  const dash = source('dash', 'frozen'), backup = source('hls', 'backup');
+  const h = createHarness({ ios: false });
+  h.video.currentTime = 0; h.video.readyState = 4;
+  await h.open([dash, backup]);
+
+  await h.tick(16500);
+  assert.equal(failures(h).length, 1);
+  assert.equal(failures(h)[0].properties.reason, 'stall_timeout');
+  await h.tick(500);
+  assert.deepEqual(h.plays, [dash.url, backup.url]);
+});
+
+test('Android playback progress cancels an old stall timer before a later true freeze', async () => {
+  const dash = source('dash'), backup = source('hls', 'backup');
+  const h = createHarness({ ios: false });
+  h.video.currentTime = 0;
+  await h.open([dash, backup]);
+  h.video.emit('waiting');
+  await h.tick(5000);
+  h.video.currentTime = 5;
+  h.video.emit('timeupdate');
+  h.video.emit('waiting');
+  await h.tick(10000);
+  assert.equal(failures(h).length, 0, 'The second stall must get its own recovery period');
+  await h.tick(6000);
+  assert.equal(failures(h).length, 1);
+  assert.equal(failures(h)[0].properties.reason, 'stall_timeout');
+  assert.deepEqual(h.plays, [dash.url, backup.url]);
+});
+
+test('Android FLV errors select a backup once and ignore errors from an obsolete player', async () => {
+  const flv = source('flv'), backup = source('hls', 'backup');
+  const h = createHarness({ ios: false });
+  await h.open([flv, backup]);
+  const error = h.flvPlayers[0].listeners.get('error');
+  assert.equal(typeof error, 'function', 'Android FLV must observe network and decoder errors');
+  error('NetworkError', 'UnrecoverableEarlyEof');
+  error('NetworkError', 'UnrecoverableEarlyEof');
+  await h.tick(1000);
+  assert.equal(failures(h).length, 1);
+  assert.deepEqual(h.plays, [flv.url, backup.url]);
+  const count = h.events.length;
+  error('NetworkError', 'UnrecoverableEarlyEof');
+  await h.tick(20000);
+  assert.equal(h.events.length, count);
+  assert.deepEqual(h.plays, [flv.url, backup.url]);
+
+  const manual = source('hls', 'manual');
+  const selected = createHarness({ ios: false });
+  await selected.open([flv, backup, manual]);
+  selected.flvPlayers[0].listeners.get('error')('NetworkError', 'UnrecoverableEarlyEof');
+  await selected.choose(2);
+  await selected.tick(1000);
+  assert.deepEqual(selected.plays, [flv.url, manual.url]);
+});
+
+test('Android ignores recoverable errors from a Shaka player after changing lines', async () => {
+  const old = source('dash', 'old'), manual = source('hls', 'manual');
+  const h = createHarness({ ios: false });
+  h.video.currentTime = 0;
+  await h.open([old, manual]);
+  const oldError = h.players[0].listeners.get('error');
+  await h.choose(1);
+  const count = h.events.length;
+  oldError({ detail: { severity: 1, category: 1, code: 1001 } });
+  await h.tick(20000);
+  assert.equal(h.events.length, count);
+  assert.deepEqual(h.plays, [old.url, manual.url]);
+  assert.equal(h.overlay.classList.contains('open'), true);
+});
+
+test('non-native HLS uses the same engine with explicit HLS MIME', async () => {
+  const line = source('m3u8'), h = createHarness({ nativeHls: false, ios: false });
+  await h.open([line]);
+  assert.equal(h.loads[0].mime, 'application/vnd.apple.mpegurl');
+  assert.equal(h.loads[0].url, line.url);
+});
+
+test('older iOS skips unsupported DASH and starts supplied HLS directly', async () => {
+  const dash = source('dash'), mp4 = source('mp4'), hls = source('hls');
+  const h = createHarness({ streaming: false });
+  await h.open([dash, mp4, hls]);
+  assert.equal(h.loads.length, 0);
+  assert.equal(failures(h).length, 0);
+  assert.deepEqual(h.plays, [hls.url]);
+});
+
+test('DASH DRM errors fall back once without leaking error messages or keys', async () => {
+  const dash = source('dash'), hls = source('hls');
+  const error = { category: 6, code: 6001, message: 'https://upstream.invalid/private?key=SECRET' };
+  const h = createHarness({ plans: { [dash.url]: { loadError: error, emitError: true } } });
+  await h.open([dash, hls]);
+  assert.equal(failures(h).length, 1, 'Error event and rejected load must not schedule two fallbacks');
+  assert.equal(failures(h)[0].properties.reason, 'drm_error');
+  assert.equal(failures(h)[0].properties.error_code, 6001);
+  await h.tick(1000);
+  assert.deepEqual(h.plays, [hls.url]);
+  assert.equal(h.events.filter(event => event.name === 'playback auto fallback').length, 1);
+  assert.ok(!JSON.stringify(h.events).includes('SECRET'));
+  assert.ok(!JSON.stringify(h.events).includes('upstream.invalid'));
+  assert.equal(h.logs.length, 0);
+});
+
+test('startup stalls fall back to HLS and ignore a late old load completion', async () => {
+  const dash = source('dash'), hls = source('hls'), gate = deferred();
+  const h = createHarness({ plans: { [dash.url]: { loadGate: gate } } });
+  const opening = h.open([dash, hls]);
+  await flush();
+  assert.equal(h.loads.length, 1);
+  await h.tick(32000);
+  assert.equal(failures(h)[0].properties.reason, 'startup_timeout');
+  assert.deepEqual(h.plays, [hls.url]);
+  gate.resolve(); await opening;
+  assert.deepEqual(h.plays, [hls.url], 'Stale load must not play the old source');
+});
+
+test('iOS DASH allows a slow buffered startup without replacing the chosen line', async () => {
+  const dash = source('dash'), backup = source('hls'), gate = deferred();
+  const h = createHarness({ plans: { [dash.url]: { loadGate: gate } } });
+  const opening = h.open([dash, backup]);
+  await flush();
+  await h.tick(20000);
+  assert.equal(failures(h).length, 0);
+  assert.deepEqual(h.plays, []);
+  gate.resolve();
+  await opening;
+  await h.tick(15000);
+  assert.deepEqual(h.plays, [dash.url]);
+  assert.equal(h.overlay.classList.contains('open'), true);
+});
+
+test('iOS live streams give segment retries time, recover once, then use backup while respecting pause', async () => {
+  const primary = source('hls', 'primary'), backup = source('hls', 'backup');
+  const h = createHarness();
+  await h.open([primary, backup]);
+
+  h.video.emit('waiting');
+  await h.tick(17000);
+  assert.deepEqual(h.plays, [primary.url, primary.url]);
+  assert.equal(failures(h).length, 0);
+
+  h.video.emit('waiting');
+  await h.tick(17000);
+  assert.equal(failures(h)[0].properties.reason, 'stall_timeout');
+  await h.tick(1000);
+  assert.deepEqual(h.plays, [
+    primary.url,
+    primary.url,
+    backup.url,
+  ]);
+
+  const paused = createHarness();
+  await paused.open([primary, backup]);
+  paused.video.emit('waiting');
+  paused.video.pause();
+  await paused.tick(30000);
+  assert.equal(failures(paused).length, 0);
+  assert.deepEqual(paused.plays, [primary.url]);
+});
+
+test('autoplay denial offers an explicit Play action and never marks the source broken', async () => {
+  const primary = source('hls'), backup = source('hls', 'backup');
+  const plan = { playError: { name: 'NotAllowedError', message: 'Browser requires a gesture' } };
+  const h = createHarness({ plans: { [primary.url]: plan } });
+  await h.open([primary, backup]);
+  assert.match(h.message.textContent, /Tap Play/);
+  assert.equal(h.message.children[0].textContent, 'Play');
+  await h.tick(60000);
+  assert.equal(failures(h).length, 0);
+  assert.deepEqual(h.plays, [primary.url]);
+  delete plan.playError;
+  h.message.children[0].click(); await flush();
+  assert.deepEqual(h.plays, [primary.url, primary.url]);
+  assert.equal(h.events.filter(event => event.name === 'playback started').length, 1);
+});
+
+test('native format errors do fall back instead of being swallowed like autoplay denial', async () => {
+  const primary = source('hls'), backup = source('hls', 'backup');
+  const h = createHarness({ plans: { [primary.url]: { playError: { name: 'NotSupportedError' } } } });
+  await h.open([primary, backup]); await h.tick(1000);
+  assert.equal(failures(h).length, 1);
+  assert.deepEqual(h.plays, [primary.url, backup.url]);
+});
+
+test('manual selection cancels an already scheduled automatic fallback', async () => {
+  const bad = source('dash'), backup = source('hls', 'backup'), manual = source('hls', 'manual');
+  const h = createHarness({ plans: { [bad.url]: { loadError: { code: 3016 } } } });
+  await h.open([bad, backup, manual]);
+  await h.choose(2); await h.tick(30000);
+  assert.deepEqual(h.plays, [manual.url]);
+});
+
+test('new match cancels prior fallback and keeps telemetry attached to the new match', async () => {
+  const bad = source('dash'), oldBackup = source('hls', 'old'), fresh = source('hls', 'new');
+  const h = createHarness({ plans: { [bad.url]: { loadError: { code: 3016 } } } });
+  await h.open([bad, oldBackup], 0, 'old-match');
+  await h.open([fresh], 0, 'new-match'); await h.tick(30000);
+  assert.deepEqual(h.plays, [fresh.url]);
+  const started = h.events.filter(event => event.name === 'playback started');
+  assert.equal(started.length, 1);
+  assert.equal(started[0].properties.match_id, 'new-match');
+});
+
+test('closing cancels fallback and prevents a late pending load from playing or reopening', async () => {
+  const dash = source('dash'), backup = source('hls'), gate = deferred();
+  const h = createHarness({ plans: { [dash.url]: { loadGate: gate } } });
+  const opening = h.open([dash, backup]); await flush();
+  await h.close(); gate.resolve(); await opening; await h.tick(60000);
+  assert.equal(h.overlay.classList.contains('open'), false);
+  assert.deepEqual(h.plays, []);
+  assert.equal(failures(h).length, 0);
+  const bad = source('dash', 'bad');
+  const queued = createHarness({ plans: { [bad.url]: { loadError: { code: 3016 } } } });
+  await queued.open([bad, backup]); await queued.close(); await queued.tick(60000);
+  assert.deepEqual(queued.plays, []);
+  assert.equal(queued.overlay.classList.contains('open'), false);
+});
+
+test('a source change while attachment is pending never starts the stale DASH load', async () => {
+  const dash = source('dash'), hls = source('hls'), gate = deferred();
+  const h = createHarness({ attachGate: gate });
+  const opening = h.open([dash, hls]); await flush();
+  await h.choose(1);
+  gate.resolve(); await opening; await h.tick(30000);
+  assert.deepEqual(h.plays, [hls.url]);
+  assert.equal(h.loads.length, 0, 'Stale attach continuation must not load DASH');
+});
+
+test('Android browsers still attempt the explicitly chosen DASH source', async () => {
+  const hls = source('hls'), dash = source('dash'), h = createHarness({ ios: false });
+  await h.open([hls, dash], 1);
+  assert.equal(h.loads[0].url, dash.url);
+  assert.deepEqual(h.plays, [dash.url]);
+});
+
+test('failed engine mirrors can be retried without guessing an HLS-only root cause', async () => {
+  const dash = source('dash');
+  // The harness has no page location, so the runtime tries the two external
+  // mirrors. Make both fail once, then let the first mirror succeed on retry.
+  const h = createHarness({ engineLoads: ['fail', 'fail', 'success'] });
+  await h.open([dash]);
+  assert.match(h.message.textContent, /No other working line is available/);
+  assert.doesNotMatch(h.message.textContent, /HLS line is needed/);
+  assert.equal(h.scripts.length, 2);
+  await h.choose(0);
+  assert.equal(h.scripts.length, 3, 'Retry must download again after all mirrors failed');
+  assert.deepEqual(h.plays, [dash.url]);
+});
+
+test('a hung engine download has a deadline and does not poison the next manual retry', async () => {
+  const dash = source('dash');
+  const h = createHarness({ engineLoads: ['hang', 'fail', 'success'] });
+  const opening = h.open([dash]);
+  await flush();
+  assert.equal(h.scripts.length, 1);
+  await h.tick(5000);
+  await opening;
+  assert.equal(h.scripts[0].removed, true, 'Timed-out script must be detached');
+  assert.equal(h.scripts.length, 2, 'A hanging first mirror must not block its backup');
+  await h.choose(0);
+  assert.equal(h.scripts.length, 3, 'Manual retry must create a fresh engine request');
+  assert.deepEqual(h.plays, [dash.url]);
+});
+
+test('FLV prefers a pinned same-origin engine and falls back after a hung local download', async () => {
+  const flv = source('flv');
+  const h = createHarness({ pageBase: 'https://app.example.invalid/football-stream-app/', engineLoads: ['hang', 'success'] });
+  const opening = h.open([flv]);
+  await flush();
+  assert.equal(h.scripts[0].src, 'https://app.example.invalid/football-stream-app/vendor/mpegts.js?v=1.8.2');
+  await h.tick(5000);
+  await opening;
+  assert.match(h.scripts[1].src, /cdn\.jsdelivr\.net/);
+  assert.deepEqual(h.plays, [flv.url]);
+});
+
+test('startup and rebuffer telemetry measure elapsed playback time with host-only line context', async () => {
+  const hls = { ...source('hls'), id: 'line-123', url: 'https://proxy.example.invalid/p/SECRET?token=SECRET' };
+  const h = createHarness({ plans: { [hls.url]: { noPlaying: true } } });
+  await h.open([hls]);
+  await h.tick(400);
+  h.video.emit('playing');
+  const started = h.events.find(event => event.name === 'playback started');
+  assert.equal(started.properties.startup_ms, 400);
+  assert.equal(started.properties.line_id, 'line-123');
+  assert.equal(started.properties.route, 'proxy.example.invalid');
+  let completed = h.events.filter(event => event.name === 'playback buffering ended');
+  assert.equal(completed[0].properties.phase, 'startup');
+  assert.equal(completed[0].properties.buffering_ms, 400);
+  h.video.currentTime = 1;
+  h.video.emit('timeupdate');
+  h.video.emit('waiting');
+  h.video.emit('waiting');
+  await h.tick(1700);
+  h.video.currentTime = 2;
+  h.video.emit('timeupdate');
+  completed = h.events.filter(event => event.name === 'playback buffering ended');
+  assert.equal(completed.length, 2, 'Duplicate waiting must describe one buffering episode');
+  assert.equal(completed[1].properties.phase, 'rebuffer');
+  assert.equal(completed[1].properties.buffering_ms, 1700);
+  h.video.emit('waiting');
+  h.video.pause();
+  await h.tick(60000);
+  h.video.emit('playing');
+  assert.equal(h.events.filter(event => event.name === 'playback buffering ended').length, 2, 'User pause must not inflate buffering duration');
+  assert.ok(!JSON.stringify(h.events).includes('SECRET'));
+});
+
+test('late backups append only to the current session without restarting or replacing the chosen line', async () => {
+  const first = { ...source('hls', 'first'), id: 'first' };
+  const backup = { ...source('hls', 'late-backup'), id: 'backup' };
+  const h = createHarness();
+  await h.open([first]);
+  h.update([first, backup], 'old-session');
+  h.elements.get('football-player-server').click();
+  assert.equal(h.elements.get('football-player-menu-items').children.length, 1);
+  h.update([first, backup]);
+  assert.deepEqual(h.plays, [first.url], 'Append must preserve the active decoder');
+  assert.equal(h.elements.get('football-player-line-items').children.length, 1, 'Only the current line stays over the picture');
+  assert.equal(h.elements.get('football-player-line-items').children[0].classList.contains('current'), true);
+  assert.equal(h.elements.get('football-player-menu-items').children.length, 2, 'An open line picker should receive the new backup too');
+  h.elements.get('football-player-server').click();
+  await h.choose(1);
+  assert.deepEqual(h.plays, [first.url, backup.url]);
+  h.update([{ ...first, id: 'changed-prefix' }, backup, source('hls', 'unexpected')]);
+  h.elements.get('football-player-server').click();
+  assert.equal(h.elements.get('football-player-menu-items').children.length, 2);
+  await h.open([first], 0, 'new-match', 'new-session');
+  h.update([first, backup]);
+  h.elements.get('football-player-server').click();
+  assert.equal(h.elements.get('football-player-menu-items').children.length, 1, 'Old request session cannot change a newly opened match');
+  await h.close();
+  h.update([first, backup], 'new-session');
+  assert.equal(h.overlay.classList.contains('open'), false);
+  assert.deepEqual(h.plays, [first.url, backup.url, first.url]);
+});
+
+test('provider-scoped colon IDs remain available for line diagnostics while URL-like IDs are rejected', async () => {
+  const line = { ...source('hls'), id: 'soco:123:456:0' };
+  const h = createHarness();
+  await h.open([line], 0, 'soco:123');
+  const started = h.events.find(event => event.name === 'playback started');
+  assert.equal(started.properties.line_id, 'soco:123:456:0');
+  assert.equal(started.properties.match_id, 'soco:123');
+  await h.open([{ ...line, id: 'https://source.invalid/?SECRET' }], 0, 'https://source.invalid/?SECRET');
+  assert.ok(!JSON.stringify(h.events).includes('SECRET'));
+});
+
+test('untrusted metadata cannot become URL or credential telemetry', async () => {
+  const line = source('https://upstream.invalid/?key=SECRET', 'opaque');
+  line.resolution = 'https://upstream.invalid/?key=SECRET';
+  line.healthStatus = 'SECRET';
+  const h = createHarness();
+  await h.open([line]);
+  const started = h.events.find(event => event.name === 'playback started');
+  assert.equal(started.properties.stream_type, 'auto');
+  assert.equal(started.properties.resolution, 'unknown');
+  assert.equal(started.properties.health_status, 'unknown');
+  assert.ok(!JSON.stringify(h.events).includes('SECRET'));
+  assert.ok(!JSON.stringify(h.events).includes('upstream.invalid'));
+});
+
+test('Chrome starts with conservative adaptive quality without imposing a resolution cap', async () => {
+  const h = createHarness({ ios: false });
+  await h.open([source('dash')]);
+  const config = h.players[0].configurations.find(config => config.abr);
+  assert.equal(config.abr.enabled, true);
+  assert.equal(config.abr.defaultBandwidthEstimate, 800000);
+  assert.equal(config.abr.restrictions, undefined);
+  assert.equal(h.plays.length, 1);
+});
+
+for (const { name, run } of tests) {
+  await run();
+  process.stdout.write(`PASS ${name}\n`);
+}
+process.stdout.write(`${tests.length} web player regression checks passed.\n`);
+
+// V9.8 final release verification marker: VPN-off source fallback + original streamer names.

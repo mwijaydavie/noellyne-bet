@@ -1,0 +1,520 @@
+import 'dart:convert';
+import 'dart:async';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:football_admin/services/tv_schedule_service.dart';
+
+void main() {
+  test(
+      'confirmed mutations and manual guide refresh bypass the public server cache',
+      () async {
+    final requests = <Uri>[];
+    final service = TvScheduleService(
+      apiBases: ['https://api.example'],
+      httpClient: MockClient((request) async {
+        requests.add(request.url);
+        return http.Response(jsonEncode({'channels': []}), 200);
+      }),
+    );
+    await service.load(refresh: true);
+    expect(requests.last.queryParameters['fresh'], '1');
+    TvScheduleService.invalidateShared();
+    await service.loadCatalog();
+    expect(requests.last.path, '/channels');
+    expect(requests.last.queryParameters['fresh'], '1');
+    await service.load();
+    expect(requests.last.path, '/tv-schedule');
+    expect(requests.last.queryParameters['fresh'], '1');
+  });
+
+  test('catalog can finish while the full guide is still pending', () async {
+    final response = Completer<http.Response>();
+    final service = TvScheduleService(
+        apiBases: ['https://api.example'],
+        httpClient: MockClient((request) async {
+          if (request.url.path == '/channels')
+            return http.Response(
+                jsonEncode({
+                  'channels': [
+                    {
+                      'id': 'nbc',
+                      'name': 'NBC',
+                      'epg_id': 'NBC.us',
+                      'epg_source': 'US2'
+                    }
+                  ]
+                }),
+                200);
+          return response.future;
+        }));
+    final full = service.load();
+    final catalog = await service.loadCatalog();
+    expect(catalog.channels.single.name, 'NBC');
+    expect(
+        catalog.channels.single.coverageAt(DateTime.now()), 'awaiting_guide');
+    expect(response.isCompleted, isFalse);
+    response.complete(http.Response(jsonEncode({'channels': []}), 200));
+    expect((await full).channels, isEmpty);
+  });
+  test(
+      'derived listing cache expires at a programme boundary within the same minute',
+      () {
+    final now = DateTime.utc(2026, 11, 13, 17, 0, 10);
+    final guide = TvScheduleGuide.fromJson({
+      'channels': [
+        {
+          'id': 'one',
+          'name': 'Sports',
+          'matchedEPG': true,
+          'programmes': [
+            {
+              'title': 'Moldova vs Kazakhstan',
+              'start':
+                  now.subtract(const Duration(hours: 1)).millisecondsSinceEpoch,
+              'end': now.add(const Duration(seconds: 10)).millisecondsSinceEpoch
+            }
+          ]
+        }
+      ]
+    });
+    final channel = guide.channels.single;
+    final first =
+        guide.liveAndUpcomingMatchListingsForChannel(channel, now: now);
+    expect(first.single.isLive, isTrue);
+    expect(
+        identical(
+            first,
+            guide.liveAndUpcomingMatchListingsForChannel(channel,
+                now: now.add(const Duration(seconds: 5)))),
+        isTrue);
+    expect(
+        guide.liveAndUpcomingMatchListingsForChannel(channel,
+            now: now.add(const Duration(seconds: 11))),
+        isEmpty);
+  });
+  test(
+      'NBC live soccer with host wording is a match, while previews and other sports stay hidden',
+      () {
+    final now = DateTime.utc(2026, 11, 7, 18);
+    final guide = TvScheduleGuide.fromJson({
+      'channels': [
+        {
+          'id': 'nbc',
+          'name': 'NBC',
+          'matchedEPG': true,
+          'programmes': [
+            {
+              'start': DateTime.utc(2026, 11, 7, 17, 30).millisecondsSinceEpoch,
+              'title': 'Live: Premier League Soccer',
+              'description':
+                  'Nottingham Forest host Manchester City at the City Ground.'
+            },
+            {
+              'start': now.millisecondsSinceEpoch,
+              'title': 'Live: NFL Football',
+              'description': 'Chicago hosts Tampa Bay.'
+            },
+            {
+              'start': now.millisecondsSinceEpoch,
+              'title': 'Premier League Soccer preview',
+              'description': 'Nottingham Forest host Manchester City.'
+            },
+          ],
+        }
+      ]
+    });
+    final rows = guide.liveAndUpcomingMatchListings(now: now);
+    expect(rows, hasLength(1));
+    expect(rows.single.isLive, isTrue);
+    expect(rows.single.channel.name, 'NBC');
+  });
+  test('TV guide finds only a nearby non-replay programme with both teams', () {
+    const kickoff = '2026-10-29T19:45:00Z';
+    final guide = TvScheduleGuide.fromJson({
+      'timezone': 'Asia/Yangon',
+      'channels': [
+        {
+          'id': 'tnt-1',
+          'name': 'TNT Sports 1',
+          'image_url': 'https://example.test/tnt-1.png',
+          'matchedEPG': true,
+          'region': 'uk',
+          'programmes': [
+            {
+              'start': DateTime.parse(kickoff).millisecondsSinceEpoch,
+              'title': 'Everton vs Newcastle United',
+            },
+            {
+              'start': DateTime.parse(kickoff)
+                  .add(const Duration(hours: 3))
+                  .millisecondsSinceEpoch,
+              'title': 'Everton vs Newcastle United replay',
+            },
+          ],
+        },
+        {
+          'id': 'other',
+          'name': 'Other TV',
+          'matchedEPG': true,
+          'programmes': [
+            {
+              'start': DateTime.parse(kickoff).millisecondsSinceEpoch,
+              'title': 'Everton vs Chelsea',
+            },
+          ],
+        },
+      ],
+    });
+
+    final airings = guide.airingsForMatch({
+      'home_team': 'Everton',
+      'away_team': 'Newcastle United',
+      'kickoff_at': kickoff,
+    });
+
+    expect(airings, hasLength(1));
+    expect(airings.single.channel, 'TNT Sports 1');
+    expect(airings.single.region, 'uk');
+    expect(guide.channels.first.imageUrl, 'https://example.test/tnt-1.png');
+  });
+
+  test('channel guide keeps only live or next match times and hides replays',
+      () {
+    final now = DateTime.utc(2026, 10, 29, 12);
+    final guide = TvScheduleGuide.fromJson({
+      'channels': [
+        {
+          'id': 'sports',
+          'name': 'Sports TV',
+          'matchedEPG': true,
+          'programmes': [
+            {
+              'start':
+                  now.subtract(const Duration(hours: 1)).millisecondsSinceEpoch,
+              'end': now.add(const Duration(hours: 1)).millisecondsSinceEpoch,
+              'title': 'Everton vs Newcastle United',
+            },
+            {
+              'start': now.add(const Duration(hours: 3)).millisecondsSinceEpoch,
+              'title': 'Chelsea vs Liverpool',
+            },
+            {
+              'start': now.add(const Duration(hours: 4)).millisecondsSinceEpoch,
+              'title': 'Chelsea vs Liverpool replay',
+            },
+            {
+              'start': now.add(const Duration(hours: 5)).millisecondsSinceEpoch,
+              'title': 'Football news',
+            },
+          ],
+        },
+        {
+          'id': 'not-matched',
+          'name': 'Unmatched TV',
+          'matchedEPG': false,
+          'programmes': [
+            {
+              'start': now.add(const Duration(hours: 1)).millisecondsSinceEpoch,
+              'title': 'Arsenal vs Spurs',
+            },
+          ],
+        },
+      ],
+    });
+
+    final listings = guide.liveAndUpcomingMatchListings(now: now);
+
+    expect(listings, hasLength(2));
+    expect(listings.first.isLive, isTrue);
+    expect(listings.first.programme.title, 'Everton vs Newcastle United');
+    expect(listings.last.programme.title, 'Chelsea vs Liverpool');
+  });
+
+  test('Non-football Australian rules teams are not football EPG matches', () {
+    final now = DateTime.utc(2026, 11, 1, 2);
+    final guide = TvScheduleGuide.fromJson({
+      'channels': [
+        {
+          'id': 'tnt-4',
+          'name': 'TNT Sports 4',
+          'matchedEPG': true,
+          'programmes': [
+            {
+              'start': now.millisecondsSinceEpoch,
+              'title': "Live: Women's Australian Rules",
+              'subtitle': 'Essendon Bombers v Collingwood Magpies',
+              'description': 'AFLW action from Melbourne',
+            },
+            {
+              'start': now.add(const Duration(hours: 1)).millisecondsSinceEpoch,
+              'title': 'Getafe vs Sevilla FC',
+              'stream_ambiguous': true,
+            },
+            {
+              'start': now.add(const Duration(hours: 2)).millisecondsSinceEpoch,
+              'title': 'Getafe vs Sevilla FC',
+              'description': 'Spanish La Liga live football',
+            },
+          ],
+        },
+      ],
+    });
+    final rows = guide.liveAndUpcomingMatchListings(now: now);
+    expect(rows, hasLength(1));
+    expect(rows.single.programme.title, 'Getafe vs Sevilla FC');
+    expect(rows.single.programme.start, now.add(const Duration(hours: 2)));
+  });
+
+  test('Match airings recognise broadcaster club name variants', () {
+    final kickoff = DateTime.utc(2026, 11, 1, 13);
+    final guide = TvScheduleGuide.fromJson({
+      'channels': [
+        {
+          'id': 'canal',
+          'name': 'Canal 5',
+          'matchedEPG': true,
+          'programmes': [
+            {
+              'start': kickoff
+                  .subtract(const Duration(minutes: 5))
+                  .millisecondsSinceEpoch,
+              'title': 'La Liga',
+              'description': 'Getafe v Sevilla',
+            }
+          ],
+        }
+      ],
+    });
+    final airings = guide.airingsForMatch({
+      'home_team': 'Getafe',
+      'away_team': 'Sevilla FC',
+      'kickoff_at': kickoff.toIso8601String(),
+    });
+    expect(airings, hasLength(1));
+    expect(airings.single.channel, 'Canal 5');
+  });
+
+  test('saved EPG binding stays linked while the regional guide is pending',
+      () {
+    final guide = TvScheduleGuide.fromJson({
+      'channels': [
+        {
+          'id': 'ca-tsn3',
+          'name': 'CA - TSN 3',
+          'epg_id': 'TSN3.ca',
+          'epg_source': 'IC_CA',
+          'matchedEPG': false,
+          'programmes': [],
+        },
+        {
+          'id': 'fancode-1',
+          'name': 'FanCode 1 (NITRO)',
+          'matchedEPG': false,
+          'programmes': [],
+        }
+      ]
+    });
+    expect(guide.channels.first.coverageAt(DateTime.utc(2026, 11, 9)),
+        'awaiting_guide');
+    expect(guide.channels.last.coverageAt(DateTime.utc(2026, 11, 9)),
+        'not_linked');
+  });
+
+  test('generic football programme is possible, never verified coverage', () {
+    final kickoff = DateTime.utc(2026, 11, 8, 20);
+    final guide = TvScheduleGuide.fromJson({
+      'channels': [
+        {
+          'id': 'tsn3',
+          'name': 'CA - TSN 3',
+          'epg_id': 'TSN3.ca',
+          'epg_source': 'IC_CA',
+          'matchedEPG': true,
+          'programmes': [
+            {
+              'start': kickoff
+                  .subtract(const Duration(minutes: 10))
+                  .millisecondsSinceEpoch,
+              'end':
+                  kickoff.add(const Duration(hours: 2)).millisecondsSinceEpoch,
+              'title': 'Spanish Primera Division Soccer',
+            }
+          ],
+        },
+        {
+          'id': 'other',
+          'name': 'Other channel',
+          'matchedEPG': true,
+          'programmes': [
+            {
+              'start': kickoff.millisecondsSinceEpoch,
+              'title': 'Valencia vs Osasuna',
+            },
+            {
+              'start': kickoff
+                  .add(const Duration(minutes: 10))
+                  .millisecondsSinceEpoch,
+              'title': 'La Liga highlights',
+            },
+            {
+              'start': kickoff
+                  .add(const Duration(minutes: 5))
+                  .millisecondsSinceEpoch,
+              'title': 'Live Cricket',
+            }
+          ],
+        }
+      ]
+    });
+    final match = {
+      'kickoff_at': kickoff.toIso8601String(),
+      'home_team': 'Atletico Madrid',
+      'away_team': 'FC Barcelona',
+    };
+    expect(guide.airingsForMatch(match), isEmpty);
+    final possible = guide.possibleAiringsForMatch(match);
+    expect(possible, hasLength(1));
+    expect(possible.single.channel, 'CA - TSN 3');
+    expect(possible.single.title, 'Spanish Primera Division Soccer');
+  });
+
+  test('TV schedule retains programme-only fixtures without a published match', () {
+    final kickoff = DateTime.utc(2026, 11, 15, 19, 45);
+    final guide = TvScheduleGuide.fromJson({
+      'channels': [
+        {
+          'id': 'fox-station',
+          'name': 'Fox Sports 25',
+          'epg_id': 'verified-station-id',
+          'epg_source': 'US2',
+          'matchedEPG': true,
+          'programmes': [
+            {
+              'start': kickoff.millisecondsSinceEpoch,
+              'end': kickoff.add(const Duration(hours: 2)).millisecondsSinceEpoch,
+              'title': 'France vs Türkiye',
+            },
+            {
+              'start': kickoff.millisecondsSinceEpoch,
+              'title': 'France vs Türkiye replay',
+            },
+          ]
+        },
+        {
+          'id': 'unlinked',
+          'name': 'Unverified source',
+          'matchedEPG': false,
+          'programmes': [
+            {
+              'start': kickoff.millisecondsSinceEpoch,
+              'title': 'Spain vs England',
+            }
+          ]
+        },
+      ],
+    });
+    final rows = guide.liveAndUpcomingMatchListings(
+      now: kickoff.add(const Duration(minutes: 5)),
+    );
+    expect(rows, hasLength(1));
+    expect(rows.single.channel.name, 'Fox Sports 25');
+    expect(rows.single.programme.title, 'France vs Türkiye');
+    expect(rows.single.isLive, isTrue);
+  });
+
+  test('Brazil SporTV Portuguese x fixtures show in TV Schedule and match teams', () {
+    final kickoff = DateTime.utc(2026, 11, 15, 19, 45);
+    final guide = TvScheduleGuide.fromJson({
+      'channels': [
+        for (final id in ['a', 'b'])
+          {
+            'id': id,
+            'name': 'São Paulo/SP SporTV',
+            'matchedEPG': true,
+            'epg_id': 'São.Paulo/SP..SporTV.br',
+            'epg_source': 'GH:share_BR1',
+            'programmes': [
+              {
+                'start': kickoff.millisecondsSinceEpoch,
+                'end': kickoff.add(const Duration(hours: 2)).millisecondsSinceEpoch,
+                'title': 'Espanha x Inglaterra',
+              }
+            ],
+          },
+      ],
+    });
+    final rows = guide.liveAndUpcomingMatchListings(
+      now: kickoff.add(const Duration(minutes: 5)),
+    );
+    expect(rows, hasLength(2));
+    expect(rows.every((row) => row.isLive), isTrue);
+    expect(rows.every((row) => row.programme.title == 'Espanha x Inglaterra'), isTrue);
+    final airings = guide.airingsForMatch({
+      'home_team': 'Spain',
+      'away_team': 'England',
+      'kickoff_at': kickoff.toIso8601String(),
+    });
+    expect(airings, hasLength(2));
+    expect(airings.every((airing) => airing.title == 'Espanha x Inglaterra'), isTrue);
+  });
+
+  test('French and Turkish country variants in Portuguese EPG match verified fixtures', () {
+    final kickoff = DateTime.utc(2026, 11, 15, 19, 45);
+    final guide = TvScheduleGuide.fromJson({
+      'channels': [
+        {
+          'id': 'sports-3',
+          'name': 'SporTV 3',
+          'matchedEPG': true,
+          'programmes': [
+            {
+              'title': 'França x Turquia',
+              'start': kickoff.millisecondsSinceEpoch,
+            },
+          ],
+        },
+      ],
+    });
+    final airings = guide.airingsForMatch({
+      'home_team': 'France',
+      'away_team': 'Türkiye',
+      'kickoff_at': kickoff.toIso8601String(),
+    });
+    expect(airings, hasLength(1));
+  });
+
+  test('TV guide loader uses the NCA relay and reads no playback fields',
+      () async {
+    final client = MockClient((request) async {
+      expect(request.url.path, '/tv-schedule');
+      expect(request.url.queryParameters['date'], '2026-10-29');
+      expect(request.url.queryParameters['days'], '3');
+      return http.Response(
+        jsonEncode({
+          'timezone': 'Asia/Yangon',
+          'channels': [
+            {
+              'id': 'channel-1',
+              'name': 'beIN SPORTS 1',
+              'matchedEPG': true,
+              'stream_url': 'https://not-used.example/private.m3u8',
+              'programmes': [],
+            },
+          ],
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+        request: request,
+      );
+    });
+    final guide = await TvScheduleService(
+      httpClient: client,
+      apiBases: const ['https://guide.example'],
+    ).load(now: DateTime.utc(2026, 10, 29));
+
+    expect(guide.channels.single.name, 'beIN SPORTS 1');
+    expect(guide.channels.single.programmes, isEmpty);
+  });
+}
