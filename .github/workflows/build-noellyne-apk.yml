@@ -200,10 +200,11 @@ jobs:
             DEFINES+=("--dart-define=PUBLIC_API_BASE=$CFG_API_BASE")
           fi
           BUILD_NUMBER=$((40000 + GITHUB_RUN_NUMBER))
+          set -o pipefail
           flutter build apk --release \
             --build-name "$APK_VERSION" \
             --build-number "$BUILD_NUMBER" \
-            "${DEFINES[@]}"
+            "${DEFINES[@]}" 2>&1 | tee /tmp/build.log
           ls -lh build/app/outputs/flutter-apk/
           mkdir -p /tmp/apk
           cp build/app/outputs/flutter-apk/app-release.apk \
@@ -212,6 +213,28 @@ jobs:
           echo "APK_SHA256=$(sha256sum /tmp/apk/*.apk | awk '{print $1}')" >> "$GITHUB_ENV"
           echo "APK_SIZE=$(du -h /tmp/apk/*.apk | awk '{print $1}')" >> "$GITHUB_ENV"
           echo "APK_FILE=$(basename /tmp/apk/*.apk)" >> "$GITHUB_ENV"
+
+      - name: Report build failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f /tmp/build.log ]; then
+            tail -c 60000 /tmp/build.log > /tmp/ci-error.txt
+          else
+            echo "Build step produced no captured log." > /tmp/ci-error.txt
+          fi
+          {
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            cat /tmp/ci-error.txt
+          } > /tmp/ci-report.txt
+          if gh release view ci-log >/dev/null 2>&1; then
+            gh release edit ci-log --notes-file /tmp/ci-report.txt
+          else
+            gh release create ci-log --prerelease --title "CI build log" \
+              --notes-file /tmp/ci-report.txt
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

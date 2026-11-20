@@ -1732,7 +1732,7 @@ class _HomePageState extends State<HomePage> {
       reminded: MatchReminders.instance.isReminded(m['id'].toString()),
       onRemind: kickoff == null
           ? null
-          : () => _toggleReminder(m, kickoff),
+          : () => _toggleReminder(m, kickoff!),
     );
   }
 

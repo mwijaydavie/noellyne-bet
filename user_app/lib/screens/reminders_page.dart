@@ -159,7 +159,6 @@ class _ReminderCard extends StatelessWidget {
             style: const TextStyle(
               fontSize: 11.5,
               fontWeight: FontWeight.w800,
-              fontFeatures: [FontFeature.tabularFigures()],
               color: NoellyneColors.glowDeep,
             ),
           ),
