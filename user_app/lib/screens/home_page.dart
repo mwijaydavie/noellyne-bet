@@ -1060,6 +1060,8 @@ class _HomePageState extends State<HomePage> {
           'match': pick.match,
           'league': pick.league,
           'selection': pick.pick,
+          // Native player reads `pick`; keep both keys in sync.
+          'pick': pick.pick,
           'odds': pick.odds,
           'confidence': pick.confidence,
           'units': pick.units,
