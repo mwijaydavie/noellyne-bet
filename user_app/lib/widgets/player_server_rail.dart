@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../design/noellyne_skeleton.dart';
 
 import '../playback_routes.dart';
 
@@ -104,7 +105,7 @@ class PlayerServerRail extends StatelessWidget {
             ? SizedBox(
                 key: ValueKey('player-line-loading-$current'),
                 width: 44,
-                child: const SkeletonInline(width: 44, height: 10),
+                child: SkeletonInline(width: 44, height: 10),
               )
             : const Icon(Icons.expand_more),
         onTap: () => showModalBottomSheet<void>(
