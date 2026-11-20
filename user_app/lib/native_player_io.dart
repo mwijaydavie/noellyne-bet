@@ -98,7 +98,11 @@ class NativePlayer {
     List<Map<String, dynamic>>? suggestedChannels,
     Map<String, dynamic>? featuredPick,
     int activeTabIndex = 0,
+    bool? isDark,
   }) async {
+    // Default to the in-app theme so every entry point stays in sync.
+    final dark = isDark ??
+        (context == null ? false : Theme.of(context!).brightness == Brightness.dark);
     if (Platform.isIOS) {
       if (context == null || !context.mounted) {
         throw StateError(
@@ -145,6 +149,7 @@ class NativePlayer {
           suggestedChannels == null ? '' : jsonEncode(suggestedChannels),
       'featuredPick': featuredPick == null ? '' : jsonEncode(featuredPick),
       'activeTabIndex': activeTabIndex,
+      'isDark': dark,
     });
   }
 

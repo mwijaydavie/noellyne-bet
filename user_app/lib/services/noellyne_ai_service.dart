@@ -59,7 +59,7 @@ class NoellyneAiService {
           .timeout(_timeout);
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        final reply = _extract(response.body);
+        final reply = _extract(utf8.decode(response.bodyBytes, allowMalformed: true));
         if (reply != null && reply.isNotEmpty) return reply;
       }
       debugPrint('AI webhook ${response.statusCode}; using offline brain');

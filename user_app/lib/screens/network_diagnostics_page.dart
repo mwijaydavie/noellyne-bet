@@ -163,12 +163,12 @@ class _NetworkDiagnosticsPageState extends State<NetworkDiagnosticsPage> {
       final ok =
           response.statusCode >= 200 &&
           response.statusCode < 300 &&
-          response.body.trim().startsWith('[');
+          utf8.decode(response.bodyBytes, allowMalformed: true).trim().startsWith('[');
 
       var backupLines = 0;
       if (ok) {
         try {
-          final decoded = jsonDecode(response.body);
+          final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
           if (decoded is List) {
             for (final raw in decoded) {
               if (raw is! Map) continue;
@@ -273,7 +273,7 @@ class _NetworkDiagnosticsPageState extends State<NetworkDiagnosticsPage> {
           .timeout(const Duration(seconds: 6));
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        final decoded = jsonDecode(response.body);
+        final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
         final rows = decoded is List
             ? decoded
             : (decoded is Map ? decoded['matches'] : null);
@@ -339,7 +339,7 @@ class _NetworkDiagnosticsPageState extends State<NetworkDiagnosticsPage> {
           continue;
         }
 
-        final decoded = jsonDecode(response.body);
+        final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
         final raw = decoded is Map ? decoded['streams'] : null;
         if (raw is! List || raw.isEmpty) {
           lastError = const FormatException(

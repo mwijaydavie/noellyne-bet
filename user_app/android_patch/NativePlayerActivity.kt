@@ -28,6 +28,7 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.SeekBar
@@ -169,6 +170,7 @@ class NativePlayerActivity : Activity() {
     private var selectedSubtitleLabel: String? = null
     private var displayMode = 0 // 0=Fit, 1=Full, 2=Zoom
     private var displayCutoutSafeRight = 0 // Control inset only, never video.
+    private var navigationInsetPx = 0
 
     private var sources = JSONArray()
     private val routeOverrides = mutableMapOf<Int, String>()
@@ -323,7 +325,11 @@ class NativePlayerActivity : Activity() {
         // Put a content view on screen first. Some Android 12 / OEM builds can
         // be fragile if immersive-window calls happen before a decor view exists.
         val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.rgb(20, 18, 18))
+            // Warm obsidian in dark, warm alabaster in light: the strip behind
+            // the status bar and the feed both follow the Flutter theme.
+            setBackgroundColor(
+                if (isNightMode()) Color.rgb(18, 16, 16) else Color.rgb(250, 247, 245)
+            )
         }
         setContentView(root)
 
@@ -438,7 +444,7 @@ class NativePlayerActivity : Activity() {
             contentDescription = "Play in mini player"
             setOnClickListener { enterMiniPlayer() }
         }
-        val audioButton = overlayButton("\u266A").apply {
+        val audioButton = overlayButton("\uD83C\uDFA7").apply {
             contentDescription = "Audio only mode"
             setOnClickListener { setAudioOnly(!audioOnlyMode) }
         }
@@ -587,12 +593,29 @@ class NativePlayerActivity : Activity() {
             contentDescription = "Resolution audio and playback speed"
             setOnClickListener { showPlaybackSettings(); setControlsVisible(true) }
         }
-        for (view in listOf(rewind, compactPlay, forward)) {
-            compactControls.addView(view, LinearLayout.LayoutParams(dp(35), dp(35)))
-        }
+        // The centre hero row owns -10 / play / +10 now; the bottom bar keeps
+        // only time, scrubber and settings so nothing is duplicated.
         compactControls.addView(compactTime, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, dp(35)))
         compactControls.addView(compactSeek, LinearLayout.LayoutParams(0, dp(35), 1f))
+        // Bottom bar: time, scrubber, fullscreen, settings. Nothing else.
+        val fullscreenButton = overlayButton("[ ]").apply {
+            textSize = 13f
+            contentDescription = "Toggle full screen"
+            background = null
+            setOnClickListener {
+                val toLandscape =
+                    resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE
+                intent.putExtra("nca_landscape", toLandscape)
+                requestedOrientation = if (toLandscape) {
+                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                } else {
+                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                }
+                setControlsVisible(true)
+            }
+        }
+        compactControls.addView(fullscreenButton, LinearLayout.LayoutParams(dp(35), dp(35)))
         compactControls.addView(settingsButton, LinearLayout.LayoutParams(dp(35), dp(35)))
         fun frostedCircle(label: String, sizeDp: Int, description: String): TextView =
             TextView(this).apply {
@@ -798,26 +821,32 @@ class NativePlayerActivity : Activity() {
         }
         audioStage.addView(AudioStageView(this), LinearLayout.LayoutParams(
             dp(150), dp(58)
-        ))
+        ).apply { gravity = Gravity.CENTER_HORIZONTAL })
         audioStage.addView(TextView(this).apply {
             text = "AUDIO MODE \u00B7 SAVING DATA"
             textSize = 9.5f
             letterSpacing = 0.16f
+            gravity = Gravity.CENTER
             setTextColor(Color.rgb(232, 130, 103))
             setPadding(0, dp(14), 0, dp(14))
-        })
-        audioStage.addView(TextView(this).apply {
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { gravity = Gravity.CENTER_HORIZONTAL })
+        val backToVideo = TextView(this).apply {
             text = "Back to video"
             textSize = 12f
             setTextColor(Color.rgb(245, 239, 234))
-            setPadding(dp(18), dp(9), dp(18), dp(9))
+            setPadding(dp(22), dp(9), dp(22), dp(9))
             background = GradientDrawable().apply {
                 cornerRadius = dp(999).toFloat()
                 setColor(Color.argb(255, 35, 32, 32))
                 setStroke(dp(1), Color.argb(90, 232, 130, 103))
             }
             setOnClickListener { setAudioOnly(false) }
-        })
+        }
+        audioStage.addView(backToVideo, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)
+        ).apply { gravity = Gravity.CENTER_HORIZONTAL })
         videoHost.addView(audioStage, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
@@ -852,6 +881,18 @@ class NativePlayerActivity : Activity() {
                 // Settings are anchored to END; keep their close control
                 // visible if the camera cutout sits on the right instead.
                 displayCutoutSafeRight = safeRight
+                navigationInsetPx = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    insets.getInsets(WindowInsets.Type.navigationBars()).bottom
+                } else {
+                    @Suppress("DEPRECATION")
+                    insets.systemWindowInsetBottom
+                }
+                if (::playerDock.isInitialized) {
+                    (playerDock.layoutParams as? FrameLayout.LayoutParams)?.let { params ->
+                        params.bottomMargin = navigationInsetPx + dp(12)
+                        playerDock.layoutParams = params
+                    }
+                }
                 if (::settingsPanel.isInitialized && root.width > 0) {
                     positionSettingsPanel(root, landscape)
                 }
@@ -1563,9 +1604,11 @@ class NativePlayerActivity : Activity() {
         }
     }
 
-    private fun isNightMode(): Boolean =
+    private fun isNightMode(): Boolean = intent.getBooleanExtra(
+        "isDark",
         (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
+    )
 
     private fun cardBackground(radiusDp: Int): GradientDrawable = GradientDrawable().apply {
         cornerRadius = dp(radiusDp).toFloat()
@@ -1573,8 +1616,9 @@ class NativePlayerActivity : Activity() {
             setColor(Color.rgb(28, 25, 24))
             setStroke(dp(1), Color.argb(20, 255, 255, 255))
         } else {
-            setColor(Color.rgb(250, 247, 245))
-            setStroke(dp(1), Color.argb(255, 255, 255, 255))
+            // White card on the alabaster canvas, with the brand hairline.
+            setColor(Color.rgb(255, 255, 255))
+            setStroke(dp(1), Color.rgb(234, 227, 223))
         }
     }
 
@@ -1622,7 +1666,7 @@ class NativePlayerActivity : Activity() {
         theatreBody.setBackgroundColor(
             if (isNightMode()) Color.rgb(18, 16, 16) else Color.rgb(250, 247, 245)
         )
-        theatreBody.setPadding(dp(16), dp(14), dp(16), dp(112))
+        theatreBody.setPadding(dp(16), dp(14), dp(16), dp(112) + navigationInsetPx)
 
         val title = intent.getStringExtra("title").orEmpty().ifBlank { "Live stream" }
         val parts = title.split("•", "·").map { it.trim() }.filter { it.isNotEmpty() }
@@ -1805,30 +1849,61 @@ class NativePlayerActivity : Activity() {
                 setTextColor(secondaryInk())
                 setPadding(0, dp(20), 0, dp(10))
             })
-            for (item in suggested.take(12)) {
+            for (item in suggested.take(20)) {
                 val row = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                    setPadding(0, 0, 0, 0)
                     background = cardBackground(16)
                 }
-                val stage = TextView(this).apply {
-                    text = item.optString("name").trim().take(1).uppercase(Locale.ROOT)
-                    textSize = 18f
-                    gravity = Gravity.CENTER
-                    setTextColor(Color.rgb(29, 25, 24))
+                // 16:9 stage, like a YouTube/Dazn row.
+                val stage = FrameLayout(this).apply {
                     background = GradientDrawable().apply {
                         cornerRadius = dp(14).toFloat()
-                        setColor(Color.rgb(244, 151, 126))
+                        setColor(Color.rgb(11, 10, 10))
                     }
                 }
-                row.addView(stage, LinearLayout.LayoutParams(dp(108), dp(62)))
+                stage.addView(TextView(this).apply {
+                    text = item.optString("epgTitle").ifBlank { item.optString("name") }
+                        .trim().take(1).uppercase(Locale.ROOT)
+                    textSize = 24f
+                    gravity = Gravity.CENTER
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(Color.rgb(244, 151, 126))
+                }, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                ))
+                if (item.optBoolean("isLive")) {
+                    stage.addView(TextView(this).apply {
+                        text = "LIVE"
+                        textSize = 8f
+                        letterSpacing = 0.1f
+                        setTypeface(typeface, Typeface.BOLD)
+                        setTextColor(Color.WHITE)
+                        setPadding(dp(6), dp(2), dp(6), dp(2))
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(999).toFloat()
+                            setColor(Color.rgb(232, 130, 103))
+                        }
+                    }, FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.TOP or Gravity.START
+                    ).apply {
+                        leftMargin = dp(8)
+                        topMargin = dp(8)
+                    })
+                }
+                row.addView(stage, LinearLayout.LayoutParams(dp(124), dp(70)))
                 val column = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(dp(12), 0, 0, 0)
                 }
                 column.addView(TextView(this).apply {
-                    text = item.optString("name").ifBlank { "Channel" }
+                    text = item.optString("epgTitle").ifBlank {
+                        item.optString("name").ifBlank { "Channel" }
+                    }
                     textSize = 13f
                     setTypeface(typeface, Typeface.BOLD)
                     setTextColor(primaryInk())
@@ -1836,19 +1911,33 @@ class NativePlayerActivity : Activity() {
                     ellipsize = TextUtils.TruncateAt.END
                 })
                 column.addView(TextView(this).apply {
-                    text = item.optString("subtitle").ifBlank { "Live match" }
+                    text = item.optString("subtitle").ifBlank { item.optString("name") }
                     textSize = 11f
                     setTextColor(secondaryInk())
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
                     setPadding(0, dp(3), 0, 0)
                 })
+                val lines = item.optInt("lineCount", 0)
+                column.addView(TextView(this).apply {
+                    text = if (lines > 0) {
+                        "$lines line" + (if (lines == 1) "" else "s") + " \u00B7 tap to watch"
+                    } else {
+                        "Tap to watch"
+                    }
+                    textSize = 10f
+                    setTextColor(Color.rgb(232, 130, 103))
+                    setPadding(0, dp(4), 0, 0)
+                })
                 row.addView(column, LinearLayout.LayoutParams(
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
                 ))
                 val id = item.optString("id")
                 row.setOnClickListener {
-                    if (id.isNotBlank()) {
+                    val carried = item.optString("sourcesJson")
+                    if (carried.isNotBlank()) {
+                        adoptSources(carried, item.optString("epgTitle"))
+                    } else if (id.isNotBlank()) {
                         MainActivity.emitPlayerEvent("openMatch", mapOf("matchId" to id))
                         finish()
                     }
@@ -1859,8 +1948,7 @@ class NativePlayerActivity : Activity() {
             }
         } else {
             theatreBody.addView(TextView(this).apply {
-                text = "Switch line or rotate for full screen. Suggested channels appear " +
-                    "here once the feed hands them over."
+                text = "Rotate for full screen \u00B7 tap the picture for controls"
                 textSize = 11f
                 setTextColor(secondaryInk())
                 setPadding(0, dp(18), 0, 0)
@@ -1870,67 +1958,126 @@ class NativePlayerActivity : Activity() {
 
     /** Floating stadium dock for portrait; hidden in landscape / PiP. */
     private fun buildDock(root: FrameLayout) {
-        playerDock = LinearLayout(this).apply {
+        val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(6), dp(6), dp(6))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(999).toFloat()
-                if (isNightMode()) {
-                    setColor(Color.argb(228, 28, 25, 24))
-                    setStroke(dp(1), Color.argb(30, 255, 255, 255))
-                } else {
-                    setColor(Color.argb(236, 255, 255, 255))
-                    setStroke(dp(1), Color.argb(40, 29, 25, 24))
+        }
+        // Same four destinations as the Flutter dock.
+        val tabs = listOf("Home", "Channels", "Picks", "More")
+        val icons = listOf(
+            R.drawable.ic_bet_home,
+            R.drawable.ic_bet_channels,
+            R.drawable.ic_bet_picks,
+            R.drawable.ic_bet_more
+        )
+        val activeIndex = intent.getIntExtra("activeTabIndex", 0)
+        val activeColor = Color.rgb(232, 130, 103)
+        for (index in tabs.indices) {
+            val tab = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(4), dp(7), dp(4), dp(6))
+                if (index == activeIndex) {
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(999).toFloat()
+                        setColor(Color.argb(38, 232, 130, 103))
+                    }
                 }
             }
-            visibility = View.GONE
-        }
-        val tabs = listOf("Live", "Matches", "Channels", "More")
-        val activeIndex = intent.getIntExtra("activeTabIndex", 0)
-        for (index in tabs.indices) {
-            val tab = TextView(this).apply {
+            val icon = ImageView(this).apply {
+                setImageResource(icons[index])
+                setColorFilter(if (index == activeIndex) activeColor else secondaryInk())
+            }
+            tab.addView(icon, LinearLayout.LayoutParams(dp(20), dp(20)))
+            tab.addView(TextView(this).apply {
                 text = tabs[index]
-                textSize = 10.5f
+                textSize = 9.5f
                 gravity = Gravity.CENTER
                 setTypeface(typeface, if (index == activeIndex) Typeface.BOLD else Typeface.NORMAL)
-                setTextColor(
-                    if (index == activeIndex) Color.rgb(232, 130, 103) else secondaryInk()
-                )
-                setPadding(0, dp(10), 0, dp(10))
-            }
+                setTextColor(if (index == activeIndex) activeColor else secondaryInk())
+                setPadding(0, dp(3), 0, 0)
+            })
             tab.setOnClickListener {
                 MainActivity.emitPlayerEvent("navigateToTab", mapOf("index" to index))
                 finish()
             }
-            playerDock.addView(tab, LinearLayout.LayoutParams(0, dp(44), 1f))
+            row.addView(tab, LinearLayout.LayoutParams(0, dp(52), 1f))
         }
+
+        val pill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(999).toFloat()
+                if (isNightMode()) {
+                    setColor(Color.argb(232, 28, 25, 24))
+                    setStroke(dp(1), Color.argb(30, 255, 255, 255))
+                } else {
+                    setColor(Color.argb(240, 255, 255, 255))
+                    setStroke(dp(1), Color.argb(34, 29, 25, 24))
+                }
+            }
+        }
+        pill.addView(row, LinearLayout.LayoutParams(0, dp(60), 1f))
+
+        // Detached coral AI circle, exactly like the Flutter dock.
         val ai = TextView(this).apply {
             text = "\u2726"
-            textSize = 16f
+            textSize = 20f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
             background = GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
                 intArrayOf(Color.rgb(244, 151, 126), Color.rgb(232, 130, 103))
             ).apply { shape = GradientDrawable.OVAL }
+            contentDescription = "Noellyne AI"
             setOnClickListener {
                 MainActivity.emitPlayerEvent("navigateToTab", mapOf("index" to 4))
                 finish()
             }
         }
-        playerDock.addView(ai, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
-            leftMargin = dp(8)
+
+        playerDock = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+        }
+        playerDock.addView(pill, LinearLayout.LayoutParams(0, dp(60), 1f))
+        playerDock.addView(ai, LinearLayout.LayoutParams(dp(60), dp(60)).apply {
+            leftMargin = dp(12)
         })
         root.addView(playerDock, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM
         ).apply {
-            leftMargin = dp(12)
-            rightMargin = dp(12)
+            leftMargin = dp(14)
+            rightMargin = dp(14)
             bottomMargin = dp(14)
         })
+    }
+
+    /**
+     * Swap the playing fixture's sources without leaving the player (used by
+     * the suggested-channel cards).
+     */
+    private fun adoptSources(json: String, newTitle: String) {
+        val parsed = try {
+            org.json.JSONArray(json)
+        } catch (_: Throwable) {
+            return
+        }
+        if (parsed.length() == 0) return
+        sources = parsed
+        routeOverrides.clear()
+        autoFallbackTried.clear()
+        sameLineRecoveryUsed = false
+        startedReported = false
+        selectedServerIndex = 0
+        if (newTitle.isNotBlank()) intent.putExtra("title", newTitle)
+        renderServerRail()
+        renderTheatre()
+        playServer(0)
     }
 
     private fun rebuildQualityOptions(tracks: Tracks) {
@@ -2387,6 +2534,14 @@ class NativePlayerActivity : Activity() {
                             WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                     } else {
                         c.show(WindowInsets.Type.statusBars())
+                        if (!isNightMode()) {
+                            c.setSystemBarsAppearance(
+                                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+                                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                            )
+                        }
                     }
                 }
             } else {

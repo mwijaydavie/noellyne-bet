@@ -418,7 +418,7 @@ class _SourceBrowserPageState extends State<SourceBrowserPage> {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception('Source API HTTP ' + response.statusCode.toString());
     }
-    final decoded = jsonDecode(response.body);
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
     if (source == 'soco' && decoded is Map && decoded['ok'] == false) {
       // An unavailable provider is not an authoritative empty schedule.
       throw const FormatException('Soco source temporarily unavailable.');
@@ -452,7 +452,7 @@ class _SourceBrowserPageState extends State<SourceBrowserPage> {
         'GitHub source mirror HTTP ' + response.statusCode.toString(),
       );
     }
-    final decoded = jsonDecode(response.body);
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
     if (decoded is Map && decoded['ok'] == false) {
       // A failed Soco mirror sync must not masquerade as a successful empty
       // provider schedule. Allow other live routes and local last-good data.
@@ -490,7 +490,7 @@ class _SourceBrowserPageState extends State<SourceBrowserPage> {
         'Direct source fallback HTTP ' + response.statusCode.toString(),
       );
     }
-    final decoded = jsonDecode(response.body);
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
     if (source == 'soco' && decoded is Map && decoded['ok'] == false) {
       // An unavailable provider is not an authoritative empty schedule.
       throw const FormatException('Soco source temporarily unavailable.');
@@ -677,7 +677,7 @@ class _SourceBrowserPageState extends State<SourceBrowserPage> {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception('Stream API HTTP ' + response.statusCode.toString());
     }
-    final decoded = jsonDecode(response.body);
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
     final raw = decoded is Map ? decoded['streams'] : null;
     if (raw is! List) throw const FormatException('Invalid source streams.');
     // An empty verified-source response is a source result, not a failed
@@ -959,6 +959,8 @@ class _SourceBrowserPageState extends State<SourceBrowserPage> {
             ':' +
             (m['source_id'] ?? m['schedule_id'] ?? '').toString(),
         sessionId: sessionId,
+        activeTabIndex: 0,
+        isDark: Theme.of(context).brightness == Brightness.dark,
       );
       playerOpened = true;
       publishBackups();

@@ -51,6 +51,7 @@ class NativePlayer {
     List<Map<String, dynamic>>? suggestedChannels,
     Map<String, dynamic>? featuredPick,
     int activeTabIndex = 0,
+    bool? isDark,
   }) async {
     if (sources.isNotEmpty &&
         selectedIndex >= 0 &&

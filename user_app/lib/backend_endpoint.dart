@@ -67,7 +67,7 @@ Future<String> resolveSupabaseUrl({
               Duration(seconds: candidate.base == vercelBackupBase ? 5 : 3),
             );
 
-        final decoded = jsonDecode(response.body);
+        final decoded = jsonDecode(utf8.decode(response.bodyBytes, allowMalformed: true));
         final healthy =
             candidate.direct ||
             ((candidate.base == cloudflarePublicBase || candidate.base == vercelBackupBase) &&

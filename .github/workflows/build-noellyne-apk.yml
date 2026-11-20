@@ -106,6 +106,28 @@ jobs:
           if 'PlaybackAudioService' not in s:
               s = s.replace('    </application>', audio_service + '    </application>')
 
+          # Dock icons (vector, so they stay crisp on every density).
+          drawable_dir = Path('android/app/src/main/res/drawable')
+          drawable_dir.mkdir(parents=True, exist_ok=True)
+          vectors = {
+              'ic_bet_home': 'M12,3 L3,10.5 L3,21 L9.6,21 L9.6,14.8 L14.4,14.8 '
+                             'L14.4,21 L21,21 L21,10.5 Z',
+              'ic_bet_channels': 'M2,6 L22,6 L22,20 L2,20 Z',
+              'ic_bet_picks': 'M5,2 L19,2 L19,22 L16,20 L13,22 L10,20 L7,22 '
+                              'L5,20.5 Z',
+              'ic_bet_more': 'M3,6 L21,6 L21,8.4 L3,8.4 Z M3,10.8 L21,10.8 '
+                             'L21,13.2 L3,13.2 Z M3,15.6 L21,15.6 L21,18 L3,18 Z',
+          }
+          for name, path_data in vectors.items():
+              (drawable_dir / (name + '.xml')).write_text(
+                  '<vector xmlns:android="http://schemas.android.com/apk/res/android"\n'
+                  '    android:width="24dp" android:height="24dp"\n'
+                  '    android:viewportWidth="24" android:viewportHeight="24">\n'
+                  '  <path android:fillColor="#FFFFFF" android:pathData="'
+                  + path_data + '" />\n'
+                  '</vector>\n'
+              )
+
           posthog = (
               '        <meta-data android:name="com.posthog.posthog.AUTO_INIT" '
               'android:value="false" />\n'
