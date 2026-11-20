@@ -340,8 +340,10 @@ class NativePlayerActivity : Activity() {
 
         try {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            window.statusBarColor = Color.rgb(20, 18, 18)
-            window.navigationBarColor = Color.rgb(20, 18, 18)
+            // Edge-to-edge: the player's own surfaces paint under the bars, so
+            // no hardcoded black strip can appear in the light theme.
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
         } catch (_: Throwable) {
             // Window cosmetics must never stop playback from starting.
         }
@@ -739,6 +741,7 @@ class NativePlayerActivity : Activity() {
                 playerDock.visibility = if (landscape) View.GONE else View.VISIBLE
             }
             if (::settingsPanel.isInitialized) positionSettingsPanel(root, landscape)
+            applySystemBars()
         }
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutPlayer() }
         root.post { layoutPlayer(); applyDisplayMode() }
@@ -894,7 +897,7 @@ class NativePlayerActivity : Activity() {
                 }
                 if (::playerDock.isInitialized) {
                     (playerDock.layoutParams as? FrameLayout.LayoutParams)?.let { params ->
-                        params.bottomMargin = navigationInsetPx + dp(12)
+                        params.bottomMargin = navigationInsetPx + dp(14)
                         playerDock.layoutParams = params
                     }
                 }
@@ -1969,11 +1972,18 @@ class NativePlayerActivity : Activity() {
 
     /** Floating stadium dock for portrait; hidden in landscape / PiP. */
     private fun buildDock(root: FrameLayout) {
+        // Pixel-for-pixel parity with Flutter's FloatingDock:
+        // 60dp frosted stadium, 5dp inner padding, 999 radius, active tile is a
+        // full ink pill, icons 20dp with a 10.5sp label 2dp below, and the
+        // coral AI circle detached 12dp to the right.
+        val activeBg = if (isNightMode()) Color.rgb(217, 107, 82) else Color.rgb(29, 25, 24)
+        val activeFg = if (isNightMode()) Color.rgb(29, 25, 24) else Color.WHITE
+        val idleFg = secondaryInk()
+
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        // Same four destinations as the Flutter dock.
         val tabs = listOf("Home", "Channels", "Picks", "More")
         val icons = listOf(
             R.drawable.ic_bet_home,
@@ -1982,63 +1992,63 @@ class NativePlayerActivity : Activity() {
             R.drawable.ic_bet_more
         )
         val activeIndex = intent.getIntExtra("activeTabIndex", 0)
-        val activeColor = Color.rgb(232, 130, 103)
         for (index in tabs.indices) {
+            val active = index == activeIndex
             val tab = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                setPadding(dp(4), dp(7), dp(4), dp(6))
-                if (index == activeIndex) {
-                    background = GradientDrawable().apply {
-                        cornerRadius = dp(999).toFloat()
-                        setColor(Color.argb(38, 232, 130, 103))
-                    }
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(999).toFloat()
+                    setColor(if (active) activeBg else Color.TRANSPARENT)
                 }
             }
-            val icon = ImageView(this).apply {
+            tab.addView(ImageView(this).apply {
                 setImageResource(icons[index])
-                setColorFilter(if (index == activeIndex) activeColor else secondaryInk())
-            }
-            tab.addView(icon, LinearLayout.LayoutParams(dp(20), dp(20)))
+                setColorFilter(if (active) activeFg else idleFg)
+            }, LinearLayout.LayoutParams(dp(20), dp(20)))
             tab.addView(TextView(this).apply {
                 text = tabs[index]
-                textSize = 9.5f
+                textSize = 10.5f
                 gravity = Gravity.CENTER
-                setTypeface(typeface, if (index == activeIndex) Typeface.BOLD else Typeface.NORMAL)
-                setTextColor(if (index == activeIndex) activeColor else secondaryInk())
-                setPadding(0, dp(3), 0, 0)
+                includeFontPadding = false
+                setTypeface(typeface, if (active) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(if (active) activeFg else idleFg)
+                setPadding(0, dp(2), 0, 0)
             })
             tab.setOnClickListener { finishWithTab(index) }
-            row.addView(tab, LinearLayout.LayoutParams(0, dp(52), 1f))
+            row.addView(tab, LinearLayout.LayoutParams(0, dp(50), 1f).apply {
+                marginEnd = if (index < tabs.size - 1) dp(1) else 0
+                marginStart = if (index > 0) dp(1) else 0
+            })
         }
 
         val pill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(5), dp(5), dp(5), dp(5))
+            elevation = dp(10).toFloat()
             background = GradientDrawable().apply {
                 cornerRadius = dp(999).toFloat()
                 if (isNightMode()) {
-                    setColor(Color.argb(232, 28, 25, 24))
+                    setColor(Color.argb(236, 28, 25, 24))
                     setStroke(dp(1), Color.argb(30, 255, 255, 255))
                 } else {
-                    setColor(Color.argb(240, 255, 255, 255))
-                    setStroke(dp(1), Color.argb(34, 29, 25, 24))
+                    setColor(Color.argb(244, 255, 255, 255))
+                    setStroke(dp(1), Color.rgb(234, 227, 223))
                 }
             }
         }
-        pill.addView(row, LinearLayout.LayoutParams(0, dp(60), 1f))
+        pill.addView(row, LinearLayout.LayoutParams(0, dp(50), 1f))
 
-        // Detached coral AI circle, exactly like the Flutter dock.
-        val ai = TextView(this).apply {
-            text = "\u2726"
-            textSize = 20f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+        val ai = ImageView(this).apply {
+            setImageResource(R.drawable.ic_bet_spark)
+            setColorFilter(Color.WHITE)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            contentDescription = "Noellyne AI"
             background = GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
                 intArrayOf(Color.rgb(244, 151, 126), Color.rgb(232, 130, 103))
             ).apply { shape = GradientDrawable.OVAL }
-            contentDescription = "Noellyne AI"
             setOnClickListener { finishWithTab(4) }
         }
 
@@ -2138,6 +2148,7 @@ class NativePlayerActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
             Gravity.TOP
         ))
+        positionSettingsScrim(root)
 
         settingsPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -2227,6 +2238,38 @@ class NativePlayerActivity : Activity() {
         })
     }
 
+    /** Height of the 16:9 stage from the top of the window. */
+    private fun stageBottomPx(root: FrameLayout): Int {
+        val width = if (root.width > 0) root.width else resources.displayMetrics.widthPixels
+        return (width * 9f / 16f).toInt().coerceAtLeast(dp(150))
+    }
+
+    /**
+     * Portrait: the dim starts BELOW the video, so the pitch is never greyed
+     * out while quality is being chosen. Landscape: soft full dim behind the
+     * side panel.
+     */
+    private fun positionSettingsScrim(root: FrameLayout) {
+        val scrim = settingsScrim ?: return
+        val landscape =
+            resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val params = (scrim.layoutParams as? FrameLayout.LayoutParams)
+            ?: FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.TOP
+            )
+        params.gravity = Gravity.TOP
+        params.leftMargin = 0
+        params.rightMargin = 0
+        params.topMargin = if (landscape) 0 else stageBottomPx(root)
+        params.height = ViewGroup.LayoutParams.MATCH_PARENT
+        scrim.layoutParams = params
+        scrim.setBackgroundColor(
+            if (landscape) Color.argb(72, 0, 0, 0) else Color.argb(46, 0, 0, 0)
+        )
+    }
+
     private fun positionSettingsPanel(root: FrameLayout, landscape: Boolean) {
         if (!::settingsPanel.isInitialized) return
         val params = (settingsPanel.layoutParams as? FrameLayout.LayoutParams)
@@ -2246,10 +2289,11 @@ class NativePlayerActivity : Activity() {
             params.topMargin = 0
             params.bottomMargin = dp(12) + navigationInsetPx
         } else {
-            // Portrait: detached bottom sheet, max 56% of the screen.
+            // Portrait: detached bottom sheet that stops below the video.
+            val room = root.height - stageBottomPx(root) - navigationInsetPx - dp(28)
             params.width = ViewGroup.LayoutParams.MATCH_PARENT
-            params.height = (root.height * 0.56f).toInt()
-                .coerceIn(dp(220), root.height.coerceAtLeast(dp(240)))
+            params.height = minOf((root.height * 0.56f).toInt(), room)
+                .coerceIn(dp(200), root.height.coerceAtLeast(dp(240)))
             params.gravity = Gravity.BOTTOM
             params.leftMargin = dp(12)
             params.rightMargin = dp(12)
@@ -2257,8 +2301,7 @@ class NativePlayerActivity : Activity() {
             params.bottomMargin = navigationInsetPx + dp(16)
         }
         settingsPanel.layoutParams = params
-        // The sheet must never grow taller than its own content.
-        settingsPanel.layoutParams = params
+        positionSettingsScrim(root)
     }
 
     private fun settingsBackground(selected: Boolean, radius: Int = 8): GradientDrawable =
@@ -2370,6 +2413,27 @@ class NativePlayerActivity : Activity() {
 
     private fun sheetInterpolator(): TimeInterpolator =
         PathInterpolator(0.16f, 1f, 0.3f, 1f)
+
+    /**
+     * The status bar always sits over the black video -> white icons, even in
+     * the light theme. The navigation bar floats over the warm canvas, so its
+     * icons follow the in-app theme instead.
+     */
+    private fun applySystemBars() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        val controller = window.insetsController ?: return
+        val landscape =
+            resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        var appearance = 0
+        if (!landscape && !isNightMode()) {
+            appearance = appearance or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        }
+        controller.setSystemBarsAppearance(
+            appearance,
+            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        )
+    }
 
     private fun ensureSettingsSheetVisible() {
         if (!::settingsPanel.isInitialized) return
@@ -2542,8 +2606,11 @@ class NativePlayerActivity : Activity() {
         if (root != null && root.width > 0) positionSettingsPanel(root, isLandscape)
         val maxScroll = minOf(dp(455), (heightAvailable * 0.61f).toInt()
             .coerceAtLeast(dp(90)))
+        // Weight-driven height: the sheet decides how tall the list grows, so
+        // an explicit height here would clip the last rows.
         settingsScroll.layoutParams = (settingsScroll.layoutParams as LinearLayout.LayoutParams).apply {
-            height = minOf(maxScroll, dp(42) + choices * dp(49))
+            height = 0
+            weight = 1f
         }
         settingsScroll.scrollTo(0, 0)
         compactControls.visibility = View.VISIBLE
@@ -2667,14 +2734,7 @@ class NativePlayerActivity : Activity() {
                             WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                     } else {
                         c.show(WindowInsets.Type.statusBars())
-                        if (!isNightMode()) {
-                            c.setSystemBarsAppearance(
-                                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
-                                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
-                                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
-                                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-                            )
-                        }
+                        applySystemBars()
                     }
                 }
             } else {

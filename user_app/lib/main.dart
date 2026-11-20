@@ -135,7 +135,7 @@ class FootballViewerApp extends StatelessWidget {
                 systemNavigationBarIconBrightness:
                     dark ? Brightness.light : Brightness.dark,
               ),
-              child: child ?? const SizedBox.shrink(),
+              child: _OverlaySync(dark: dark, child: child ?? const SizedBox.shrink()),
             );
           },
           home: RootBackGuard(
@@ -204,5 +204,36 @@ class _FirstRunGateState extends State<_FirstRunGate> {
       backendReady: widget.backendReady,
       initialMatchId: widget.initialMatchId,
     );
+  }
+}
+
+/// Re-applies the system bar icon colours after every theme change and after
+/// the native player returns: the AnnotatedRegion alone can be missed on some
+/// OEM builds, which left unreadable status-bar content in the light theme.
+class _OverlaySync extends StatelessWidget {
+  const _OverlaySync({required this.dark, required this.child});
+
+  final bool dark;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = (dark
+            ? SystemUiOverlayStyle.light
+            : SystemUiOverlayStyle.dark)
+        .copyWith(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+      statusBarBrightness: dark ? Brightness.dark : Brightness.light,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarDividerColor: Colors.transparent,
+      systemNavigationBarContrastEnforced: false,
+      systemNavigationBarIconBrightness:
+          dark ? Brightness.light : Brightness.dark,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      SystemChrome.setSystemUIOverlayStyle(style);
+    });
+    return child;
   }
 }

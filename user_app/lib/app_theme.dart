@@ -1,6 +1,7 @@
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// Noellyne Bet design tokens — see DESIGN_SYSTEM.md (locked brief).
 ///
@@ -118,6 +119,16 @@ class AppTheme {
 
     return _base(scheme).copyWith(
       scaffoldBackgroundColor: NoellyneColors.canvasDark,
+      appBarTheme: _base(scheme).appBarTheme.copyWith(
+        systemOverlayStyle: const SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.light,
+          statusBarBrightness: Brightness.dark,
+          systemNavigationBarColor: Colors.transparent,
+          systemNavigationBarIconBrightness: Brightness.light,
+          systemNavigationBarContrastEnforced: false,
+        ),
+      ),
       chipTheme: ChipThemeData(
         backgroundColor: const Color(0xFF232020),
         selectedColor: NoellyneColors.glowDeep.withValues(alpha: .26),
@@ -165,6 +176,16 @@ class AppTheme {
         centerTitle: false,
         backgroundColor: Colors.transparent,
         foregroundColor: scheme.onSurface,
+        // The app bars are transparent, so Android must be told explicitly
+        // which icon colour reads on the warm canvas.
+        systemOverlayStyle: const SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.dark,
+          statusBarBrightness: Brightness.light,
+          systemNavigationBarColor: Colors.transparent,
+          systemNavigationBarIconBrightness: Brightness.dark,
+          systemNavigationBarContrastEnforced: false,
+        ),
         surfaceTintColor: Colors.transparent,
         titleTextStyle: TextStyle(
           color: scheme.onSurface,

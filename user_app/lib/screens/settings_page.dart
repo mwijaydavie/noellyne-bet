@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../app_theme.dart';
 import '../app_update_service.dart';
 import '../channel_library.dart';
+import '../design/noellyne_skeleton.dart';
 import '../design/noellyne_ui.dart';
 import '../noellyne_config.dart';
 import '../widgets/theme_mode_button.dart';
@@ -183,7 +184,7 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator(strokeWidth: 2.4))
+          ? const SkeletonRows(count: 7)
           : NoellyneBackground(
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(14, 8, 14, 32),

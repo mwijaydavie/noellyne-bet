@@ -20,6 +20,7 @@ import 'source_browser_page.dart';
 import '../viewer_navigation.dart';
 import 'channels_page.dart';
 import 'network_diagnostics_page.dart';
+import '../design/noellyne_skeleton.dart';
 import '../design/noellyne_ui.dart';
 import '../services/daily_picks_repository.dart';
 import '../models/daily_pick.dart';
@@ -2147,7 +2148,7 @@ class _HomePageState extends State<HomePage> {
         animation: _feed,
         builder: (context, _) {
           if (_feed.loading && !_feed.hasData) {
-            return const _PremiumLoading();
+            return const SkeletonLobby();
           }
           if (_feed.error != null && !_feed.hasData) {
             return _StateMessage(
@@ -2209,46 +2210,6 @@ class _HomePageState extends State<HomePage> {
       ),
       extendBody: true,
       bottomNavigationBar: const NoellyneDockBar(current: NoellyneTab.home),
-    );
-  }
-}
-
-class _PremiumLoading extends StatelessWidget {
-  const _PremiumLoading();
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-
-    return Center(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        decoration: BoxDecoration(
-          color: colors.surfaceContainerHighest.withValues(alpha: .55),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: colors.outlineVariant.withValues(alpha: .24),
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(
-                strokeWidth: 2.4,
-                color: colors.primary,
-              ),
-            ),
-            const SizedBox(width: 12),
-            const Text(
-              'Loading live feed…',
-              style: TextStyle(fontWeight: FontWeight.w700),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

@@ -14,6 +14,7 @@ import '../network_endpoints.dart';
 import '../playback_routes.dart';
 import '../public_guide_cache.dart';
 import '../channel_match_search.dart';
+import '../design/noellyne_skeleton.dart';
 import '../design/noellyne_ui.dart';
 import '../widgets/noellyne_dock_bar.dart';
 import '../widgets/noellyne_lobby.dart';
@@ -546,7 +547,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
       builder: (context, snapshot) {
         final rows = snapshot.hasData ? snapshot.data : _lastChannels;
         if (rows == null && !snapshot.hasError) {
-          return const Center(child: CircularProgressIndicator());
+          return const SkeletonChannelGrid();
         }
         if (rows == null) {
           return Center(

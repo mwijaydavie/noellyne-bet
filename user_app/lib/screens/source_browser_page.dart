@@ -24,6 +24,7 @@ import '../widgets/premium_bottom_nav.dart';
 import '../widgets/premium_match_card.dart';
 import '../widgets/source_match_filters.dart';
 
+import '../design/noellyne_skeleton.dart';
 class SourceBrowserPage extends StatefulWidget {
   const SourceBrowserPage({super.key, required this.source});
   final String source;
@@ -1173,13 +1174,10 @@ class _SourceLoading extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            SizedBox(
+            const SizedBox(
               width: 20,
               height: 20,
-              child: CircularProgressIndicator(
-                strokeWidth: 2.4,
-                color: colors.primary,
-              ),
+              child: SkeletonInline(width: 20, height: 20),
             ),
             const SizedBox(width: 12),
             Text(
