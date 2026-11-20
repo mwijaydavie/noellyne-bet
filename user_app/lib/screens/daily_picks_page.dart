@@ -5,6 +5,7 @@ import '../app_theme.dart';
 import '../design/noellyne_ui.dart';
 import '../models/daily_pick.dart';
 import '../services/daily_picks_repository.dart';
+import '../widgets/noellyne_dock_bar.dart';
 
 /// Daily Bets feed — n8n picks rendered as structured, tappable cards.
 /// See DESIGN_SYSTEM.md § "Daily Bets Feed (n8n)".
@@ -74,6 +75,8 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
           ),
         ),
       ),
+      extendBody: true,
+      bottomNavigationBar: const NoellyneDockBar(current: NoellyneTab.picks),
       body: NoellyneBackground(
         child: Column(
           children: [
@@ -96,6 +99,14 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                         parent: BouncingScrollPhysics(),
                       ),
                       slivers: [
+                        if (DailyPicksRepository.showsSampleData &&
+                            all.isNotEmpty)
+                          const SliverToBoxAdapter(
+                            child: Padding(
+                              padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
+                              child: _SampleBanner(),
+                            ),
+                          ),
                         SliverToBoxAdapter(
                           child: Padding(
                             padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
@@ -106,10 +117,12 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                           ),
                         ),
                         if (picks.isEmpty)
-                          const SliverToBoxAdapter(child: _EmptyPicks())
+                          SliverToBoxAdapter(
+                            child: _EmptyPicks(onRefresh: _refresh),
+                          )
                         else
                           SliverPadding(
-                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
                             sliver: SliverList.separated(
                               itemCount: picks.length,
                               separatorBuilder: (_, _) =>
@@ -590,8 +603,49 @@ class _PicksSkeleton extends StatelessWidget {
   }
 }
 
+/// Shown only when `DAILY_PICKS_DEMO=true`: never let sample odds look real.
+class _SampleBanner extends StatelessWidget {
+  const _SampleBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: dark ? const Color(0xFF2A211C) : const Color(0xFFFFF3E6),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: NoellyneColors.glowDeep.withValues(alpha: .45),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.science_rounded,
+              size: 16, color: NoellyneColors.glowDeep),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'SAMPLE DATA — these are design fixtures, not live picks. '
+              'Connect the n8n pipeline for real slips.',
+              style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w700,
+                height: 1.35,
+                color: dark ? const Color(0xFFF5EFEA) : NoellyneColors.ink,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _EmptyPicks extends StatelessWidget {
-  const _EmptyPicks();
+  const _EmptyPicks({this.onRefresh});
+
+  final Future<void> Function()? onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -604,23 +658,33 @@ class _EmptyPicks extends StatelessWidget {
               size: 40, color: NoellyneColors.glowDeep.withValues(alpha: .8)),
           const SizedBox(height: 12),
           Text(
-            'No picks in this filter',
+            'No picks published yet',
             style: TextStyle(
               fontSize: 15,
               fontWeight: FontWeight.w800,
               color: scheme.onSurface,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
-            'Try “All Picks” — new slips drop every morning.',
+            'Nothing is invented here. The Hermes pipeline publishes today\'s '
+            'slips at 09:00, 14:00 and 19:00 EAT — they appear automatically '
+            'as soon as n8n writes them.',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 12.5,
+              height: 1.4,
               fontWeight: FontWeight.w600,
               color: scheme.onSurfaceVariant,
             ),
           ),
+          const SizedBox(height: 16),
+          if (onRefresh != null)
+            FilledButton.icon(
+              onPressed: () => onRefresh!(),
+              icon: const Icon(Icons.refresh_rounded, size: 17),
+              label: const Text('Check again'),
+            ),
         ],
       ),
     );

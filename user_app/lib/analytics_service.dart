@@ -26,7 +26,7 @@ class AnalyticsService {
       // properties alone only tagged our explicit events, leaving crashes
       // without an Admin/Viewer or Web/native breakdown.
       await Future.wait([
-        Posthog().register('app', 'nca_viewer'),
+        Posthog().register('app', 'noellyne_viewer'),
         Posthog().register(
           'platform',
           kIsWeb ? 'web' : defaultTargetPlatform.name,
@@ -48,7 +48,7 @@ class AnalyticsService {
           .capture(
             eventName: eventName,
             properties: <String, Object>{
-              'app': 'nca_viewer',
+              'app': 'noellyne_viewer',
               'platform': kIsWeb ? 'web' : defaultTargetPlatform.name,
               ...?properties,
             },

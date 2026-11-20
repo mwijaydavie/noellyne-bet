@@ -578,7 +578,7 @@ class _NetworkDiagnosticsPageState extends State<NetworkDiagnosticsPage> {
                   style: TextStyle(fontWeight: FontWeight.w900),
                 ),
                 subtitle: const Text(
-                  'NCA can check, download and open the latest APK installer directly.',
+                  'Noellyne Bet can check, download and open the latest APK installer directly.',
                 ),
                 trailing: const Icon(Icons.chevron_right_rounded),
                 onTap: () => AppUpdateService.check(context, force: true),

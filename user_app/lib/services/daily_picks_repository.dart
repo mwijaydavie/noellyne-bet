@@ -5,16 +5,21 @@ import '../models/daily_pick.dart';
 
 /// Loads published picks written by the n8n pipeline.
 ///
-/// Degrades gracefully: if Supabase is unavailable or the table is empty,
-/// [_demo] picks are returned so the feed never shows a blank screen.
-/// Set `DAILY_PICKS_DEMO=0` via dart-define to disable demo content.
+/// Degrades gracefully: if Supabase is unavailable or the table is empty the
+/// feed returns an empty list and the UI shows the honest pipeline schedule —
+/// we never pass invented odds off as real picks. Opt into sample content for
+/// design work with `--dart-define=DAILY_PICKS_DEMO=true`; the UI then badges
+/// every card as SAMPLE.
 class DailyPicksRepository {
   const DailyPicksRepository();
 
   static const _enableDemo = bool.fromEnvironment(
     'DAILY_PICKS_DEMO',
-    defaultValue: true,
+    defaultValue: false,
   );
+
+  /// True when what the UI is showing came from [_demo], not the pipeline.
+  static bool get showsSampleData => _enableDemo;
 
   Future<List<DailyPick>> fetch({int limit = 40}) async {
     try {

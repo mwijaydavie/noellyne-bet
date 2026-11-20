@@ -294,10 +294,10 @@ class AppUpdateService {
         barrierDismissible: !mandatory,
         builder: (dialogContext) => AlertDialog(
           icon: const Icon(Icons.system_update_alt_rounded),
-          title: Text('NCA $version available'),
+          title: Text('Noellyne Bet $version available'),
           content: Text(
             notes.isEmpty
-                ? 'A newer version of NCA is ready. Update now?'
+                ? 'A newer version of Noellyne Bet is ready. Update now?'
                 : notes,
           ),
           actions: [
@@ -353,7 +353,7 @@ class AppUpdateService {
         child: ValueListenableBuilder<double>(
           valueListenable: progress,
           builder: (context, value, _) => AlertDialog(
-            title: const Text('Downloading NCA update'),
+            title: const Text('Downloading Noellyne Bet update'),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [

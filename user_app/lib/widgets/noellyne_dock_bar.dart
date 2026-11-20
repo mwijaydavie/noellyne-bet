@@ -6,14 +6,16 @@ import '../noellyne_config.dart';
 import '../screens/ai_chat_page.dart';
 import '../screens/channels_page.dart';
 import '../screens/daily_picks_page.dart';
+import '../screens/settings_page.dart';
 import '../screens/home_page.dart';
 import '../screens/source_browser_page.dart';
 import '../viewer_navigation.dart';
 import 'noellyne_lobby.dart';
 import 'theme_mode_button.dart';
 
-/// The four destinations every main screen shares.
-enum NoellyneTab { live, matches, channels }
+/// The destinations every main screen shares. Live and Matches now live
+/// together on Home as segments, so one tap can never land on a dead route.
+enum NoellyneTab { home, channels, picks }
 
 /// Shared floating stadium dock. Screens pass [onSelect] when they need to
 /// persist their own state before leaving; otherwise navigation is handled here.
@@ -30,9 +32,9 @@ class NoellyneDockBar extends StatelessWidget {
   final VoidCallback? onAi;
 
   int get _index => switch (current) {
-        NoellyneTab.live => 0,
-        NoellyneTab.matches => 1,
-        NoellyneTab.channels => 2,
+        NoellyneTab.home => 0,
+        NoellyneTab.channels => 1,
+        NoellyneTab.picks => 2,
       };
 
   static void _replace(BuildContext context, Widget page) {
@@ -51,9 +53,9 @@ class NoellyneDockBar extends StatelessWidget {
       return;
     }
     final tab = switch (index) {
-      0 => NoellyneTab.live,
-      1 => NoellyneTab.matches,
-      _ => NoellyneTab.channels,
+      0 => NoellyneTab.home,
+      1 => NoellyneTab.channels,
+      _ => NoellyneTab.picks,
     };
     if (tab == current) return;
     if (onSelect != null) {
@@ -61,12 +63,12 @@ class NoellyneDockBar extends StatelessWidget {
       return;
     }
     switch (tab) {
-      case NoellyneTab.live:
-        goHome(context, LobbyFilter.liveNow);
-      case NoellyneTab.matches:
-        goHome(context, LobbyFilter.all);
+      case NoellyneTab.home:
+        _replace(context, const HomePage());
       case NoellyneTab.channels:
         _replace(context, const ChannelsPage());
+      case NoellyneTab.picks:
+        _replace(context, const DailyPicksPage());
     }
   }
 
@@ -77,19 +79,19 @@ class NoellyneDockBar extends StatelessWidget {
       child: FloatingDock(
         items: const [
           DockItem(
-            icon: Icons.live_tv_outlined,
-            activeIcon: Icons.live_tv_rounded,
-            label: 'Live',
-          ),
-          DockItem(
-            icon: Icons.calendar_month_outlined,
-            activeIcon: Icons.calendar_month_rounded,
-            label: 'Matches',
+            icon: Icons.sports_soccer_outlined,
+            activeIcon: Icons.sports_soccer_rounded,
+            label: 'Home',
           ),
           DockItem(
             icon: Icons.tv_outlined,
             activeIcon: Icons.tv_rounded,
             label: 'Channels',
+          ),
+          DockItem(
+            icon: Icons.receipt_long_outlined,
+            activeIcon: Icons.receipt_long_rounded,
+            label: 'Picks',
           ),
           DockItem(icon: Icons.menu_rounded, label: 'More'),
         ],
@@ -231,6 +233,21 @@ Future<void> showNoellyneMoreSheet(BuildContext context) async {
                     },
                   ),
                 const Divider(height: 14),
+                ListTile(
+                  leading: const Icon(Icons.tune_rounded),
+                  title: const Text(
+                    'Settings',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: const Text(
+                    'Profile, reminders, notifications, pinned teams',
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    push(const SettingsPage());
+                  },
+                ),
                 ListTile(
                   leading: const Icon(Icons.palette_outlined),
                   title: const Text(

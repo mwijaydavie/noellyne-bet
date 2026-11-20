@@ -26,7 +26,7 @@ Future<void> downloadAndInstallApk(
   const maxBytes = 45 * 1024 * 1024;
   final client = http.Client();
   final dir = await getTemporaryDirectory();
-  final file = File('${dir.path}/NCA-update.apk');
+  final file = File('${dir.path}/NoellyneBet-update.apk');
   var received = 0;
   int? total;
   try {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -24,6 +26,11 @@ class _AiChatPageState extends State<AiChatPage> {
   final _messages = <AiMessage>[];
   bool _sending = false;
 
+  // Typewriter: AI replies stream in character-by-character.
+  Timer? _typer;
+  int _typingIndex = -1;
+  int _typingChars = 0;
+
   @override
   void initState() {
     super.initState();
@@ -35,10 +42,58 @@ class _AiChatPageState extends State<AiChatPage> {
         fromUser: false,
       ),
     );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _startTyping(_messages.length - 1);
+    });
+  }
+
+  /// Reveals [index] character by character, then settles on the full text.
+  void _startTyping(int index) {
+    _typer?.cancel();
+    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) {
+      setState(() {
+        _typingIndex = -1;
+        _typingChars = 0;
+      });
+      return;
+    }
+    final full = _messages[index].text;
+    setState(() {
+      _typingIndex = index;
+      _typingChars = 0;
+    });
+    _typer = Timer.periodic(const Duration(milliseconds: 12), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        // ~4 chars per tick reads like a fast model stream.
+        _typingChars = (_typingChars + 4).clamp(0, full.length);
+      });
+      if (_typingChars >= full.length) {
+        timer.cancel();
+        setState(() => _typingIndex = -1);
+        _scrollToEnd();
+      } else if (_typingChars % 48 == 0) {
+        _scrollToEnd();
+      }
+    });
+  }
+
+  /// Tapping a message while it streams finishes it immediately.
+  void _finishTyping() {
+    if (_typingIndex < 0) return;
+    _typer?.cancel();
+    setState(() {
+      _typingIndex = -1;
+      _typingChars = 0;
+    });
   }
 
   @override
   void dispose() {
+    _typer?.cancel();
     _controller.dispose();
     _scroll.dispose();
     super.dispose();
@@ -76,6 +131,7 @@ class _AiChatPageState extends State<AiChatPage> {
       _sending = false;
     });
     _scrollToEnd();
+    _startTyping(_messages.length - 1);
   }
 
   @override
@@ -171,7 +227,12 @@ class _AiChatPageState extends State<AiChatPage> {
                 itemCount: _messages.length,
                 itemBuilder: (context, i) {
                   final m = _messages[i];
-                  return _Bubble(message: m);
+                  return _Bubble(
+                    message: m,
+                    typing: i == _typingIndex,
+                    visibleChars: i == _typingIndex ? _typingChars : null,
+                    onTapWhileTyping: _finishTyping,
+                  );
                 },
               ),
             ),
@@ -192,9 +253,17 @@ class _AiChatPageState extends State<AiChatPage> {
 }
 
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.message});
+  const _Bubble({
+    required this.message,
+    this.typing = false,
+    this.visibleChars,
+    this.onTapWhileTyping,
+  });
 
   final AiMessage message;
+  final bool typing;
+  final int? visibleChars;
+  final VoidCallback? onTapWhileTyping;
 
   @override
   Widget build(BuildContext context) {
@@ -231,6 +300,7 @@ class _Bubble extends StatelessWidget {
       child: Align(
         alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
         child: GestureDetector(
+          onTap: typing ? onTapWhileTyping : null,
           onLongPress: () async {
             await Clipboard.setData(ClipboardData(text: message.text));
             if (!context.mounted) return;
@@ -258,8 +328,27 @@ class _Bubble extends StatelessWidget {
                     : const Color(0x88FFFFFF),
               ),
             ),
-            child: Text(
-              message.text,
+            child: Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: visibleChars == null
+                        ? message.text
+                        : message.text.substring(
+                            0,
+                            visibleChars!.clamp(0, message.text.length),
+                          ),
+                  ),
+                  if (typing)
+                    TextSpan(
+                      text: '▍',
+                      style: TextStyle(
+                        color: NoellyneColors.glowDeep,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                ],
+              ),
               style: TextStyle(
                 fontSize: 13,
                 height: 1.42,

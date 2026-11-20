@@ -16,6 +16,7 @@ import '../public_guide_cache.dart';
 import '../channel_match_search.dart';
 import '../widgets/noellyne_dock_bar.dart';
 import '../widgets/noellyne_lobby.dart';
+import 'daily_picks_page.dart';
 import 'home_page.dart';
 import 'source_browser_page.dart';
 import '../viewer_navigation.dart';
@@ -440,8 +441,11 @@ class _ChannelsPageState extends State<ChannelsPage> {
         await library.toggleFavorite(id);
         if (mounted) setState(() {});
       } else {
-        final opened = await launchUrl(Uri.https('t.me', '/NCAFootballViewer_bot',
-            {'start': 'report_$id'}), mode: LaunchMode.externalApplication);
+        final opened = await launchUrl(
+          Uri.https('github.com', '/mwijaydavie/noellyne-bet/issues/new',
+              {'title': 'Broken line: channel $id', 'labels': 'broken-line'}),
+          mode: LaunchMode.externalApplication,
+        );
         if (!opened) throw StateError('Telegram unavailable');
       }
     } catch (_) {
@@ -741,6 +745,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                   ),
                 ),
               ),
+              const SliverToBoxAdapter(child: SizedBox(height: 108)),
               if (groups.isEmpty)
                 SliverFillRemaining(
                   hasScrollBody: false,
@@ -766,7 +771,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                   ),
                 ),
                 SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 104),
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                   sliver: SliverGrid.builder(
                     gridDelegate:
                         const SliverGridDelegateWithFixedCrossAxisCount(
@@ -778,6 +783,8 @@ class _ChannelsPageState extends State<ChannelsPage> {
                     itemCount: group.value.length,
                     itemBuilder: (context, index) {
                       final channel = group.value[index];
+                      final dark =
+                          Theme.of(context).brightness == Brightness.dark;
                       final image = channel['image_url']?.toString() ?? '';
                       final title = channel['name']?.toString() ?? 'Channel';
                       return SizedBox(
@@ -797,9 +804,16 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                         margin: const EdgeInsets.all(10),
                                         padding: const EdgeInsets.all(12),
                                         decoration: BoxDecoration(
-                                          color: Colors.white,
+                                          color: dark
+                                              ? Colors.white
+                                              : const Color(0xFFF8F3F1),
                                           borderRadius:
                                               BorderRadius.circular(16),
+                                          border: Border.all(
+                                            color: dark
+                                                ? Colors.transparent
+                                                : const Color(0xFFEAE0DB),
+                                          ),
                                         ),
                                         child: image.startsWith('https://')
                                             ? ResilientLogo(
@@ -842,7 +856,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                               ),
                               if (guideLoaded && epgLinkedIds.contains(channel['id']?.toString()))
                                 const Text('● EPG',
-                                  style: TextStyle(color: Color(0xFF54E6C1),
+                                  style: TextStyle(color: Theme.of(context).colorScheme.primary,
                                       fontSize: 9, fontWeight: FontWeight.w700)),
                               if (nextFootball.containsKey(channel['id']?.toString()))
                                 Padding(
@@ -853,7 +867,7 @@ class _ChannelsPageState extends State<ChannelsPage> {
                                     overflow: TextOverflow.ellipsis,
                                     textAlign: TextAlign.center,
                                     style: const TextStyle(
-                                      color: Color(0xFF54E6C1),
+                                      color: Theme.of(context).colorScheme.primary,
                                       fontSize: 10,
                                       fontWeight: FontWeight.w700,
                                     ),
@@ -888,9 +902,12 @@ class _ChannelsPageState extends State<ChannelsPage> {
               ? _channelScroll.offset
               : ViewerTabCache.channelUi.scrollOffset,
         );
-        NoellyneDockBar.goHome(
-          context,
-          tab == NoellyneTab.live ? LobbyFilter.liveNow : LobbyFilter.all,
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute<void>(
+            builder: (_) => tab == NoellyneTab.home
+                ? const HomePage()
+                : const DailyPicksPage(),
+          ),
         );
       },
     ),

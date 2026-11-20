@@ -22,6 +22,7 @@ import 'network_diagnostics_page.dart';
 import '../design/noellyne_ui.dart';
 import '../widgets/theme_mode_button.dart';
 import '../widgets/noellyne_dock_bar.dart';
+import 'settings_page.dart';
 import '../widgets/noellyne_lobby.dart';
 import '../widgets/premium_match_card.dart';
 import '../widgets/compact_stream_line_title.dart';
@@ -1377,7 +1378,7 @@ class _HomePageState extends State<HomePage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'NCA',
+                          'Noellyne Bet',
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.w900,
@@ -1434,7 +1435,7 @@ class _HomePageState extends State<HomePage> {
                 subtitle: FutureBuilder<String>(
                   future: _updateVersionLabel,
                   builder: (context, snapshot) => Text(
-                    snapshot.data ?? 'Check and install the latest NCA APK',
+                    snapshot.data ?? 'Check and install the latest Noellyne Bet APK',
                   ),
                 ),
                 trailing: const Icon(Icons.chevron_right_rounded),
@@ -1450,6 +1451,32 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// A match counts as on air when the feed flags it live **or** it carries a
+  /// playable line and sits inside the broadcast window. This is why "nothing
+  /// live" no longer appears while a channel is clearly playing: replays and
+  /// late kickoffs still surface.
+  bool _isOnAir(Map<String, dynamic> m) {
+    if (m['is_live'] == true) return true;
+    if (_lineCountFor(m) <= 0) return false;
+    final kickoff =
+        DateTime.tryParse(m['kickoff_at']?.toString() ?? '')?.toLocal();
+    if (kickoff == null) return false;
+    final now = DateTime.now();
+    return now.isAfter(kickoff.subtract(const Duration(minutes: 45))) &&
+        now.isBefore(kickoff.add(const Duration(hours: 3, minutes: 30)));
+  }
+
+  bool _isReplay(Map<String, dynamic> m) {
+    if (m['is_live'] == true || _isOnAir(m)) return false;
+    if (_lineCountFor(m) <= 0) return false;
+    final kickoff =
+        DateTime.tryParse(m['kickoff_at']?.toString() ?? '')?.toLocal();
+    if (kickoff == null) return false;
+    final age = DateTime.now().difference(kickoff);
+    return age > const Duration(hours: 3, minutes: 30) &&
+        age < const Duration(hours: 30);
+  }
+
   /// Matches visible under the current lobby filter pill.
   List<Map<String, dynamic>> _visibleMatches(List<Map<String, dynamic>> all) {
     var rows = all;
@@ -1461,9 +1488,11 @@ class _HomePageState extends State<HomePage> {
     }
     switch (_lobbyFilter) {
       case LobbyFilter.liveNow:
-        rows = rows.where((m) => m['is_live'] == true).toList(growable: true);
+        rows = rows.where(_isOnAir).toList(growable: true);
       case LobbyFilter.upcoming:
-        rows = rows.where((m) => m['is_live'] != true).toList(growable: true);
+        rows = rows
+            .where((m) => !_isOnAir(m) && !_isReplay(m))
+            .toList(growable: true);
       case LobbyFilter.all:
         break;
     }
@@ -1475,14 +1504,14 @@ class _HomePageState extends State<HomePage> {
     if (all.isEmpty) return null;
     if (_lobbyFilter == LobbyFilter.all) {
       // Fixture hub: lead with the next kickoff, not with a live match that
-      // the Live tab already owns.
+      // the Live segment already owns.
       for (final m in all) {
-        if (m['is_live'] != true) return m;
+        if (!_isOnAir(m)) return m;
       }
       return all.first;
     }
     for (final m in all) {
-      if (m['is_live'] == true) return m;
+      if (_isOnAir(m)) return m;
     }
     return all.first;
   }
@@ -1538,7 +1567,7 @@ class _HomePageState extends State<HomePage> {
           homeLogo: featured['home_logo_url']?.toString(),
           awayLogo: featured['away_logo_url']?.toString(),
           kickoff: kickoff,
-          isLive: featured['is_live'] == true,
+          isLive: _isOnAir(featured),
           canWatch: featuredLinks > 0,
           lineCount: featuredLinks,
           onWatch: () => openPlayer(featured),
@@ -1566,7 +1595,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   String _lobbyCountLabel(List<Map<String, dynamic>> all, int visible) {
-    final live = all.where((m) => m['is_live'] == true).length;
+    final live = all.where(_isOnAir).length;
     if (_lobbyFilter == LobbyFilter.liveNow) {
       return live == 1 ? '1 streaming' : '$live streaming';
     }
@@ -1601,7 +1630,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   String _dayBucket(Map<String, dynamic> m) {
-    if (m['is_live'] == true) return 'live';
+    if (_isOnAir(m)) return 'live';
+    if (_isReplay(m)) return 'replay';
     final kickoff =
         DateTime.tryParse(m['kickoff_at']?.toString() ?? '')?.toLocal();
     if (kickoff == null) return 'later';
@@ -1618,6 +1648,8 @@ class _HomePageState extends State<HomePage> {
     switch (bucket) {
       case 'live':
         return 'LIVE NOW';
+      case 'replay':
+        return 'REPLAY & HIGHLIGHTS';
       case 'today':
         return 'TODAY';
       case 'tomorrow':
@@ -1663,7 +1695,7 @@ class _HomePageState extends State<HomePage> {
       homeLogo: m['home_logo_url']?.toString(),
       awayLogo: m['away_logo_url']?.toString(),
       kickoff: kickoff,
-      isLive: m['is_live'] == true,
+      isLive: _isOnAir(m),
       canWatch: canWatch,
       actionLabel: canWatch
           ? (displayCount > 1
@@ -1674,42 +1706,103 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildEmptyLobby(BuildContext context) {
+  Widget _buildEmptyLobby(
+    BuildContext context,
+    List<Map<String, dynamic>> all,
+  ) {
     final scheme = Theme.of(context).colorScheme;
+    final liveMode = _lobbyFilter == LobbyFilter.liveNow;
+    final nextOnAir = all.where(_isOnAir).length;
+    final nextUp = all
+        .where((m) => !_isOnAir(m))
+        .map((m) => DateTime.tryParse(m['kickoff_at']?.toString() ?? '')
+            ?.toLocal())
+        .whereType<DateTime>()
+        .where((d) => d.isAfter(DateTime.now()))
+        .toList()
+      ..sort();
+    final nextLabel = nextUp.isEmpty
+        ? ''
+        : ' Next kickoff ${_hhmm(nextUp.first)}.';
+    if (!liveMode) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(24, 46, 24, 24),
+        child: Column(
+          children: [
+            Icon(Icons.sports_soccer_outlined,
+                size: 36,
+                color: NoellyneColors.glowDeep.withValues(alpha: .85)),
+            const SizedBox(height: 10),
+            Text(
+              _leagueFilter == null
+                  ? 'Nothing in this filter'
+                  : 'No $_leagueFilter matches',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+                color: scheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Try “All” — new matches appear automatically.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 36, 16, 24),
+      padding: const EdgeInsets.fromLTRB(24, 40, 24, 24),
       child: Column(
         children: [
-          Icon(
-            Icons.sports_soccer_outlined,
-            size: 36,
-            color: NoellyneColors.glowDeep.withValues(alpha: .85),
-          ),
+          Icon(Icons.sensors_off_rounded,
+              size: 36, color: NoellyneColors.glowDeep.withValues(alpha: .85)),
           const SizedBox(height: 10),
           Text(
-            _leagueFilter == null
-                ? 'Nothing in this filter'
-                : 'No $_leagueFilter matches',
+            'No line is on air right now',
+            textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w800,
               color: scheme.onSurface,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
-            'Try “All” — new matches appear automatically.',
+            nextOnAir == 0
+                ? 'Channels are quiet between matches.$nextLabel '
+                    'Tap “All” to browse the full schedule.'
+                : '$nextOnAir match${nextOnAir == 1 ? '' : 'es'} flagged live '
+                    'but no playable line is ready yet.$nextLabel',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 12,
+              height: 1.4,
               fontWeight: FontWeight.w600,
               color: scheme.onSurfaceVariant,
             ),
+          ),
+          const SizedBox(height: 14),
+          FilledButton(
+            onPressed: () => setState(() {
+              _lobbyFilter = LobbyFilter.all;
+              _leagueFilter = null;
+            }),
+            child: const Text('Browse all fixtures'),
           ),
         ],
       ),
     );
   }
+
+  String _hhmm(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
   /// Opens the AI chat (n8n brain with an offline fallback); the chat has a
   /// shortcut to the Daily Picks feed.
@@ -1865,7 +1958,9 @@ class _HomePageState extends State<HomePage> {
           ),
           IconButton(
             tooltip: 'Settings',
-            onPressed: _openAppMenu,
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
+            ),
             icon: const Icon(Icons.tune_rounded),
           ),
           const SizedBox(width: 3),
@@ -1926,7 +2021,7 @@ class _HomePageState extends State<HomePage> {
                     featured,
                     visible.length,
                   ),
-                  if (emptyLobby) _buildEmptyLobby(context) else ...[
+                  if (emptyLobby) _buildEmptyLobby(context, matches) else ...[
                     for (final row in _groupedRows(visible)) row,
                   ],
                 ],
@@ -1936,55 +2031,7 @@ class _HomePageState extends State<HomePage> {
         },
       ),
       extendBody: true,
-      bottomNavigationBar: SafeArea(
-        top: false,
-        child: FloatingDock(
-          items: const [
-            DockItem(
-              icon: Icons.live_tv_outlined,
-              activeIcon: Icons.live_tv_rounded,
-              label: 'Live',
-            ),
-            DockItem(
-              icon: Icons.calendar_month_outlined,
-              activeIcon: Icons.calendar_month_rounded,
-              label: 'Matches',
-            ),
-            DockItem(
-              icon: Icons.tv_outlined,
-              activeIcon: Icons.tv_rounded,
-              label: 'Channels',
-            ),
-            DockItem(icon: Icons.menu_rounded, label: 'More'),
-          ],
-          index: 0,
-          onSelected: (index) async {
-            if (index == 0) {
-              await refresh(silent: true);
-              return;
-            }
-            if (index == 1) {
-              setState(() {
-                _lobbyFilter = LobbyFilter.all;
-                _leagueFilter = null;
-              });
-              return;
-            }
-            if (index == 2) {
-              await Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const ChannelsPage()),
-              );
-              if (mounted && _liveNeedsRefresh) {
-                await refresh(silent: true);
-              }
-              return;
-            }
-            await _openMoreSheet();
-          },
-          onAiPressed: _openAiChat,
-          aiTooltip: 'Noellyne AI',
-        ),
-      ),
+      bottomNavigationBar: const NoellyneDockBar(current: NoellyneTab.home),
     );
   }
 }

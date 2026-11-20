@@ -68,6 +68,24 @@ class AppTheme {
 
     return _base(scheme).copyWith(
       scaffoldBackgroundColor: NoellyneColors.canvasLight,
+      chipTheme: ChipThemeData(
+        backgroundColor: const Color(0xFFF3EDEA),
+        selectedColor: NoellyneColors.glowDeep.withValues(alpha: .16),
+        side: const BorderSide(color: Color(0xFFE6DCD7)),
+        labelStyle: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          color: NoellyneColors.ink,
+        ),
+        secondaryLabelStyle: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+          color: Color(0xFFB4502F),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        shape: const StadiumBorder(),
+        showCheckmark: false,
+      ),
       cardTheme: const CardThemeData(
         elevation: 0,
         margin: EdgeInsets.zero,
@@ -100,6 +118,24 @@ class AppTheme {
 
     return _base(scheme).copyWith(
       scaffoldBackgroundColor: NoellyneColors.canvasDark,
+      chipTheme: ChipThemeData(
+        backgroundColor: const Color(0xFF232020),
+        selectedColor: NoellyneColors.glowDeep.withValues(alpha: .26),
+        side: const BorderSide(color: Color(0x33FFFFFF)),
+        labelStyle: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          color: Color(0xFFF3EDEA),
+        ),
+        secondaryLabelStyle: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+          color: NoellyneColors.glowSoft,
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        shape: const StadiumBorder(),
+        showCheckmark: false,
+      ),
       cardTheme: const CardThemeData(
         elevation: 0,
         margin: EdgeInsets.zero,
