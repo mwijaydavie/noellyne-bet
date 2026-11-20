@@ -2606,8 +2606,11 @@ class NativePlayerActivity : Activity() {
         if (root != null && root.width > 0) positionSettingsPanel(root, isLandscape)
         val maxScroll = minOf(dp(455), (heightAvailable * 0.61f).toInt()
             .coerceAtLeast(dp(90)))
+        // Weight-driven height: the sheet decides how tall the list grows, so
+        // an explicit height here would clip the last rows.
         settingsScroll.layoutParams = (settingsScroll.layoutParams as LinearLayout.LayoutParams).apply {
-            height = minOf(maxScroll, dp(42) + choices * dp(49))
+            height = 0
+            weight = 1f
         }
         settingsScroll.scrollTo(0, 0)
         compactControls.visibility = View.VISIBLE
