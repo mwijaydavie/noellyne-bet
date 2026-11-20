@@ -218,8 +218,6 @@ class _StatusPill extends StatelessWidget {
   final DateTime? kickoff;
   final String? timeLabel;
   final String timeZoneLabel;
-  final VoidCallback? onRemind;
-  final bool reminded;
 
   @override
   Widget build(BuildContext context) {
