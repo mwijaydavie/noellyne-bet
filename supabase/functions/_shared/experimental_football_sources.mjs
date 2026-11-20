@@ -1,0 +1,825 @@
+// Experimental, read-only discovery for public football pages. Do not bypass
+// authentication, DRM, CAPTCHA, or a publisher's access restrictions.
+// Only expose HTTP(S) HLS/DASH URLs explicitly published by public players.
+import {publicSourceUrl, readPublicSource, discoverPublicMedia, publishedPlayerPages} from './public_source_media.mjs';
+export const experimentalFootballSites = Object.freeze({
+  roxie: {label: "RoxieStreams",
+    home: "https://roxiestreams.su/soccer",
+    host: "roxiestreams.su"},
+  crichd: {label: "CricHD",
+    home: "https://crichd.pk/sports/soccer-streams",
+    host: "crichd.pk"},
+});
+
+export const isExperimentalFootballSource = (source) =>
+  Object.prototype.hasOwnProperty.call(experimentalFootballSites, String(source ?? ""));
+
+function allowedPageUrl(value, site) {
+  try {
+    const url = new URL(value, site.home);
+    const hostname = url.hostname.toLowerCase();
+    if (!["http:", "https:"].includes(url.protocol) ||
+        url.username || url.password || url.port ||
+        ![site.host,...(site.aliases||[])].some(host=>hostname===host||hostname.endsWith('.'+host))) return null;
+    url.hash = "";
+    return url.toString();
+  } catch (_) { return null; }
+}
+
+function normalizeText(value) {
+  return String(value ?? "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Math.min(Number(n), 0x10ffff)))
+    .replace(/\s+/g, " ").trim();
+}
+
+function fixtureTitle(text) {
+  const name = normalizeText(text)
+    .replace(/^\s*\d{1,2}:\d{2}\s+/, '')
+    .replace(/\b\d{1,2}:\d{2}\s*(?:watch|live)\b/gi, " ")
+    .replace(/\b(?:live\s*(?:stream|tv)|watch\s*(?:live|now)|football|soccer)\b/gi, " ")
+    .replace(/\s+/g, " ").trim();
+  // Some source cards are "SAFF Championship vs India – Maldives Watch".
+  // That first "vs" separates league from teams, not the two teams.
+  const competition = name.match(/^.{2,65}?\b(?:cup|league|championship|tournament)\s+vs?\.?\s+(.+)$/i);
+  if (competition) {
+    const parts = competition[1].split(/\s+[–—]\s+/).map(s => s.trim()).filter(Boolean);
+    if (parts.length < 2) return null;
+    const home = parts[parts.length - 2], away = parts[parts.length - 1];
+    return home.length > 1 && away.length > 1 && home.length <= 65 && away.length <= 65
+      ? {home, away} : null;
+  }
+  const match = name.match(/^(.{2,70}?)\s+(?:vs?\.?|[-–—]|ضد)\s+(.{2,70}?)(?:\s*(?:\||•|\().*)?$/i);
+  if (!match) return null;
+  const home = match[1].trim(), away = match[2].trim()
+    .replace(/\s+luc\s+\d{3,4}\s+ngay\s+\d{1,2}\s+\d{1,2}\s+\d{4}.*$/i, '').trim();
+  if (!home || !away || home.length > 65 || away.length > 65) return null;
+  return {home, away};
+}
+
+// Never infer timezone from the server or the user's phone: dates must include
+// an explicit ISO-8601 offset or Z. Unknown/ambiguous kickoffs are discarded.
+export function explicitKickoff(fragment) {
+  const iso = String(fragment).match(/\b20\d{2}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})\b/i);
+  if (!iso) return null;
+  const value = iso[0].replace(" ", "T").replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+// CricHD event details explicitly publish a UTC kickoff.
+export function crichdUtcKickoff(text) {
+  const match = String(text).match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),\s+(20\d{2})\s+at\s+(\d{1,2}):([0-5]\d)\s*(AM|PM)\s+UTC\b/i);
+  if (!match) return null;
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const month = months.indexOf(match[1].toLowerCase());
+  const year = Number(match[3]), day = Number(match[2]);
+  const rawHour = Number(match[4]);
+  if (month < 0 || rawHour < 1 || rawHour > 12) return null;
+  const hour = rawHour % 12 + (match[6].toUpperCase() === 'PM' ? 12 : 0);
+  const iso = new Date(Date.UTC(year, month, day, hour, Number(match[5])));
+  if (iso.getUTCFullYear() !== year || iso.getUTCMonth() !== month || iso.getUTCDate() !== day) return null;
+  return iso.toISOString();
+}
+
+function sourceId(value) {
+  let hash = 2166136261;
+  for (const code of String(value)) hash = Math.imul(hash ^ code.charCodeAt(0), 16777619);
+  return (hash >>> 0).toString(36);
+}
+
+async function publicHtml(url, fetcher, {withClock = false, now = Date.now, allowedHost = null, timeoutMs = 8000} = {}) {
+  const read = await readPublicSource(url, {fetcher, timeoutMs,
+    allowedHosts: allowedHost ? [allowedHost] : null});
+  if (!withClock) return read.text;
+  const observedAt = typeof now === "function" ? now() : now;
+  const ageValue = read.headers?.get?.("age");
+  const age = ageValue == null ? 0 : Number(ageValue);
+  const dateValue = read.headers?.get?.("date");
+  const responseDate = dateValue ? Date.parse(dateValue) : NaN;
+  const clockFresh = Number.isFinite(observedAt) &&
+    Number.isFinite(age) && age >= 0 && age <= 60 &&
+    (!Number.isFinite(responseDate) || Math.abs(observedAt-responseDate) <= 120000);
+  return {html:read.text,observedAt,clockFresh};
+}
+
+// Read only match links that are explicitly published on this site. Some
+// providers put the fixture identity in /event/home-vs-away instead of the
+// anchor text, so the original "Team A vs Team B" regex dropped every row.
+function teamsFromLink(url, inner) {
+  const visible = fixtureTitle(inner);
+  if (visible) return visible;
+  let path;
+  try { path = decodeURIComponent(new URL(url).pathname); }
+  catch (_) { return null; }
+  const match = path.match(/(?:^|\/)(?:event|events|match|matches|watch|live)?\/?([a-z0-9-]+)-vs-([a-z0-9-]+)(?:\/|$)/i);
+  if (!match) return null;
+  const title = part => part.replace(/-luc-\d{3,4}-ngay-\d{1,2}-\d{1,2}-\d{4}.*$/i,'')
+    .replace(/-/g, " ").replace(/\b[a-z]/g, c => c.toUpperCase()).trim();
+  const home = title(match[1]), away = title(match[2]);
+  if (home.length < 2 || away.length < 2 || home.length > 65 || away.length > 65) return null;
+  return {home, away};
+}
+
+
+// Countdowns can be outside the <a> but inside the same single-match
+// <article>/<li> card. Reject shared wrappers with multiple match links.
+
+function structuredCardTeams(markup) {
+  if (!markup) return null;
+  const attrs = {
+    home: markup.match(/\bdata-(?:home|home-team|host|host-team)\s*=\s*["']([^"']+)["']/i)?.[1],
+    away: markup.match(/\bdata-(?:away|away-team|guest|guest-team)\s*=\s*["']([^"']+)["']/i)?.[1],
+  };
+  function classSide(side) {
+    const indicator = side === "home"
+      ? /\b(?:home|host)(?:[-_]?team)?\b/i
+      : /\b(?:away|guest)(?:[-_]?team)?\b/i;
+    for (const node of markup.matchAll(/<(?:span|div|strong)\b([^>]*)>([\s\S]*?)<\/(?:span|div|strong)>/gi)) {
+      const className = node[1].match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] ?? "";
+      if (indicator.test(className)) return node[2];
+    }
+    return null;
+  }
+  const home = normalizeText(attrs.home ?? classSide("home"));
+  const away = normalizeText(attrs.away ?? classSide("away"));
+  return home.length > 1 && away.length > 1 &&
+    home.length <= 65 && away.length <= 65 && home !== away ? {home,away} : null;
+}
+
+// A multi-sport listing can label an individual event as soccer without
+// putting "football" in its URL. Read evidence ONLY within one match card
+// (or its anchor), never from global page headings or unrelated cards.
+function explicitFixtureSport(markup) {
+  if (!markup) return "unknown";
+  const labels = [];
+  for (const hit of markup.matchAll(/\bdata-(?:sport(?:-type)?|category(?:-name)?|discipline)\s*=\s*["']([^"']{1,60})["']/gi)) {
+    labels.push(hit[1].trim());
+  }
+  for (const hit of markup.matchAll(/<(span|small|label|div)\b([^>]*)>([^<]{1,50})<\/\1>/gi)) {
+    const className = hit[2].match(/\bclass\s*=\s*["']([^"']{1,120})["']/i)?.[1] ?? "";
+    if (/(?:^|[\s_-])(?:sport|category|discipline)(?:$|[\s_-])/i.test(className)) {
+      labels.push(normalizeText(hit[3]));
+    }
+  }
+  // Explicit non-football evidence wins over both URL hints and other labels.
+  const otherSport = /\b(?:basketball|cricket|tennis|rugby|hockey|baseball|golf|snooker|boxing|mma|ufc|volleyball|badminton|esports|motorsport|american football)\b/i;
+  if (labels.some(label => otherSport.test(label))) return "other";
+  return labels.some(label => /^(?:football|soccer)$/i.test(label)) ? "football" : "unknown";
+}
+
+function matchCardMarkup(html, hit) {
+  // List and article wrappers are common, but SPA sites also publish
+  // individual <div class="fixture-card"> / <section class="event-item">
+  // cards. Only accept a bounded single-anchor wrapper, never a page-wide
+  // parent that could leak another event's sport or kickoff into this match.
+  for (const tag of ["article", "li", "tr", "section", "div"]) {
+    let searchBefore = hit.index;
+    for (let attempt = 0; attempt < 6 && searchBefore >= 0; attempt++) {
+      const start = html.lastIndexOf("<" + tag, searchBefore);
+      if (start < 0 || hit.index - start > 3500) break;
+      const openingEnd = html.indexOf(">", start);
+      if (openingEnd < 0 || openingEnd > hit.index) break;
+      const opening = html.slice(start, openingEnd + 1);
+      const className = opening.match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] ?? "";
+      const eventClass = /(?:^|[\s_-])(?:fixture|match|event|game)[-_](?:card|item|row)(?:$|[\s_-])/i.test(className);
+      if ((tag === "div" || tag === "section") && !eventClass) {
+        searchBefore = start - 1;
+        continue;
+      }
+      const close = "</" + tag + ">";
+      const finish = html.indexOf(close, hit.index + hit[0].length);
+      if (finish < 0 || finish - start > 3500) {
+        searchBefore = start - 1;
+        continue;
+      }
+      const card = html.slice(start, finish + close.length);
+      if (card.includes(hit[0]) && [...card.matchAll(/<a\b/gi)].length === 1) return card;
+      searchBefore = start - 1;
+    }
+  }
+  return "";
+}
+
+// Only fields documenting a fixture's kickoff are accepted. In particular,
+// another event's timestamp, countdown and the server clock are NOT kickoffs.
+function pageKickoff(markup) {
+  const patterns = [
+    /<time\b[^>]*\b(?:datetime|content)\s*=\s*["']([^"']+)["'][^>]*>/gi,
+    /\bdata-(?:kickoff|start(?:-time|-date)?|timestamp)\s*=\s*["']([^"']+)["']/gi,
+    /(?:startDate|start_date|startTime|kickoff_at|kickoffAt)\s*["']?\s*[:=]\s*["']([^"']+)["']/gi,
+    /<meta\b[^>]*(?:name|property)\s*=\s*["'](?:event:start_time|startDate|event:start_date)["'][^>]*content\s*=\s*["']([^"']+)["']/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of markup.matchAll(pattern)) {
+      const kickoff = explicitKickoff(match[1]);
+      if (kickoff) return kickoff;
+    }
+  }
+  // Unix seconds/milliseconds accepted ONLY when explicitly marked as a
+  // match kickoff/start attribute, not an arbitrary page timestamp.
+  for (const hit of markup.matchAll(/\bdata-(?:kickoff|start-time|start-timestamp)\s*=\s*["'](\d{10}|\d{13})["']/gi)) {
+    const n = Number(hit[1]);
+    const ms = n > 1e12 ? n : n * 1000;
+    if (ms >= 1577836800000 && ms <= 4102444800000)
+      return new Date(ms).toISOString();
+  }
+  return null;
+}
+
+
+function pacificTableKickoff(card) {
+  const text = normalizeText(card.match(/<td\b[^>]*class=["']event-start-time["'][^>]*>([^<]+)</i)?.[1]);
+  const match = text.match(/^([A-Za-z]+) (\d{1,2}), (20\d{2}) (\d{1,2}):(\d{2}) (AM|PM)$/);
+  if (!match) return null;
+  const month = ['january','february','march','april','may','june','july','august','september','october','november','december'].indexOf(match[1].toLowerCase());
+  if (month < 0) return null;
+  const hour = Number(match[4]) % 12 + (match[6] === 'PM' ? 12 : 0);
+  const wall = Date.UTC(Number(match[3]), month, Number(match[2]), hour, Number(match[5]));
+  const format = new Intl.DateTimeFormat('en-US',{timeZone:'America/Los_Angeles',hourCycle:'h23',
+    year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const offset = utc => {
+    const p = Object.fromEntries(format.formatToParts(new Date(utc)).map(p=>[p.type,p.value]));
+    return Date.UTC(+p.year,+p.month-1,+p.day,+p.hour,+p.minute,+p.second)-utc;
+  };
+  let utc = wall-offset(wall); utc=wall-offset(utc);
+  return new Date(utc).toISOString();
+}
+
+// Estimated kickoff = timestamp of this actual HTTP read + countdown duration.
+// It must be bound to one match card; search-engine crawls and stale caches
+// must never be used to calculate a scheduled kickoff.
+export function countdownKickoff(fragment, observedAt, clockFresh = true) {
+  if (!clockFresh || !Number.isFinite(observedAt)) return null;
+  const text = normalizeText(fragment);
+  const match = text.match(/\b(?:starts?\s+in|kick[\s-]?off\s+in)\s*[:：]?\s*(\d{1,3}):([0-5]\d):([0-5]\d)\b/i);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3]);
+  const total = hours * 3600 + minutes * 60 + seconds;
+  if (total < 1 || total > 7 * 24 * 3600) return null;
+  return new Date(observedAt + total * 1000).toISOString();
+}
+
+
+function safePublishedTeamBadge(value, site) {
+  if (value && typeof value === "object") {
+    value = value.url ?? value.contentUrl ?? value.src ?? null;
+  }
+  if (typeof value !== "string" || value.length > 2048) return null;
+  const raw = value.trim().replace(/&amp;/gi, "&");
+  if (!raw || /[\s<>"'\\]/.test(raw) || raw.startsWith("data:")) return null;
+  try {
+    const url = new URL(raw, site.home);
+    if (url.protocol !== "https:" || url.username || url.password || url.port) return null;
+    const host = url.hostname.toLowerCase();
+    if (/^(?:localhost|127\.|0\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.|::1)$/.test(host) ||
+        /\.(?:local|internal)$/.test(host)) return null;
+    return url.toString();
+  } catch (_) { return null; }
+}
+
+function fixtureTeamBadge(item, side, site) {
+  const home = side === "home";
+  const objects = home
+    ? [item.homeTeam, item.home_team, item.home, item.teams?.home, item.team1]
+    : [item.awayTeam, item.away_team, item.away, item.teams?.away, item.team2];
+  const direct = home
+    ? [item.home_logo, item.homeLogo, item.homeLogoUrl, item.homeTeamLogo,
+       item.homeCrest, item.hostLogo, item.team1Logo]
+    : [item.away_logo, item.awayLogo, item.awayLogoUrl, item.awayTeamLogo,
+       item.awayCrest, item.guestLogo, item.team2Logo];
+  for (const value of direct) {
+    const badge = safePublishedTeamBadge(value, site);
+    if (badge) return badge;
+  }
+  for (const obj of objects) {
+    if (!obj || typeof obj !== "object") continue;
+    for (const key of ["logo", "logoUrl", "logo_url", "crest", "crestUrl",
+                       "crest_url", "badge", "badgeUrl", "image", "imageUrl"]) {
+      const badge = safePublishedTeamBadge(obj[key], site);
+      if (badge) return badge;
+    }
+  }
+  return null;
+}
+
+function htmlTeamBadges(markup, teams, site) {
+  const result = {home: null, away: null};
+  if (!markup) return result;
+  for (const img of markup.matchAll(/<img\b([^>]+)>/gi)) {
+    const attrs = img[1];
+    const alt = attrs.match(/\balt\s*=\s*["']([^"']+)["']/i)?.[1] ?? "";
+    const label = normalizeText(alt).replace(/\s+(?:logo|crest|badge)$/i, "").trim().toLowerCase();
+    if (!label) continue;
+    const side = label === teams.home.toLowerCase() ? "home"
+      : label === teams.away.toLowerCase() ? "away" : null;
+    if (!side || result[side]) continue;
+    const src = attrs.match(/\b(?:src|data-src|data-original)\s*=\s*["']([^"']+)["']/i)?.[1];
+    result[side] = safePublishedTeamBadge(src, site);
+  }
+  return result;
+}
+
+// CricHD exposes separate numbered Watch links in the event's Streamer
+// table. These are published player PAGES, not verified HLS media URLs.
+// Preserve the exact link number; never fabricate Link 3/4/5.
+export function crichdPublishedWatchLinks(html, page) {
+  const links = new Map();
+  for (const row of String(html).matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const label = normalizeText(row[1]).match(/\bLink\s+([1-9]\d?)\b/i);
+    if (!label) continue;
+    for (const anchor of row[1].matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+      if (!/^Watch$/i.test(normalizeText(anchor[2]))) continue;
+      const raw = anchor[1].match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1];
+      const url = publicSourceUrl(raw?.replace(/&amp;/gi, '&'), page);
+      if (!url || new URL(url).protocol !== 'https:') continue;
+      const number = Number(label[1]);
+      if (!links.has(number)) {
+        links.set(number, {
+          room_num: sourceId(page + ':link-' + number),
+          page_url: page,
+          watch_url: url,
+          nick_name: 'Link ' + number,
+        });
+      }
+      break;
+    }
+  }
+  return [...links.entries()].sort((a,b) => a[0]-b[0])
+    .slice(0,12).map(([,link]) => link);
+}
+
+function eventRecord(source, site, page, teams, kickoff, timingSource = "none", badges = {}) {
+  const id = sourceId(page ?? [source, teams.home, teams.away, kickoff].join(":"));
+  const hasTime = kickoff != null;
+  return {
+    source, source_id: id, schedule_id: id,
+    league: "Football", home_team: teams.home, away_team: teams.away,
+    home_logo: badges.home ?? null, away_logo: badges.away ?? null, poster_url: null,
+    match_time: kickoff, status: hasTime ? "NS" : "UNVERIFIED",
+    match_status: hasTime ? "SCHEDULED" : "UNVERIFIED",
+    hot: false, page_url: page,
+    // These rows are for admin inspection, not proven video playback.
+    verified_kickoff: hasTime && timingSource === "explicit",
+    kickoff_estimated: hasTime && timingSource === "countdown",
+    kickoff_source: timingSource,
+    schedule_only: page == null,
+    // Never present metadata-only fixtures as a stream line.
+    anchors: page ? [{room_num: id, page_url: page, nick_name: site.label}] : [],
+  };
+}
+
+
+// Browser-generated pages frequently preload public match information as JSON
+// before hydrating their UI. Parse DATA only: never execute the page's JS,
+// request private APIs, or guess a provider endpoint.
+function publicEmbeddedJson(html, source) {
+  const values = [];
+  const scripts = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  for (const match of html.matchAll(scripts)) {
+    if (values.length >= 20) break;
+    const attributes = match[1] ?? "";
+    const id = attributes.match(/\bid\s*=\s*["']([^"']+)["']/i)?.[1] ?? "";
+    const type = attributes.match(/\btype\s*=\s*["']([^"']+)["']/i)?.[1] ?? "";
+    if (!/^(application\/(?:ld\+json|json)|text\/json)$/i.test(type) &&
+        !/^(?:__NEXT_DATA__|__NUXT_DATA__|__INITIAL_STATE__|__APOLLO_STATE__)$/i.test(id)) continue;
+    const body = match[2].trim();
+    if (!body || body.length > 900000) continue;
+    try { values.push(JSON.parse(body)); } catch (_) { /* JS expressions are not JSON. */ }
+  }
+  // A limited set of applications include their state as a JSON literal
+  // assignment, not a script with type=application/json. No eval and no JS.
+  const state = /(?:window\.)?(?:__INITIAL_STATE__|__PRELOADED_STATE__)\s*=\s*(\{[^\n;]{1,100000}\})\s*;/gi;
+  for (const hit of html.matchAll(state)) {
+    if (values.length >= 20) break;
+    try { values.push(JSON.parse(hit[1])); } catch (_) { /* Not a JSON literal. */ }
+  }
+  return values;
+}
+
+function nameOfTeam(value) {
+  if (typeof value === "string") return normalizeText(value);
+  if (value && typeof value === "object")
+    return normalizeText(value.name ?? value.displayName ?? value.shortName ?? "");
+  return "";
+}
+
+function embeddedTeamPair(item) {
+  const home = nameOfTeam(item.homeTeam ?? item.home_team ?? item.home ??
+    item.homeName ?? item.home_name ?? item.homeTeamName ?? item.teams?.home ??
+    item.hostTeam ?? item.host_team);
+  const away = nameOfTeam(item.awayTeam ?? item.away_team ?? item.away ??
+    item.awayName ?? item.away_name ?? item.awayTeamName ?? item.teams?.away ??
+    item.guestTeam ?? item.guest_team);
+  if (home.length > 1 && away.length > 1 &&
+      home.length <= 65 && away.length <= 65 && home !== away) return {home, away};
+  const participants = item.competitor ?? item.competitors ?? item.participant ?? item.participants ??
+    (Array.isArray(item.teams) ? item.teams : null);
+  if (Array.isArray(participants)) {
+    const sides = participants;
+    const h = sides.find(s => /home/i.test(String(s?.homeOrAway ?? s?.qualifier ?? s?.side ?? "")));
+    const a = sides.find(s => /away/i.test(String(s?.homeOrAway ?? s?.qualifier ?? s?.side ?? "")));
+    if (h && a) {
+      const first = nameOfTeam(h), second = nameOfTeam(a);
+      if (first.length > 1 && second.length > 1 &&
+          first.length <= 65 && second.length <= 65 && first !== second)
+        return {home:first, away:second};
+    }
+  }
+  // Public structured SportsEvent feeds sometimes publish only a title
+  // ("Home vs Away") rather than separately named home/away fields.
+  // Keep the existing football-category and same-site URL requirements.
+  const eventType = String(item["@type"] ?? item.type ?? "");
+  const sport = String(item.sport?.name ?? item.sport ?? item.category?.name ?? "");
+  if (/sports?event/i.test(eventType) || /(?:football|soccer)/i.test(sport)) {
+    const title = item.name ?? item.eventName ?? item.matchName ?? item.title;
+    if (typeof title === "string") return fixtureTitle(title);
+  }
+  return null;
+}
+
+function kickoffFromJson(item, observedAt, clockFresh) {
+  const raw = item.startDate ?? item.start_date ?? item.start_time ?? item.startTime ??
+    item.kickoff_at ?? item.kickoffAt ?? item.kickoff ??
+    item.match_time ?? item.matchTime ?? item.scheduledAt ?? item.startsAt ?? null;
+  if (typeof raw === "string") {
+    const value = explicitKickoff(raw);
+    if (value) return {kickoff:value, timingSource:"explicit"};
+  }
+  const ts = item.startTimestamp ?? item.start_timestamp ??
+    item.startTimeUnix ?? item.kickoffTimestamp ?? item.kickoff_unix ??
+    (typeof raw === "number" ? raw : null);
+  if ((typeof ts === "number" || typeof ts === "string") && String(ts).trim()) {
+    const n = Number(ts);
+    if (Number.isFinite(n)) {
+      const ms = n > 1e12 ? n : n * 1000;
+      // Timestamp must represent a plausible modern fixture.
+      if (ms >= 1577836800000 && ms <= 4102444800000)
+        return {kickoff:new Date(ms).toISOString(), timingSource:"explicit"};
+    }
+  }
+  const rawCountdown = item.countdown ?? item.countdownText ??
+    item.startsIn ?? item.timeRemaining;
+  if (typeof rawCountdown === "string") {
+    const value = countdownKickoff(
+      /\b(?:starts?\s+in|kick[\s-]?off\s+in)\b/i.test(rawCountdown)
+        ? rawCountdown : "Starts in " + rawCountdown,
+      observedAt, clockFresh,
+    );
+    if (value) return {kickoff:value, timingSource:"countdown"};
+  } else if (typeof rawCountdown === "number" && Number.isInteger(rawCountdown)
+      && rawCountdown > 0 && rawCountdown <= 7*24*3600 &&
+      clockFresh && Number.isFinite(observedAt)) {
+    return {kickoff:new Date(observedAt + rawCountdown*1000).toISOString(),
+      timingSource:"countdown"};
+  }
+  return {kickoff:null, timingSource:"none"};
+}
+
+function publicFixtureJsonRows(html, site, source, clock) {
+  const output = new Map();
+  // Generic all-sports indexes need an explicit football/soccer marker
+  // associated with the event. Football-only catalogs can be accepted.
+  // LiveTV /soccer is a mixed-sports HTML page in practice: its URL alone
+  // is NOT proof that every embedded event is football.
+  const footballCatalog = /(?:football|soccer)/i.test(new URL(site.home).pathname);
+  const state = publicEmbeddedJson(html, source);
+  let examined = 0;
+  for (const root of state) {
+    const queue = [{node:root, football:footballCatalog, depth:0}];
+    for (let head = 0; head < queue.length && examined < 4000; head++) {
+      const {node, football, depth} = queue[head];
+      examined++;
+      if (!node || typeof node !== "object" || depth > 18) continue;
+      if (Array.isArray(node)) {
+        for (const child of node.slice(0, 150)) queue.push({node:child,football,depth:depth+1});
+        continue;
+      }
+      const sport = String(node.sport?.name ?? node.sport?.slug ?? node.sport ??
+        node.category?.name ?? node.category?.slug ?? "");
+      const categoryIsFootball = /(?:soccer|football)/i.test(sport);
+      const categoryOtherSport = /(?:american\s+football|basketball|cricket|tennis|rugby|hockey|baseball|golf|snooker|volleyball|badminton|esports|e-sports|mma|boxing)/i.test(sport);
+      const linkValue = node.url ?? node.href ?? node.page_url ?? node.matchUrl ??
+        node.match_url ?? node.eventUrl ?? node.event_url ?? node.fixtureUrl ??
+        node.fixture_url ?? node.permalink ?? node.link;
+      const linkedPage = typeof linkValue === "string" ? allowedPageUrl(linkValue, site) : null;
+      // Football-specific links are meaningful evidence on multi-sport homes,
+      // but an explicitly different sport always wins.
+      const linkedFootball = linkedPage &&
+        /\/(?:football|soccer)(?:\/|[-?]|$)/i.test(new URL(linkedPage).pathname);
+      const eventIsFootball = !categoryOtherSport && (football || categoryIsFootball ||
+        linkedFootball || /\b(?:soccer|football)\b/i.test(String(node.sportType ?? "")));
+      const teams = embeddedTeamPair(node);
+      const link = linkValue;
+      const page = linkedPage;
+      // A verified SportsEvent with an explicit UTC/offset kickoff but no
+      // event URL can be listed as a schedule only. Never follow foreign URLs.
+      const rawLink = typeof link === "string" ? link.trim() : "";
+      const schemaType = String(node["@type"] ?? node.type ?? "");
+      const recognizedSchema = /(?:^|:)SportsEvent$/i.test(schemaType);
+      if (teams && eventIsFootball && output.size < 250) {
+        const when = kickoffFromJson(node,clock.observedAt,clock.clockFresh);
+        const scheduleOnly = !rawLink && recognizedSchema &&
+          when.timingSource === "explicit";
+        if (page || scheduleOnly) {
+          const key = page ?? ["schedule", source, teams.home, teams.away, when.kickoff].join(":");
+          if (!output.has(key)) {
+            const row = eventRecord(source,site,page,teams,when.kickoff,when.timingSource,
+              {home: fixtureTeamBadge(node, 'home', site),
+               away: fixtureTeamBadge(node, 'away', site)});
+            const league = nameOfTeam(node.tournament ?? node.league ??
+              node.competition ?? node.leagueName);
+            if (league && league.length < 100) row.league = league;
+            output.set(key,row);
+          }
+        }
+      }
+      if (depth < 10) for (const [key,value] of Object.entries(node).slice(0,90)) {
+        if (value && typeof value === "object" && !["__proto__","constructor"].includes(key))
+          queue.push({node:value,football:categoryOtherSport?false:eventIsFootball,depth:depth+1});
+      }
+    }
+  }
+  return {rows:output, jsonDocumentCount:state.length};
+}
+
+// LiveTV publishes soccer fixtures in nested table rows under
+// .side-match-item, not in <article>/<li> cards or SportsEvent JSON. Accept
+// only rows with their OWN explicit Soccer marker and a real same-site link.
+// The display clock ("19:45 (Soccer)") lacks a timezone, so it must not
+// become a fabricated UTC kickoff.
+
+export async function experimentalMatches(source, {fetcher = fetch, now = Date.now} = {}) {
+  const site = experimentalFootballSites[source];
+  if (!site) throw Error("Unsupported source");
+  const deadline=Date.now()+6500;
+  const catalog = await publicHtml(site.home, fetcher, {withClock: true, now,
+    allowedHost: site.host,timeoutMs:Math.max(50,deadline-Date.now())});
+  const {html} = catalog;
+  const embedded = publicFixtureJsonRows(html,site,source,catalog);
+  const candidates = new Map();
+  const anchors = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+  for (const hit of html.matchAll(anchors)) {
+    if (candidates.size >= 250) break;
+    // Football league links contain "vs" too. These are not fixture cards.
+    const href = hit[1].match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1];
+    const page = href && allowedPageUrl(href.replace(/&amp;/gi, "&"), site);
+    if (!page || page === site.home || candidates.has(page)) continue;
+    if (source === 'crichd' &&
+        !/^\/event\/[a-z0-9-]+-vs-[a-z0-9-]+\/?$/i.test(new URL(page).pathname)) continue;
+    const card = matchCardMarkup(html, hit);
+    const cardSport = explicitFixtureSport(card || hit[0]);
+    const footballLink = /\b(?:soccer|football)\b/i.test(page);
+    // Even a football-looking URL must not turn a labelled basketball
+    // or cricket card into a football fixture.
+    if (cardSport === "other") continue;
+    const teams = teamsFromLink(page, hit[2]) ?? structuredCardTeams(card || hit[0]);
+    if (!teams) continue;
+    const footballCatalog = /(?:football|soccer)/i.test(new URL(site.home).pathname);
+    if (!footballCatalog && !footballLink && cardSport !== "football") continue;
+    // The timestamp must be inside this anchor or immediately preceding it,
+    // with a preceding sibling anchor acting as a hard event boundary.
+    const preceding = html.slice(Math.max(0, hit.index - 240), hit.index);
+    const boundary = preceding.lastIndexOf("</a>");
+    const local = boundary < 0 ? preceding : preceding.slice(boundary + 4);
+    const explicit = pageKickoff(hit[0]) ?? pageKickoff(local) ??
+      (card ? pageKickoff(card) : null) ??
+      (source === 'roxie' ? pacificTableKickoff(card) : null);
+    const countdown = explicit ? null :
+      countdownKickoff(hit[0], catalog.observedAt, catalog.clockFresh) ??
+      (card ? countdownKickoff(card, catalog.observedAt, catalog.clockFresh) : null);
+    const kickoff = explicit ?? countdown;
+    const timingSource = explicit ? "explicit" : countdown ? "countdown" : "none";
+    candidates.set(page, {page, teams, kickoff, timingSource,
+      badges: htmlTeamBadges(card || hit[0], teams, site)});
+  }
+
+  // Detail pages may publish authoritative UTC/offset timestamps that the
+  // index omits. Bound network work: only 6 pages, at most 3 concurrent.
+  const needDetail = [...candidates.values()]
+    .filter(candidate => {
+      const existing=embedded.rows.get(candidate.page);
+      // CricHD detail pages also contain numbered Watch links. Fetch even
+      // when the category already supplied the event's kickoff and badges.
+      return source === 'crichd' || !(existing?.match_time||candidate.kickoff)||
+        !(existing?.home_logo||candidate.badges.home)||!(existing?.away_logo||candidate.badges.away);
+    }).slice(0, source === 'crichd' ? 24 : 8);
+  for (let offset = 0; offset < needDetail.length; offset += 3) {
+    if(Date.now()>=deadline)break;
+    await Promise.all(needDetail.slice(offset, offset + 3).map(async item => {
+      try {
+        const detail = await publicHtml(item.page, fetcher, {withClock: true, now,
+          allowedHost: site.host,timeoutMs:Math.min(1800,deadline-Date.now())});
+        const exact = pageKickoff(detail.html) ??
+          (source === 'crichd' ? crichdUtcKickoff(detail.html) : null);
+        if (source === 'crichd') {
+          item.watchLinks = crichdPublishedWatchLinks(detail.html,item.page);
+        }
+        const estimated = exact ? null :
+          countdownKickoff(detail.html, detail.observedAt, detail.clockFresh);
+        if (!item.kickoff) {
+          item.kickoff = exact ?? estimated;
+          item.timingSource = exact ? "explicit" : estimated ? "countdown" : "none";
+        }
+        const htmlBadges = htmlTeamBadges(detail.html, item.teams, site);
+        item.badges.home ??= htmlBadges.home;
+        item.badges.away ??= htmlBadges.away;
+        // Some detail pages publish team badges only in a SportsEvent JSON
+        // block. Require the SAME named team pair, not a generic page image.
+        const detailRows = publicFixtureJsonRows(detail.html, site, source, detail).rows;
+        for (const badgeRow of detailRows.values()) {
+          if (badgeRow.home_team.toLowerCase() !== item.teams.home.toLowerCase() ||
+              badgeRow.away_team.toLowerCase() !== item.teams.away.toLowerCase()) continue;
+          item.badges.home ??= badgeRow.home_logo;
+          item.badges.away ??= badgeRow.away_logo;
+          break;
+        }
+      } catch (_) { /* Keep as unverified, never manufacture a kickoff. */ }
+    }));
+  }
+
+  // Prefer the embedded state when the same page is represented in both.
+  for (const row of candidates.values()) {
+    const publishedAnchors = source === 'crichd' && row.watchLinks?.length
+      ? row.watchLinks : null;
+    if (!embedded.rows.has(row.page)) {
+      const event = eventRecord(source,site,row.page,row.teams,row.kickoff,row.timingSource,row.badges);
+      if (publishedAnchors) event.anchors = publishedAnchors;
+      embedded.rows.set(row.page,event);
+    } else {
+      const original = embedded.rows.get(row.page);
+      embedded.rows.set(row.page, {
+        ...original,
+        ...(!original.match_time && row.kickoff ? {
+          match_time: row.kickoff,
+          verified_kickoff: row.timingSource === "explicit",
+          kickoff_estimated: row.timingSource === "countdown",
+          kickoff_source: row.timingSource,
+          status: "NS", match_status: "SCHEDULED",
+        } : {}),
+        home_logo: original.home_logo ?? row.badges.home,
+        away_logo: original.away_logo ?? row.badges.away,
+        ...(publishedAnchors ? {anchors:publishedAnchors} : {}),
+      });
+    }
+  }
+  const matches = [...embedded.rows.values()].sort((a,b) =>
+    (a.match_time ?? "9999").localeCompare(b.match_time ?? "9999"));
+  const scheduleOnly = matches.filter(row => row.schedule_only).length;
+  const confirmed = matches.filter(row => row.verified_kickoff).length;
+  const estimated = matches.filter(row => row.kickoff_estimated).length;
+  // The source page is not scoped to the requested date. Expose actual
+  // published MMT days so Admin can distinguish a calendar mismatch from
+  // broken fixture parsing. Never infer dates for untimed events.
+  const publishedDaysMMT = [...new Set(matches
+    .filter(row => row.match_time && !Number.isNaN(Date.parse(row.match_time)))
+    .map(row => new Date(Date.parse(row.match_time) + 390 * 60000)
+      .toISOString().slice(0, 10)))].sort();
+  return {
+    ok: true, source, matches, results: matches.length,
+    diagnostics: {candidate_count: matches.length,
+      extraction_mode: embedded.rows.size > candidates.size ? "embedded-json" : "html-or-mixed",
+      embedded_json_documents: embedded.jsonDocumentCount,
+      schedule_only_count: scheduleOnly,
+      content_state: matches.length ? "matches_found" : embedded.jsonDocumentCount ? "no_recognized_football_fixtures" :
+        /<script\b/i.test(html) ? "browser_render_or_unsupported_markup" : "empty_page",
+      confirmed_kickoff_count: confirmed,
+      estimated_countdown_count: estimated,
+      missing_kickoff_count: matches.length - confirmed - estimated,
+      available_days_mmt: publishedDaysMMT,
+      note: "Countdown kickoffs are estimates from a fresh page response, not verified fixture times."},
+    generated_at: new Date().toISOString(),
+  };
+}
+
+// Roxie publishes a small stream-path + host-list player configuration. Read
+// those literal values only; never evaluate its player/advertising JavaScript.
+export async function configuredRoxiePublicMedia(source, html, page, {fetcher = fetch} = {}) {
+  if (source!=='roxie') return [];
+  const root=html.match(/return\s*`https:\/\/\$\{subdomain\}\.([a-z0-9.-]+)\/\$\{streamPath\}`/i)?.[1];
+  const fallback=html.match(/function\s+getRandomStream\s*\(\s*streamPath\s*,\s*subdomain\s*=\s*['"]([a-z0-9-]+)['"]/i)?.[1];
+  if (!root||!fallback) return [];
+  const domains=[root];
+  const file=html.match(/fetch\(\s*['"]([^'"]+\.txt)['"]\s*\)/i)?.[1];
+  const listUrl=file&&publicSourceUrl(file,page);
+  if (listUrl&&new URL(listUrl).hostname===new URL(page).hostname) {
+    try {const r=await readPublicSource(listUrl,{fetcher,kind:'text',timeoutMs:1200});
+      for(const host of r.text.split(/[\s,]+/))if(/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(host))domains.push(host);
+    }catch(_){/* The publisher's explicit fallback remains available. */}
+  }
+  const urls=new Set();
+  for(const m of html.matchAll(/getRandomStream\(\s*['"]([a-z0-9_-]+\.m3u8)['"]\s*(?:,\s*['"]([a-z0-9-]+)['"])?\s*\)/gi)) {
+    for(const domain of [...new Set(domains)].slice(0,3)) {
+      const url=publicSourceUrl('https://'+(m[2]||fallback)+'.'+domain+'/'+m[1]);
+      if(url)urls.add(url);
+    }
+  }
+  return [...urls].slice(0,6).map(url=>({url,referer:page,origin:new URL(page).origin}));
+}
+
+export async function experimentalStreams(source, body, {fetcher = fetch} = {}) {
+  const site = experimentalFootballSites[source];
+  if (!site) throw Error("Unsupported source");
+  // For deliberate CricHD/Roxie selections, bound non-media page crawls.
+  const deadline = Date.now() + (source === 'crichd' || source === 'roxie' ? 4600 : 7000);
+  let page = typeof body?.page_url === 'string' && body.page_url.trim()
+    ? allowedPageUrl(body.page_url,site) : null;
+  if (!page) return {ok: true, source, lines: [], line_count: 0,
+    ready: false, message: "No verified public match page."};
+  let firstHtml = null, configured = [], browserPlayerUrl = null;
+  let chosenWatchUrl = null;
+  if (source === 'crichd') {
+    try {
+      // Only the publisher's explicit Watch link is eligible for the
+      // user-initiated browser observer. Never synthesize session/stream URLs.
+      const read = await readPublicSource(page,{
+        fetcher,allowedHosts:[site.host],timeoutMs:2500,
+      });
+      firstHtml = read.text;
+      // A client may select only a Watch URL actually published for this
+      // match. Never trust a submitted arbitrary external player URL.
+      const requested = typeof body?.watch_url === 'string'
+        ? publicSourceUrl(body.watch_url) : null;
+      if (body?.watch_url != null) {
+        const published = crichdPublishedWatchLinks(firstHtml,read.url);
+        if (!requested || !published.some(link => link.watch_url === requested)) {
+          return {ok:true,source,ready:false,lines:[],line_count:0,
+            message:"Selected Watch link is not published on this match page."};
+        }
+        chosenWatchUrl = requested;
+      }
+      const players = chosenWatchUrl ? [chosenWatchUrl] :
+        publishedPlayerPages(firstHtml,read.url).map(ref => ref.url);
+      browserPlayerUrl = players.find(value => {
+        const target = new URL(value);
+        return target.protocol === 'https:' &&
+          (target.hostname === 'playerbee.top' ||
+           target.hostname === 'www.playerbee.top');
+      }) ?? null;
+    } catch (_) {
+      // Keep the public HTML media resolver available if a watch-link
+      // lookup fails. An inaccessible page is not a confirmed stream.
+    }
+  }
+  if (source === 'roxie') {
+    const read = await readPublicSource(page,{fetcher,allowedHosts:[site.host],timeoutMs:2500});
+    firstHtml = read.text;
+    configured = await configuredRoxiePublicMedia(source,firstHtml,read.url,{fetcher});
+  }
+  // With a numbered link selected, inspect ONLY that published player.
+  // Do not return media from Link 2 when Link 1 was pressed.
+  const mediaPage = chosenWatchUrl || page;
+  // Roxie already publishes configured media; skip redundant page crawling.
+  const result = source === 'roxie' && configured.length
+    ? {lines:configured, pagesChecked:1, failures:[]}
+    : await discoverPublicMedia(mediaPage,{fetcher,deadline,
+        firstHtml:chosenWatchUrl ? null : firstHtml,
+        initialAllowedHosts:[new URL(mediaPage).hostname]});
+  result.lines = [...new Map([...result.lines,...configured].map(line=>[line.url,line])).values()];
+  if (!result.lines.length && result.failures.some(error=>error.includes('outside configured provider'))) {
+    throw Error('Source redirected outside configured provider');
+  }
+  const deniedByPlayer = source === 'crichd' &&
+    result.failures.some(error => /HTTP (?:401|403)/.test(error));
+  const lines = result.lines.map((line, i) => {
+    const streamType = line.stream_type || (/\.mpd(?:\?|$)/i.test(line.url) ? "dash" : /\.mp4(?:\?|$)/i.test(line.url) ? "mp4" : "hls");
+    const parent = source === 'crichd' ? publicSourceUrl(line.referer) : null;
+    const player = parent ? new URL(parent) : null;
+    // The inspected CricHD-linked PlayerBee uses origin-only Referer on
+    // cross-origin HLS requests. Keep this scoped to that player, not other
+    // source adapters or every third-party media host.
+    const playerOrigin = player &&
+      (player.hostname === 'playerbee.top' ||
+       player.hostname === 'www.playerbee.top')
+      ? player.origin : null;
+    return {...line,
+      ...(playerOrigin ? {referer:playerOrigin+'/',origin:playerOrigin} : {}),
+      label: site.label + " • " + ({dash:"DASH / MPD",mp4:"MP4",hls:"HLS / M3U8"}[streamType] || "Media") + " " + (i+1),
+      stream_type: streamType, resolution:"Auto", health_status:"unknown",
+    };
+  });
+  if (body?.status_only === true || body?.status_only === "true") {
+    return {ok: true, source, ready: lines.length > 0, line_count: lines.length,
+      live_status: false};
+  }
+  return {ok: true, source, ready: lines.length > 0,
+    lines, line_count: lines.length, live_status: false,
+    ...(browserPlayerUrl ? {browser_player_url:browserPlayerUrl} : {}),
+    diagnostics:{pages_checked:result.pagesChecked,
+      content_state:lines.length?'media_found':result.failures.length?'player_unavailable':'no_public_media',
+      access_denied:deniedByPlayer || result.failures.some(error=>/HTTP (?:401|403)/.test(error)),
+      playback_verified:false},
+    message: lines.length ? "Check permission and playback before importing." :
+      deniedByPlayer
+        ? "Selected player returned HTTP 401/403 to the server; browser playback can differ. HLS is unverified. Use DETECT only for media published to your authorized browser session."
+        : "No public HLS/DASH/MP4 URL found in the published page, public API or player chain. Player access may be unavailable.",
+    generated_at: new Date().toISOString()};
+}

@@ -1,0 +1,533 @@
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../football_english.dart';
+import '../services/tv_schedule_service.dart';
+import '../widgets/football_match_guide_card.dart';
+
+/// Compact match schedule for the Admin's own fixture list.
+///
+/// It is intentionally read-only: channel guide data is useful for seeing
+/// live/next match times, but adding a stream line does not belong in a TV
+/// schedule view.
+class TvSchedulesPage extends StatefulWidget {
+  const TvSchedulesPage({super.key, this.embedded = false, this.active = true});
+
+  final bool embedded;
+  final bool active;
+
+  @override
+  State<TvSchedulesPage> createState() => _TvSchedulesPageState();
+}
+
+class _TvSchedulesPageState extends State<TvSchedulesPage> {
+  Object? _contentKey;
+  Widget? _retainedContent;
+  static final _guideTheme = ThemeData.dark(useMaterial3: true).copyWith(
+    colorScheme: ColorScheme.fromSeed(
+        seedColor: FootballGuideColors.mint,
+        brightness: Brightness.dark,
+        surface: FootballGuideColors.background),
+  );
+
+  late Future<_ScheduleData> _schedule = _load();
+  _ScheduleData? _lastSchedule;
+  DateTime? _lastSuccessfulAt;
+  late Future<_GuideResult> _guide = _loadGuide();
+  _GuideResult? _lastGuide;
+  String _view = 'upcoming';
+  DateTime _lastRefreshAt = DateTime.now();
+
+  void _refresh({bool force = true}) => setState(() {
+        _lastRefreshAt = DateTime.now();
+        _schedule = _load();
+        _guide = _loadGuide(refresh: force);
+      });
+
+  @override
+  void didUpdateWidget(covariant TvSchedulesPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active &&
+        !oldWidget.active &&
+        DateTime.now().difference(_lastRefreshAt) >=
+            const Duration(minutes: 2)) {
+      _refresh(
+          force: false); // FutureBuilder holds last good rows while fetching.
+    }
+  }
+
+  // Matches are essential; optional EPG must never block showing fixtures.
+  Future<_ScheduleData> _load() async {
+    final result = _ScheduleData(matches: await _loadMatches());
+    _lastSchedule = result; // Keep last success on temporary network loss.
+    _lastSuccessfulAt = DateTime.now();
+    return result; // Including authoritative empty/deleted lists.
+  }
+
+  Future<_GuideResult> _loadGuide({bool refresh = false}) async {
+    try {
+      return _lastGuide =
+          _GuideResult(guide: await TvScheduleService().load(refresh: refresh));
+    } catch (_) {
+      return _GuideResult(
+          guide: _lastGuide?.guide,
+          error: 'TV guide refresh failed — showing last successful guide.');
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _loadMatches() async {
+    final data = await Supabase.instance.client
+        .from('matches')
+        .select(
+          'id,league,home_team,away_team,kickoff_at,sort_order,is_live,'
+          'is_active,is_featured,publish_state,deleted_at',
+        )
+        .timeout(const Duration(seconds: 10));
+    final rows = List<Map<String, dynamic>>.from(data)
+        .where((row) => row['deleted_at'] == null)
+        .toList();
+    rows.sort(_compareMatches);
+    return rows;
+  }
+
+  int _compareMatches(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final aTime = DateTime.tryParse(a['kickoff_at']?.toString() ?? '');
+    final bTime = DateTime.tryParse(b['kickoff_at']?.toString() ?? '');
+    final byTime = (aTime ?? DateTime(9999)).compareTo(
+      bTime ?? DateTime(9999),
+    );
+    if (byTime != 0) return byTime;
+    final aOrder = (a['sort_order'] as num?)?.toInt() ?? 0;
+    final bOrder = (b['sort_order'] as num?)?.toInt() ?? 0;
+    return aOrder.compareTo(bOrder);
+  }
+
+  List<Map<String, dynamic>> _visibleMatches(
+    List<Map<String, dynamic>> matches,
+  ) {
+    final now = DateTime.now().toUtc();
+    return matches.where((match) {
+      final label =
+          '${match['league']} ${match['home_team']} ${match['away_team']}';
+      // Schedule is football-only, never replay/highlight or other sports.
+      if (RegExp(
+              r'\b(replay|highlight|recap|cricket|tennis|basketball|formula 1|motorsport|rugby)\b',
+              caseSensitive: false)
+          .hasMatch(label)) return false;
+      if (match['is_active'] == false ||
+          (match['publish_state'] ?? 'published') != 'published') {
+        return false;
+      }
+      if (_view == 'live') return match['is_live'] == true;
+      final kickoff = DateTime.tryParse(match['kickoff_at']?.toString() ?? '');
+      return match['is_live'] == true ||
+          (kickoff != null && !kickoff.toUtc().isBefore(now));
+    }).toList(growable: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Ordinary tab switches retain the same subtree, not just its response.
+    // Filters, refreshes, catalog arrival and clock changes rebuild it.
+    final contentKey = (
+      _schedule,
+      _guide,
+      _view,
+      widget.embedded,
+      DateTime.now().millisecondsSinceEpoch ~/ 60000
+    );
+    if (_contentKey != contentKey) {
+      _contentKey = contentKey;
+      _retainedContent = FutureBuilder<_ScheduleData>(
+        future: _schedule,
+        builder: (context, snapshot) {
+          final data = snapshot.data ?? _lastSchedule;
+          if (data == null && snapshot.hasError) {
+            return _RetryState(
+              message:
+                  'Could not load matches. Check the connection and retry.',
+              onRetry: _refresh,
+            );
+          }
+          if (data == null) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          // Keep the last success while revalidating; never replay deleted
+          // fixtures after a successful (possibly empty) response.
+          final matches = _visibleMatches(data.matches);
+          return FutureBuilder<_GuideResult>(
+            future: _guide,
+            builder: (context, guideSnapshot) {
+              final guide = guideSnapshot.data;
+              // Some broadcasters have a verified guide fixture even when it
+              // has not been separately published as an NCA match. Keep guide
+              // metadata visible in TV Schedule without creating a fixture,
+              // stream line, or claiming playback has been verified.
+              final guideListings =
+                  guide?.guide?.liveAndUpcomingMatchListings(
+                        days: TvScheduleService.guideDays,
+                      ) ??
+                      const <TvScheduleListing>[];
+              // EPG programmes that already appear under a published
+              // NCA match card must not be duplicated in the guide-only list.
+              final publishedAirings = <String>{};
+              final guideData = guide?.guide;
+              if (guideData != null) {
+                for (final match in matches) {
+                  final normalizedMatch = {
+                    ...match,
+                    'home_team': englishKnownFootballName(
+                        match['home_team']?.toString() ?? ''),
+                    'away_team': englishKnownFootballName(
+                        match['away_team']?.toString() ?? ''),
+                  };
+                  for (final airing in guideData.airingsForMatch(normalizedMatch)) {
+                    publishedAirings.add(
+                      '${airing.channel}|${airing.when.millisecondsSinceEpoch}|${airing.title}',
+                    );
+                  }
+                }
+              }
+              final visibleGuideListings = guideListings
+                  .where((row) => (_view != 'live' || row.isLive) &&
+                      !publishedAirings.contains(
+                          '${row.channel.name}|${row.programme.start.millisecondsSinceEpoch}|${row.programme.title}'))
+                  .take(60)
+                  .toList(growable: false);
+              return RefreshIndicator(
+                onRefresh: () async => _refresh(),
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 24),
+                  children: [
+                    if (widget.embedded)
+                      _ScheduleHeader(
+                        guideError: guide?.error,
+                        onRefresh: _refresh,
+                      ),
+                    if (widget.embedded) const SizedBox(height: 10),
+                    if (snapshot.hasError && _lastSchedule != null) ...[
+                      Card(
+                        color: Theme.of(context).colorScheme.errorContainer,
+                        child: ListTile(
+                          leading: const Icon(Icons.cloud_off_rounded),
+                          title: const Text(
+                              'Match refresh failed — showing saved schedule'),
+                          subtitle: Text(_lastSuccessfulAt == null
+                              ? 'Last successful update unavailable'
+                              : 'Last successful: ${DateFormat('dd MMM HH:mm').format(_lastSuccessfulAt!.toLocal())}'),
+                          trailing: TextButton(
+                            onPressed: _refresh,
+                            child: const Text('RETRY'),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        ChoiceChip(
+                          label: const Text('Live & upcoming'),
+                          selected: _view == 'upcoming',
+                          onSelected: (_) => setState(() => _view = 'upcoming'),
+                        ),
+                        ChoiceChip(
+                          label: const Text('Live now'),
+                          selected: _view == 'live',
+                          onSelected: (_) => setState(() => _view = 'live'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      '${matches.length} NCA MATCH${matches.length == 1 ? '' : 'ES'}'
+                      ' • ${visibleGuideListings.length} EPG LISTINGS',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: .7,
+                      ),
+                    ),
+                    const SizedBox(height: 7),
+                    if (matches.isEmpty && visibleGuideListings.isEmpty)
+                      const _EmptySchedule()
+                    else ...[
+                      ...matches.map(
+                        (match) => Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: _MatchScheduleCard(
+                            match: match,
+                            guide: guide?.guide,
+                          ),
+                        ),
+                      ),
+                      if (visibleGuideListings.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          'EPG MATCH LISTINGS • GUIDE ONLY',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: .7,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        ...visibleGuideListings.map(
+                          (listing) => Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: _EpgScheduleCard(listing: listing),
+                          ),
+                        ),
+                        if (guideListings.length > visibleGuideListings.length &&
+                            _view != 'live')
+                          const Text('Showing the first 60 guide programmes.',
+                              style: TextStyle(fontSize: 11)),
+                      ],
+                    ],
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      );
+    }
+    final page = _retainedContent!;
+
+    if (widget.embedded) {
+      // Both guide tabs use a dark guide canvas even when the Admin app is
+      // in light mode. Scope text, icons and dropdown colors to that canvas
+      // so black-on-black labels never disappear.
+      return Theme(
+        data: _guideTheme,
+        child: ColoredBox(
+          color: FootballGuideColors.background,
+          child: page,
+        ),
+      );
+    }
+    return Scaffold(
+      backgroundColor: FootballGuideColors.background,
+      appBar: AppBar(
+        title: const Text('TV Schedule'),
+        actions: [
+          IconButton(
+            tooltip: 'Refresh TV schedule',
+            onPressed: _refresh,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
+      body: page,
+    );
+  }
+}
+
+class _ScheduleData {
+  const _ScheduleData({required this.matches});
+
+  final List<Map<String, dynamic>> matches;
+}
+
+class _GuideResult {
+  const _GuideResult({this.guide, this.error});
+
+  final TvScheduleGuide? guide;
+  final String? error;
+}
+
+class _ScheduleHeader extends StatelessWidget {
+  const _ScheduleHeader({
+    required this.guideError,
+    required this.onRefresh,
+  });
+
+  final String? guideError;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'TV Schedule',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                guideError ?? 'Live and next match times only • MMT',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: guideError == null
+                      ? colors.onSurfaceVariant
+                      : colors.error,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          tooltip: 'Refresh TV schedule',
+          onPressed: onRefresh,
+          icon: const Icon(Icons.refresh_rounded),
+        ),
+      ],
+    );
+  }
+}
+
+class _MatchScheduleCard extends StatelessWidget {
+  const _MatchScheduleCard({required this.match, required this.guide});
+  final Map<String, dynamic> match;
+  final TvScheduleGuide? guide;
+
+  @override
+  Widget build(BuildContext context) {
+    final home = englishKnownFootballName(
+      match['home_team']?.toString() ?? 'Home',
+    );
+    final away = englishKnownFootballName(
+      match['away_team']?.toString() ?? 'Away',
+    );
+    final league = englishKnownFootballName(
+      match['league']?.toString() ?? 'Football',
+      kind: 'league',
+    );
+    final normalizedMatch = {
+      ...match,
+      'home_team': home,
+      'away_team': away,
+    };
+    final airings =
+        guide?.airingsForMatch(normalizedMatch) ?? const <TvScheduleAiring>[];
+    final possibleAirings = guide?.possibleAiringsForMatch(normalizedMatch) ??
+        const <TvScheduleAiring>[];
+    return FootballMatchGuideCard(
+      league: league,
+      match: '$home vs $away',
+      kickoff: DateTime.tryParse(match['kickoff_at']?.toString() ?? ''),
+      live: match['is_live'] == true,
+      airings: [
+        for (final airing in airings)
+          FootballGuideAiring(
+            channel: airing.channel,
+            when: airing.when,
+            region: airing.region,
+            title: airing.title,
+          ),
+      ],
+      possibleAirings: [
+        for (final airing in possibleAirings)
+          FootballGuideAiring(
+            channel: airing.channel,
+            when: airing.when,
+            region: airing.region,
+            title: airing.title,
+          ),
+      ],
+    );
+  }
+}
+
+/// A broadcaster programme listing is not an independently verified stream
+/// and must not silently become a published NCA match.
+class _EpgScheduleCard extends StatelessWidget {
+  const _EpgScheduleCard({required this.listing});
+
+  final TvScheduleListing listing;
+
+  @override
+  Widget build(BuildContext context) {
+    final mmt = listing.programme.start.toUtc().add(
+          const Duration(hours: 6, minutes: 30),
+        );
+    return Card(
+      color: FootballGuideColors.card,
+      child: ListTile(
+        dense: true,
+        title: Text(
+          listing.programme.title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: FootballGuideColors.text,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        subtitle: Text(
+          '${listing.channel.name} • ${DateFormat('dd MMM HH:mm').format(mmt)} MMT'
+          '\nEPG schedule only • playback not verified',
+          maxLines: 3,
+          style: const TextStyle(color: FootballGuideColors.muted),
+        ),
+        trailing: Text(
+          listing.isLive ? 'ON AIR\n(EPG)' : 'UPCOMING',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: FootballGuideColors.mint,
+            fontSize: 10,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptySchedule extends StatelessWidget {
+  const _EmptySchedule();
+
+  @override
+  Widget build(BuildContext context) => Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'No live or upcoming matches in this view.',
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      );
+}
+
+class _RetryState extends StatelessWidget {
+  const _RetryState({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.cloud_off_rounded, size: 36),
+              const SizedBox(height: 12),
+              Text(message, textAlign: TextAlign.center),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+}

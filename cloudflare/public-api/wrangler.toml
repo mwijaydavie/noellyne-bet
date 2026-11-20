@@ -1,0 +1,26 @@
+name = "football-public-api"
+main = "src/index.js"
+compatibility_date = "2026-10-13"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+SUPABASE_URL = "https://woggzixprvyjnfjzsglz.supabase.co"
+GITHUB_MIRROR_URL = "https://raw.githubusercontent.com/nyeinchanaung75299-eng/football-stream-app/feed/public/matches.json"
+
+[[routes]]
+pattern = "football-api.nyeinchanaung.us.ci"
+custom_domain = true
+
+
+# Browser Run uses Workers Free quotas. Do not set
+# ENABLE_FREE_BROWSER_DETECT until confirming Workers Free plan.
+[browser]
+binding = "BROWSER"
+
+# One shared football metadata refresh, independent of Viewer visits.
+[triggers]
+crons = ["*/10 * * * *"]
+
+[[kv_namespaces]]
+binding = "SOURCE_SNAPSHOTS"
+id = "5669c6c60ea143a1bd32233df519fd1a"

@@ -1,0 +1,292 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:football_viewer/source_match_discovery.dart';
+
+void main() {
+  test('Leeds versus Tottenham is searchable by Spurs and Burmese nickname', () {
+    final match = <String, dynamic>{'source': 'soco',
+      'home_team': 'Leeds United', 'away_team': 'Tottenham Hotspur'};
+    for (final query in ['Leeds', 'Tottenham', 'Spurs', 'စပါး', 'Leeds Spurs']) {
+      expect(filterSourceMatches([match], todayOnly: false, query: query), [match]);
+    }
+    expect(match['away_team'], 'Tottenham Hotspur');
+  });
+  test('unverified countdowns never override real kickoff order', () {
+    final rows = <SourceMatch>[
+      {'source': 'soco', 'source_id': 'future', 'match_time': '2026-11-11T19:00:00Z', 'countdown_minutes': 1},
+      {'source': 'soco', 'source_id': 'first', 'match_time': '2026-11-11T17:00:00Z'},
+    ];
+    rows.sort((a,b) => compareSourceMatches(a,b,isLive:(_)=>false));
+    expect(rows.map((m)=>m['source_id']), ['first','future']);
+  });
+  group('source stream availability', () {
+    for (final source in ['soco', 'yyzb', 'arena']) {
+      test('$source schedule IDs never become streamer rooms', () {
+        expect(
+          sourceMatchAnchors({
+            'source_id': 'fixture-123',
+            'schedule_id': 'fixture-123',
+            'page_url': 'https://example.test/schedule/123',
+            'anchors': <Object>[],
+          }, source),
+          isEmpty,
+        );
+        expect(
+          sourceMatchAnchors({
+            'source_id': 'fixture-123',
+            'anchors': [
+              {'room_num': '', 'page_url': ''},
+            ],
+          }, source),
+          isEmpty,
+        );
+      });
+    }
+
+    test('real anchor rooms retain their source metadata', () {
+      final anchor = {
+        'room_num': 'streamer-456',
+        'nickname': 'Original streamer',
+        'page_url': 'https://example.test/room/456',
+      };
+      expect(
+        sourceMatchAnchors({
+          'source_id': 'fixture-123',
+          'anchors': [
+            anchor,
+            {'room_num': ''},
+            'invalid',
+          ],
+        }, 'yyzb'),
+        [anchor],
+      );
+    });
+    for (final source in ['yyzb']) {
+      test('$source never revives roomless rows from an old mirror or cache', () {
+        final rows = <SourceMatch>[
+          {'source_id':'score-only','page_url':'https://example.org/match','anchors':[]},
+          {'source_id':'room','anchors':[{'room_num':'published-room'}]},
+        ];
+        expect(filterSourceMatches(rows, todayOnly:false, source:source)
+          .map((row)=>row['source_id']), ['room']);
+      });
+    }
+
+    test('Arena keeps published football fixtures before stream servers are available', () {
+      final row=<String,dynamic>{'source_id':'fixture','anchors':[]};
+      expect(filterSourceMatches([row],todayOnly:false,source:'arena'),[row]);
+      expect(sourceMatchAnchors(row,'arena'),isEmpty);
+    });
+
+    for (final source in ['fawa', 'cola']) {
+      test('$source retains its existing page and room fallback', () {
+        expect(
+          sourceMatchAnchors({
+            'source_id': 'room-123',
+            'page_url': 'https://example.test/live/123',
+          }, source),
+          [
+            {
+              'room_num': 'room-123',
+              'page_url': 'https://example.test/live/123',
+            },
+          ],
+        );
+        expect(
+          sourceMatchAnchors({'page_url': 'https://example.test/live'}, source),
+          [
+            {'room_num': '', 'page_url': 'https://example.test/live'},
+          ],
+        );
+      });
+    }
+  });
+
+  test('kickoff order wins over live and featured flags', () {
+    final matches = <SourceMatch>[
+      {'source_id': 'ordinary', 'match_time': '2026-10-10T10:00:00Z'},
+      {
+        'source_id': 'featured',
+        'hot': true,
+        'match_time': '2026-10-10T15:00:00Z',
+      },
+      {'source_id': 'live', 'live': true, 'match_time': '2026-10-10T12:00:00Z'},
+    ];
+    final originalTimes = {
+      for (final match in matches) match['source_id']: match['match_time'],
+    };
+    matches.sort(
+      (a, b) =>
+          compareSourceMatches(a, b, isLive: (match) => match['live'] == true),
+    );
+    expect(matches.map((match) => match['source_id']), [
+      'ordinary',
+      'live',
+      'featured',
+    ]);
+    expect({
+      for (final match in matches) match['source_id']: match['match_time'],
+    }, originalTimes);
+  });
+
+  test('00:30 is always before 02:30, even when 02:30 is featured', () {
+    final schedule = <SourceMatch>[
+      {'source_id':'0230-hot', 'hot':true, 'match_time':'2026-11-02T20:00:00Z'},
+      {'source_id':'0030', 'match_time':'2026-11-02T18:00:00Z'},
+      {'source_id':'0200', 'match_time':'2026-11-02T19:30:00Z'},
+      {'source_id':'0230-other', 'match_time':'2026-11-02T20:00:00Z'},
+    ];
+    schedule.sort((a,b) => compareSourceMatches(a,b,isLive:(_)=>false));
+    expect(schedule.map((x)=>x['source_id']),
+      ['0030','0200','0230-hot','0230-other']);
+  });
+
+  test('simultaneous kickoffs have stable ordering across feed refreshes', () {
+    final a = <String, dynamic>{
+      'source_id': 'a',
+      'match_time': '2026-10-10T14:00:00Z',
+    };
+    final b = <String, dynamic>{
+      'source_id': 'b',
+      'match_time': '2026-10-10T14:00:00Z',
+    };
+    for (final incoming in [
+      [b, a],
+      [a, b],
+    ]) {
+      incoming.sort((a, b) => compareSourceMatches(a, b, isLive: (_) => false));
+      expect(incoming.map((match) => match['source_id']), ['a', 'b']);
+    }
+  });
+
+  group('source discovery filters', () {
+    final today = DateTime(2026, 10, 10, 12);
+    final matches = <SourceMatch>[
+      {
+        'source_id': 'today',
+        'league': 'English Premier League',
+        'home_team': 'Arsenal',
+        'away_team': 'Leeds',
+        'match_time': DateTime(2026, 10, 10).toUtc().toIso8601String(),
+      },
+      {
+        'source_id': 'yesterday',
+        'league': 'Bundesliga',
+        'home_team': 'Bayern',
+        'away_team': 'Union Berlin',
+        'match_time': DateTime(2026, 10, 9, 23, 59).toUtc().toIso8601String(),
+      },
+      {
+        'source_id': 'tomorrow',
+        'league': 'English Premier League',
+        'home_team': 'Chelsea',
+        'away_team': 'Bournemouth',
+        'match_time': DateTime(2026, 10, 11).toUtc().toIso8601String(),
+      },
+      {
+        'source_id': 'unknown',
+        'league': 'Bundesliga',
+        'home_team': 'Dortmund',
+        'away_team': 'Mainz',
+      },
+    ];
+
+    test('Today uses the local calendar, excluding unknown kickoff times', () {
+      final filtered = filterSourceMatches(
+        matches,
+        todayOnly: true,
+        now: today,
+      );
+      expect(filtered.map((match) => match['source_id']), ['today']);
+    });
+
+    test('All dates retains past, future, and unknown-time fixtures', () {
+      expect(
+        filterSourceMatches(matches, todayOnly: false, now: today),
+        matches,
+      );
+    });
+
+    test('search combines team and league words without changing fixtures', () {
+      final filtered = filterSourceMatches(
+        matches,
+        todayOnly: false,
+        query: '  PREMIER   arsenal  ',
+      );
+      expect(filtered.map((match) => match['source_id']), ['today']);
+      expect(identical(filtered.single, matches.first), isTrue);
+      expect(
+        filterSourceMatches(matches, todayOnly: false, query: 'Chelsea Leeds'),
+        isEmpty,
+      );
+    });
+
+    test('league filter is exact and composes with date and search', () {
+      expect(
+        filterSourceMatches(
+          matches,
+          todayOnly: true,
+          now: today,
+          league: 'English Premier League',
+          query: 'leeds',
+        ),
+        [matches.first],
+      );
+      expect(
+        filterSourceMatches(
+          matches,
+          todayOnly: false,
+          league: 'Premier League',
+        ),
+        isEmpty,
+      );
+    });
+
+    test(
+      'league picker deduplicates names and makes Premier League easy to find',
+      () {
+        expect(sourceMatchLeagues(matches), [
+          'English Premier League',
+          'Bundesliga',
+        ]);
+      },
+    );
+  });
+
+  group('FaWa source-confirmed MMT label', () {
+    test('shows backend converted clock without duplicating competition', () {
+      final match = <String, dynamic>{
+        'source_timezone': 'GMT+1',
+        'time_label': 'Africa Cup of Nations • 10:30 PM MMT',
+        'source_time_label': 'Africa Cup of Nations 17:00',
+        'match_time': null,
+      };
+      expect(sourceMatchScheduleLabel(match, 'fawa'), '10:30 PM MMT');
+      expect(match['match_time'], isNull);
+      expect(match['source_time_label'], 'Africa Cup of Nations 17:00');
+    });
+
+    test('retains next-day marker without inventing a date', () {
+      final match = <String, dynamic>{
+        'source_timezone': 'GMT+1',
+        'time_label': 'Football • 12:30 AM MMT (+1 day)',
+      };
+      expect(sourceMatchScheduleLabel(match, 'fawa'),
+          '12:30 AM MMT (+1 day)');
+      expect(sourceMatchKickoff(match), isNull);
+    });
+
+    test('unknown timezone and other providers are not given invented MMT', () {
+      final match = <String, dynamic>{
+        'source_timezone': 'unverified',
+        'time_label': 'Football 17:00',
+      };
+      expect(sourceMatchScheduleLabel(match, 'fawa'), 'Time unverified');
+      expect(sourceMatchScheduleLabel(match, 'soco'), isNull);
+      expect(sourceMatchScheduleLabel({
+        'source_timezone': 'GMT+1',
+        'time_label': 'Football 17:00',
+      }, 'fawa'), 'Time unverified');
+      expect(sourceMatchScheduleLabel({}, 'fawa'), isNull);
+    });
+  });
+}

@@ -1,0 +1,32 @@
+project_id = "woggzixprvyjnfjzsglz"
+
+# These functions enforce their own x-cron-secret / signed-admin checks in code.
+# Disabling gateway JWT verification allows Supabase Cron to reach that code.
+[functions.football-score-sync]
+verify_jwt = false
+
+[functions.stream-health]
+verify_jwt = false
+
+# Supports current Supabase signing keys. The function verifies the token with
+# Auth /user and rechecks profiles.role before any monitoring read or write.
+[functions.system-monitor]
+verify_jwt = false
+
+# Telegram's signed webhook header is validated inside the functions.
+# These public gateways must NEVER return channel stream URLs or DRM keys.
+[functions.telegram-viewer]
+verify_jwt = false
+
+[functions.telegram-admin]
+verify_jwt = false
+
+# Management endpoint validates the live Supabase Auth session plus profiles.role=admin
+# before reading BotFather secrets or registering webhooks.
+[functions.telegram-connect]
+verify_jwt = false
+
+# Public listing/image fallback authenticates the project publishable key in
+# its handler. It cannot route Admin/Auth/REST requests or video bytes.
+[functions.viewer-network-api]
+verify_jwt = false

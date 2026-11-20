@@ -1,0 +1,310 @@
+name: Build Noellyne Bet APK
+
+# Lightweight, self-contained APK build for previews and testing.
+# Unlike build-apks.yml (signed updater releases on main), this never touches
+# the update feed: it produces a debug-signed release APK, uploads it as a
+# workflow artifact and attaches it to a GitHub Release for easy download.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_name:
+        description: 'Version name (e.g. 10.0.0)'
+        type: string
+        required: false
+        default: '10.0.0'
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'user_app/**'
+      - '.github/workflows/build-noellyne-apk.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: noellyne-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build viewer APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Use the release-ready version from the branch unless overridden.
+      APK_VERSION: ${{ github.event.inputs.build_name || '10.0.0' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Android platform
+        working-directory: user_app
+        run: |
+          HAD_WIDGET_TEST=false
+          if [ -e test/widget_test.dart ]; then HAD_WIDGET_TEST=true; fi
+          flutter create --platforms=android .
+          python3 ../scripts/configure_gradle_distribution.py \
+            android/gradle/wrapper/gradle-wrapper.properties
+          if [ "$HAD_WIDGET_TEST" = false ]; then rm -f test/widget_test.dart; fi
+
+      - name: Apply Noellyne Android branding and player patches
+        working-directory: user_app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import shutil
+
+          manifest = Path('android/app/src/main/AndroidManifest.xml')
+          s = manifest.read_text()
+          marker = '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
+          perms = [
+              '<uses-permission android:name="android.permission.INTERNET"/>',
+              '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>',
+              '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>',
+          ]
+          missing = [p for p in perms if p not in s]
+          if missing:
+              s = s.replace(marker, marker + '\n    ' + '\n    '.join(missing))
+
+          activity = (
+              '        <activity android:name=".NativePlayerActivity" '
+              'android:screenOrientation="unspecified" '
+              'android:configChanges="orientation|screenSize|keyboardHidden" '
+              'android:supportsPictureInPicture="true" '
+              'android:resizeableActivity="true" '
+              'android:exported="false" android:theme="@style/LaunchTheme" />\n'
+          )
+          if 'NativePlayerActivity' not in s:
+              s = s.replace('    </application>', activity + '    </application>')
+
+          posthog = (
+              '        <meta-data android:name="com.posthog.posthog.AUTO_INIT" '
+              'android:value="false" />\n'
+          )
+          if 'com.posthog.posthog.AUTO_INIT' not in s:
+              s = s.replace('    </application>', posthog + '    </application>')
+
+          s = re.sub(r'android:label="[^"]+"', 'android:label="Noellyne Bet"', s, count=1)
+          if 'android:usesCleartextTraffic=' not in s:
+              s = s.replace(
+                  '<application',
+                  '<application android:usesCleartextTraffic="false" '
+                  'android:networkSecurityConfig="@xml/network_security_config"',
+                  1,
+              )
+          elif 'android:networkSecurityConfig=' not in s:
+              s = s.replace(
+                  '<application',
+                  '<application android:networkSecurityConfig="@xml/network_security_config"',
+                  1,
+              )
+          s = s.replace('@mipmap/ic_launcher', '@drawable/noellyne_icon')
+          manifest.write_text(s)
+
+          network = Path('android/app/src/main/res/xml/network_security_config.xml')
+          network.parent.mkdir(parents=True, exist_ok=True)
+          network.write_text('\n'.join([
+              '<?xml version="1.0" encoding="utf-8"?>',
+              '<network-security-config>',
+              '    <base-config cleartextTrafficPermitted="false" />',
+              '    <domain-config cleartextTrafficPermitted="true">',
+              '        <domain includeSubdomains="false">fawa41-origin.nyeinchanaung.us.ci</domain>',
+              '        <domain includeSubdomains="false">fawa44-origin.nyeinchanaung.us.ci</domain>',
+              '        <domain includeSubdomains="false">fawa55-origin.nyeinchanaung.us.ci</domain>',
+              '        <domain includeSubdomains="false">fawa59-origin.nyeinchanaung.us.ci</domain>',
+              '    </domain-config>',
+              '</network-security-config>',
+              '',
+          ]))
+
+          icon = Path('android/app/src/main/res/drawable/noellyne_icon.webp')
+          icon.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2('assets/noellyne_icon.webp', icon)
+
+          gradle_kts = Path('android/app/build.gradle.kts')
+          if gradle_kts.exists():
+              g = gradle_kts.read_text().replace('minSdk = flutter.minSdkVersion', 'minSdk = 24')
+              if 'androidx.media3:media3-exoplayer:' not in g:
+                  g += ('\n\ndependencies {\n'
+                        '    implementation("androidx.media3:media3-exoplayer:1.4.1")\n'
+                        '    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")\n'
+                        '    implementation("androidx.media3:media3-exoplayer-dash:1.4.1")\n'
+                        '    implementation("androidx.media3:media3-ui:1.4.1")\n'
+                        '}\n')
+              gradle_kts.write_text(g)
+          else:
+              gradle = Path('android/app/build.gradle')
+              g = gradle.read_text().replace('minSdkVersion flutter.minSdkVersion', 'minSdkVersion 24')
+              if 'androidx.media3:media3-exoplayer:' not in g:
+                  g += ('\n\ndependencies {\n'
+                        '    implementation "androidx.media3:media3-exoplayer:1.4.1"\n'
+                        '    implementation "androidx.media3:media3-exoplayer-hls:1.4.1"\n'
+                        '    implementation "androidx.media3:media3-exoplayer-dash:1.4.1"\n'
+                        '    implementation "androidx.media3:media3-ui:1.4.1"\n'
+                        '}\n')
+              gradle.write_text(g)
+
+          kotlin_dest = Path('android/app/src/main/kotlin/com/example/football_viewer')
+          kotlin_dest.mkdir(parents=True, exist_ok=True)
+          shutil.copy2('android_patch/MainActivity.kt', kotlin_dest / 'MainActivity.kt')
+          shutil.copy2('android_patch/NativePlayerActivity.kt', kotlin_dest / 'NativePlayerActivity.kt')
+          java_dest = Path('android/app/src/main/java/com/example/football_viewer')
+          java_dest.mkdir(parents=True, exist_ok=True)
+          shutil.copy2('android_patch/PlaybackSourceSessions.java',
+                       java_dest / 'PlaybackSourceSessions.java')
+          PY
+
+      - name: Get dependencies
+        working-directory: user_app
+        run: flutter pub get
+
+      - name: Analyze (non-blocking)
+        working-directory: user_app
+        continue-on-error: true
+        run: flutter analyze --no-fatal-infos
+
+      - name: Build release APK
+        working-directory: user_app
+        env:
+          # Set these as repository Variables to repoint the build at the new
+          # Noellyne Supabase project / API without touching code.
+          CFG_SUPABASE_URL: ${{ vars.NOELLYNE_SUPABASE_URL }}
+          CFG_SUPABASE_KEY: ${{ vars.NOELLYNE_SUPABASE_ANON_KEY }}
+          CFG_API_BASE: ${{ vars.NOELLYNE_PUBLIC_API_BASE }}
+        run: |
+          DEFINES=()
+          if [ -n "$CFG_SUPABASE_URL" ]; then
+            DEFINES+=("--dart-define=SUPABASE_URL=$CFG_SUPABASE_URL")
+          fi
+          if [ -n "$CFG_SUPABASE_KEY" ]; then
+            DEFINES+=("--dart-define=SUPABASE_ANON_KEY=$CFG_SUPABASE_KEY")
+          fi
+          if [ -n "$CFG_API_BASE" ]; then
+            DEFINES+=("--dart-define=PUBLIC_API_BASE=$CFG_API_BASE")
+          fi
+          BUILD_NUMBER=$((40000 + GITHUB_RUN_NUMBER))
+          set -o pipefail
+          flutter build apk --release \
+            --build-name "$APK_VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            "${DEFINES[@]}" 2>&1 | tee /tmp/build.log
+          ls -lh build/app/outputs/flutter-apk/
+          mkdir -p /tmp/apk
+          cp build/app/outputs/flutter-apk/app-release.apk \
+            "/tmp/apk/NoellyneBet-${APK_VERSION}-${BUILD_NUMBER}.apk"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "APK_SHA256=$(sha256sum /tmp/apk/*.apk | awk '{print $1}')" >> "$GITHUB_ENV"
+          echo "APK_SIZE=$(du -h /tmp/apk/*.apk | awk '{print $1}')" >> "$GITHUB_ENV"
+          echo "APK_FILE=$(basename /tmp/apk/*.apk)" >> "$GITHUB_ENV"
+
+      - name: Report build failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f /tmp/build.log ]; then
+            tail -c 60000 /tmp/build.log > /tmp/ci-error.txt
+          else
+            echo "Build step produced no captured log." > /tmp/ci-error.txt
+          fi
+          {
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            cat /tmp/ci-error.txt
+          } > /tmp/ci-report.txt
+          if gh release view ci-log >/dev/null 2>&1; then
+            gh release edit ci-log --notes-file /tmp/ci-report.txt
+          else
+            gh release create ci-log --prerelease --title "CI build log" \
+              --notes-file /tmp/ci-report.txt
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoellyneBet-APK-${{ github.run_number }}
+          path: /tmp/apk/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish APK to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="apk-${GITHUB_RUN_NUMBER}"
+          cat > /tmp/notes.md <<EOF
+          Noellyne Bet viewer build from \`${GITHUB_SHA::12}\` on branch \`${GITHUB_REF_NAME}\`.
+
+          - Version: \`${APK_VERSION}\` (build ${BUILD_NUMBER})
+          - Size: ${APK_SIZE}
+          - SHA-256: \`${APK_SHA256}\`
+          - Signed with the Flutter debug key: **testing only**, not an updater release.
+
+          Install: open this release on your phone and download the APK.
+          EOF
+          gh release create "$TAG" /tmp/apk/*.apk \
+            --title "Noellyne Bet APK · build ${GITHUB_RUN_NUMBER}" \
+            --notes-file /tmp/notes.md \
+            --latest
+
+      - name: Publish rolling update manifest (viewer-latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          cp /tmp/apk/NoellyneBet-*.apk /tmp/apk/NoellyneBet-latest.apk
+          APK_BYTES=$(stat -c%s /tmp/apk/NoellyneBet-latest.apk)
+          cat > /tmp/apk/latest.json <<EOF
+          {
+            "app": "noellyne_viewer",
+            "abi": "universal",
+            "version_name": "${APK_VERSION}",
+            "build_number": ${BUILD_NUMBER},
+            "apk_url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/viewer-latest/NoellyneBet-latest.apk",
+            "sha256": "${APK_SHA256}",
+            "size_bytes": ${APK_BYTES},
+            "notes": "Noellyne Bet ${APK_VERSION} (build ${BUILD_NUMBER}) from ${GITHUB_SHA::12}",
+            "mandatory": false
+          }
+          EOF
+          cat /tmp/apk/latest.json
+          gh release view viewer-latest >/dev/null 2>&1 || \
+            gh release create viewer-latest \
+              --title "Noellyne Bet · latest" \
+              --notes "Rolling build consumed by the in-app updater (GET latest.json)."
+          gh release upload viewer-latest \
+            /tmp/apk/NoellyneBet-latest.apk /tmp/apk/latest.json --clobber
+
+      - name: Summary
+        run: |
+          {
+            echo "## 📱 Noellyne Bet APK"
+            echo ""
+            echo "**Download:** ${{ github.server_url }}/${{ github.repository }}/releases/download/apk-${{ github.run_number }}/${APK_FILE}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Version | \`${APK_VERSION}\` |"
+            echo "| File | \`${APK_FILE}\` |"
+            echo "| Size | ${APK_SIZE} |"
+            echo "| SHA-256 | \`${APK_SHA256}\` |"
+            echo "| Branch | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA::12}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

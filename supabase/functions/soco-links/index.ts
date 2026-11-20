@@ -1,0 +1,1363 @@
+import { websiteMatches, websiteStreams, experimentalMatches, experimentalStreams, isExperimentalFootballSource } from "../_shared/website_sources.mjs";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
+import { englishFootballName, firstFootballName, providerEnglishName, sourceFootballNames, englishStreamerName } from "../_shared/football_names.mjs";
+import { sourceMatchRows, isFootballSourceRow, hasPublishedSourceRoom } from "../_shared/source_match_rows.mjs";
+import { sourceLogo } from "../_shared/source_team_logos.mjs";
+import { loadYyzbFootballCatalogue } from '../_shared/yyzb_schedule.mjs';
+import { fawaScheduleTimezoneConfirmed, fawaMyanmarTimeLabel } from '../_shared/fawa_schedule_time.mjs';
+import { probeStreamFirstChunk } from "../_shared/stream_probe.mjs";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+};
+
+const SOCO_MATCHES_URL = "https://json.vnres.co/matches.json";
+const SOCO_ROOM_BASE = "https://json.vnres.co/room";
+
+const YYZB_MATCHES_URL = "https://json.ncctrials.com/matches.json";
+const YYZB_ROOM_BASE = "https://json.ncctrials.com/room";
+
+const FAWA_BASE = "http://www.fawanews.sc";
+const FAWA_HOME = FAWA_BASE + "/";
+const COLA_HOME = "https://colatv66.live/";
+const COLA_API = "https://api.cltvlv.com/api/matches";
+
+Deno.serve(async (req) => {
+  let failureSource = "unknown";
+  let failureAction = "unknown";
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  if (req.method !== "POST" && req.method !== "GET") {
+    return json({ error: "Method not allowed." }, 405);
+  }
+
+  try {
+    const requestUrl = new URL(req.url);
+    const body: Record<string, any> = req.method === "GET"
+      ? Object.fromEntries(requestUrl.searchParams.entries())
+      : await req.json().catch(() => ({}));
+    const viewerPublic =
+      body.viewer_public === true ||
+      body.viewer_public === "true" ||
+      body.viewer_public === "1";
+    const source = normalizeSource(body.source);
+    if (source === null) {
+      return json({ error: "Unsupported source." }, 400);
+    }
+    const action = body.action === "streams" ? "streams" : "matches";
+    failureSource = source;
+    failureAction = action;
+    // Admin continues to require a verified admin session. The Viewer may use
+    // this function only in explicit read-only source-browser mode; this
+    // function fetches public provider match/stream metadata and never writes
+    // application data.
+    if (!viewerPublic) {
+      const authHeader = req.headers.get("Authorization") ?? "";
+      if (!authHeader.startsWith("Bearer ")) {
+        return json({ error: "Not signed in." }, 401);
+      }
+
+      const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+      const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+
+      const userClient = createClient(supabaseUrl, anonKey, {
+        global: {
+          headers: { Authorization: authHeader },
+        },
+      });
+
+      const {
+        data: { user },
+        error: userError,
+      } = await userClient.auth.getUser();
+
+      if (userError || !user) {
+        return json({ error: "Invalid session." }, 401);
+      }
+
+      const { data: profile } = await userClient
+        .from("profiles")
+        .select("role")
+        .eq("id", user.id)
+        .single();
+
+      if (profile?.role !== "admin") {
+        return json({ error: "Admin access required." }, 403);
+      }
+    }
+
+    if (isExperimentalFootballSource(source)) {
+      // Experimental website access is admin-only. Viewer public mode cannot
+      // issue third-party HTML fetches or use the resolver as a proxy.
+      if (viewerPublic) return json({ error: "Admin access required." }, 403);
+      if (action !== "streams") return json(await experimentalMatches(source));
+      // An event listing is not proof of a working video URL. Even the small
+      // status-only check must verify published manifests; it must not mark
+      // the room READY simply because a string ended in .m3u8 or .mpd.
+      const statusOnly = body.status_only === true || body.status_only === "true" ||
+        body.status_only === "1";
+      const resolved = await experimentalStreams(source, { ...body, status_only: false });
+      // CricHD and Roxie can expose public, unverified candidates. Avoid
+      // slow first-byte probes when the operator explicitly selects a link.
+      // Background status-only checks remain strict and unchanged.
+      const quickPreview = !statusOnly &&
+        (source === "crichd" || source === "roxie") &&
+        (body.preview_only === true || body.preview_only === "true");
+      if (quickPreview) {
+        const candidates = (resolved.lines ?? []).map((line: any) => ({
+          ...line, health_status: "unknown", health_http: null, checked_at: null,
+        }));
+        const blocked = resolved.diagnostics?.access_denied === true;
+        return json({ ...resolved, lines:candidates,
+          line_count:candidates.length, detected_count:candidates.length,
+          ready:false,
+          diagnostic_code:candidates.length?"public_candidate_unverified":
+            blocked?"player_access_denied":"no_public_manifest",
+          message:candidates.length
+            ?"Public candidate URL only. Verify playback before importing."
+            :blocked?"Public player denied inspection (HTTP 401/403). Browser playback may differ."
+            :"No public media URL found for the selected source."});
+      }
+      // Never skip independent probes for these newly added sources.
+      // Background availability checks are frequent: probe at most the first
+      // two candidates there. A deliberate operator tap checks every line.
+      const checked = await probeLines(
+        statusOnly ? (resolved.lines ?? []).slice(0, 2) : (resolved.lines ?? []),
+        false,
+        true,
+      );
+      const lines = checked.filter((line: any) =>
+        ["healthy", "slow"].includes(String(line.health_status)));
+      const publishedCount = (resolved.lines ?? []).length;
+      const accessDenied = checked.some((line: any) =>
+        [401, 403].includes(Number(line.health_http)));
+      const blockedPlayer = resolved.diagnostics?.access_denied === true;
+      const diagnosticCode = lines.length > 0 ? "manifest_reachable" :
+        publishedCount === 0 ? (blockedPlayer ? "player_access_denied" : "no_public_manifest") :
+        accessDenied ? "manifest_access_denied" : "manifest_probe_failed";
+      if (statusOnly) {
+        return json({ ok: true, source, ready: lines.length > 0,
+          line_count: lines.length, detected_count: publishedCount,
+          live_status: false, diagnostic_code: diagnosticCode });
+      }
+      const explanation = lines.length > 0
+        ? "Public manifest responded to the first-byte check. Verify actual playback before importing."
+        : publishedCount === 0 && blockedPlayer
+        ? "The public player script or frame denied this server request (HTTP 401/403). It may work in your browser, but no native media URL was confirmed."
+        : publishedCount === 0
+        ? "No public HLS/DASH/MP4 URL was found in the readable page HTML/JSON. This website may load video through its own player or authorized API."
+        : accessDenied
+        ? "A public manifest URL was found, but the media server denied the check (HTTP 401/403). Access protections were not bypassed."
+        : "A public manifest URL was found, but no line passed the manifest check. It may be expired, offline, geo-restricted or temporarily unreachable.";
+      return json({ ...resolved, lines, line_count: lines.length,
+        detected_count: publishedCount, ready: lines.length > 0,
+        diagnostic_code: diagnosticCode, message: explanation });
+    }
+
+    if (source === "arena") {
+      const payload = action === "streams" ? await websiteStreams(source, body) :
+        { ok: true, source, matches: await websiteMatches(source), generated_at: new Date().toISOString() };
+      return json(payload);
+    }
+
+    if (action === "streams") {
+      if (source === "fawa") {
+        return await fawaStreams(body);
+      }
+      if (source === "cola") {
+        return await colaStreams(body);
+      }
+      if (source === "yyzb") {
+        return await roomStreams({
+          source,
+          roomBase: YYZB_ROOM_BASE,
+          roomNum: body.room_num,
+          scheduleId: body.schedule_id,
+          refererOrigin: "https://m.yyzb22.live",
+          statusOnly: body.status_only === true || body.status_only === "true" || body.status_only === "1",
+          skipProbe: body.skip_probe === true || body.skip_probe === "true" || body.skip_probe === "1",
+        });
+      }
+      return await roomStreams({
+        source: "soco",
+        roomBase: SOCO_ROOM_BASE,
+        roomNum: body.room_num,
+        scheduleId: body.schedule_id,
+        refererOrigin: "https://m.sutbongtv.com",
+        statusOnly: body.status_only === true || body.status_only === "true" || body.status_only === "1",
+        skipProbe: body.skip_probe === true || body.skip_probe === "true" || body.skip_probe === "1",
+      });
+    }
+
+    if (source === "fawa") {
+      return await fawaMatches();
+    }
+    if (source === "cola") {
+      return await colaMatches();
+    }
+    if (source === "yyzb") {
+      return await jsonpMatches({
+        source,
+        url: YYZB_MATCHES_URL,
+        viewerPublic,
+      });
+    }
+
+    return await jsonpMatches({
+      source: "soco",
+      url: SOCO_MATCHES_URL,
+      viewerPublic,
+    });
+  } catch (error) {
+    // The log must not contain upstream URLs, stream keys, query params,
+    // authorization headers or raw provider exceptions.
+    const message = error instanceof Error ? error.message : String(error);
+    const kind = /abort|timeout/i.test(message) ? "timeout"
+      : /HTTP\s+\d{3}/i.test(message) ? "upstream_http"
+      : /invalid JSON|JSONP|payload/i.test(message) ? "invalid_payload"
+      : "provider_failure";
+    console.error("soco-links provider failure", JSON.stringify({
+      source: failureSource,
+      action: failureAction,
+      kind,
+    }));
+    // Viewer clients need a stable failure class, not raw upstream errors
+    // that could incidentally contain access tokens or private query strings.
+    return json(
+      { error: "Source provider temporarily unavailable.", code: kind },
+      502,
+    );
+  }
+});
+
+function normalizeSource(value: unknown): "soco" | "yyzb" | "fawa" | "cola" | "arena" | null {
+  const source = String(value ?? "").trim().toLowerCase();
+  if (!source) return "soco";
+  if (isExperimentalFootballSource(source)) return source as any;
+  if (source === "soco" || source === "yyzb" || source === "fawa" || source === "cola" || source === "arena") {
+    return source;
+  }
+  return null;
+}
+
+async function jsonpMatches(args: {
+  source: "soco" | "yyzb";
+  url: string;
+  viewerPublic?: boolean;
+}) {
+  const payload = args.source==='yyzb'?await loadYyzbFootballCatalogue(fetchText):parseJsonp(await fetchText(`${args.url}?v=${Date.now()}`));
+  const matches = sourceMatchRows(payload?.data ?? payload,
+    (row: any) => isFootballSourceRow(row, { allowUnclassified: args.source === "soco" }))
+    .map((row: any) => {
+      const scheduleId =
+        row.scheduleId ?? row.schedule_id ?? row.fixtureId ??
+        row.matchId ?? row.match_id ?? row.gameId ?? row.eventId ?? row.id;
+      const rawAnchors = Array.isArray(row.anchors)
+        ? row.anchors
+        : Array.isArray(row.anchorList)
+          ? row.anchorList
+          : [];
+
+      return {
+        source: args.source,
+        source_id: String(scheduleId ?? ""),
+        schedule_id: scheduleId,
+        ...sourceFootballNames(row, args.source === "yyzb"),
+        home_logo: sourceLogo(row, "home", args.source),
+        away_logo: sourceLogo(row, "away", args.source),
+        match_time: normalizeMatchTime(
+          row.matchTime ?? row.match_time ?? row.startTime ?? row.kickoff,
+        ),
+        hot:
+          row.hot === true ||
+          String(row.hot ?? row.isHot ?? "0") === "1",
+        status: row.status ?? null,
+        match_status: row.matchStatus ?? row.match_status ?? null,
+        anchors: rawAnchors
+          .map((anchor: any, index: number) => {
+            const names = englishStreamerName({
+              ...anchor,
+              nickName: decodeHtml(stripTags(String(anchor.nickName ?? anchor.name ?? "")))
+                .replace(/\s+/g, " ").trim(),
+            }, index);
+            const serverLabel = (args.source === "soco" ? "Soco" : "YYZB") + " Server " + (index + 1) +
+              (args.source === "yyzb" && names.commentary_language ? " (" + names.commentary_language + ")" : "");
+            const label = args.viewerPublic ? serverLabel : names.import_name;
+            return {
+              uid: anchor.uid ?? anchor.id ?? null,
+              nick_name: label,
+              ...(!args.viewerPublic && args.source === "yyzb" ? { nick_name_en: names.nick_name } : {}),
+              ...(names.commentary_language ? { commentary_language: names.commentary_language } : {}),
+              // YYZB clients render streamer text/chips, never these avatars.
+              // Leave room in the bounded catalog as providers add fixtures.
+              ...(args.source === "yyzb" ? {} : {
+                icon: anchor.cutOutIcon ?? anchor.icon ?? anchor.avatar ?? anchor.avatarUrl ?? null,
+              }),
+              room_num: roomNumber(anchor),
+            };
+          })
+          .filter((anchor: any) => anchor.room_num),
+      };
+    })
+    // Preserve the original Soco current-fixtures behavior: completed games
+    // must not linger in the catalogue. All dates is not match history.
+    .filter((row: any) => !staleKickoff(row.match_time) &&
+      (args.source !== "yyzb" || hasPublishedSourceRoom(row)))
+    .sort(compareMatches);
+
+  return json({
+    ok: true,
+    matches,
+    results: matches.length,
+    source: args.source,
+    generated_at: new Date().toISOString(),
+  });
+}
+
+async function roomStreams(args: {
+  source: "soco" | "yyzb";
+  roomBase: string;
+  roomNum: unknown;
+  scheduleId: unknown;
+  refererOrigin: string;
+  statusOnly?: boolean;
+  skipProbe?: boolean;
+}) {
+  const roomNum = String(args.roomNum ?? "").trim();
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(roomNum)) {
+    return json({ error: "Invalid room number." }, 400);
+  }
+
+  const raw = await fetchText(
+    `${args.roomBase}/${encodeURIComponent(roomNum)}/detail.json?v=${Date.now()}`,
+  );
+  const payload = parseJsonp(raw);
+  const data = payload?.data ?? payload ?? {};
+  const room = data.room ?? data.roomInfo ?? data.info ?? {};
+  const stream =
+    data.stream ??
+    data.streams ??
+    data.playUrl ??
+    data.playUrls ??
+    room.stream ??
+    room.streams ??
+    {};
+
+  const scheduleId = String(args.scheduleId ?? "").trim();
+  const referer = scheduleId
+    ? `${args.refererOrigin}/room/${encodeURIComponent(roomNum)}?scheduleId=${encodeURIComponent(scheduleId)}`
+    : `${args.refererOrigin}/room/${encodeURIComponent(roomNum)}`;
+
+  const lines = extractStreamLines(stream, referer);
+  const checkedLines = args.statusOnly
+    ? []
+    : await probeLines(lines, args.skipProbe);
+  const liveStatus =
+    room.liveStatus ??
+    room.live_status ??
+    data.liveStatus ??
+    data.live_status ??
+    null;
+  const rawAnchorName = room.anchor?.nickName ?? room.anchor?.name ??
+    room.nickName ?? room.name ?? null;
+  const anchorName = rawAnchorName == null ? null :
+    decodeHtml(stripTags(String(rawAnchorName))).replace(/\s+/g, " ").trim() || null;
+
+  return json({
+    ok: true,
+    room_num: roomNum,
+    title: room.title ?? room.name ?? data.title ?? null,
+    anchor_name: anchorName,
+    live_status: liveStatus,
+    line_count: lines.length,
+    ready: lines.length > 0,
+    lines: checkedLines,
+    source: args.source,
+    generated_at: new Date().toISOString(),
+  });
+}
+
+async function fawaMatches() {
+  const html = await fetchFawaText(FAWA_HOME);
+  const sourceIsGmtPlusOne = fawaScheduleTimezoneConfirmed(html);
+  const grouped = new Map<string, any>();
+
+  // Fawa has nested/unclosed <a> tags. Parsing one whole card with a single
+  // regex is brittle, so anchor each record on the stable name element and
+  // inspect only the nearby markup for its href + league/time text.
+  const nameRegex =
+    /<div\s+class=["']user-item__name["'][^>]*>([\s\S]*?)<\/div>/gi;
+
+  let hit: RegExpExecArray | null;
+  while ((hit = nameRegex.exec(html)) !== null) {
+    const name = decodeHtml(stripTags(hit[1])).replace(/\s+/g, " ").trim();
+    if (!/\bvs\b/i.test(name)) continue;
+
+    const before = html.slice(Math.max(0, hit.index - 1800), hit.index);
+    const hrefRegex = /href=["']([^"']+\.html)["']/gi;
+    let hrefHit: RegExpExecArray | null;
+    let href = "";
+    while ((hrefHit = hrefRegex.exec(before)) !== null) {
+      href = decodeHtml(hrefHit[1]).trim();
+    }
+    if (!href) continue;
+
+    const after = html.slice(nameRegex.lastIndex, nameRegex.lastIndex + 900);
+    const playingHit = after.match(
+      /class=["']user-item__playing["'][^>]*>([\s\S]*?)<\/div>/i,
+    );
+    const playing = playingHit
+      ? decodeHtml(stripTags(playingHit[1])).replace(/\s+/g, " ").trim()
+      : "Football";
+
+    const baseName = name
+      .replace(/\s*---\s*CH\s*\d+\s*$/i, "")
+      .trim();
+    const teams = baseName.split(/\s+vs\s+/i);
+    if (teams.length < 2) continue;
+
+    const key = baseName.toLowerCase();
+    const existing = grouped.get(key) ?? {
+      source: "fawa",
+      source_id: key,
+      page_url: absoluteFawaUrl(href),
+      league:
+        playing.replace(/\s+\d{1,2}:\d{2}\s*$/, "").trim() ||
+        "Football",
+      home_team: teams[0]?.trim() || baseName,
+      away_team: teams[1]?.trim() || "",
+      home_logo: null,
+      away_logo: null,
+      match_time: null,
+      time_label: fawaMyanmarTimeLabel(playing, sourceIsGmtPlusOne),
+      source_time_label: playing,
+      source_timezone: sourceIsGmtPlusOne ? 'GMT+1' : 'unverified',
+      hot: false,
+      status: null,
+      match_status: null,
+      anchors: [],
+    };
+
+    const anchorKey = absoluteFawaUrl(href);
+    if (
+      anchorKey &&
+      !existing.anchors.some((item: any) => item.page_url === anchorKey)
+    ) {
+      existing.anchors.push({
+        uid: href,
+        nick_name: channelLabel(name),
+        icon: null,
+        room_num: href,
+        page_url: anchorKey,
+      });
+    }
+
+    grouped.set(key, existing);
+  }
+
+  // Fallback for Fawa revisions that drop the user-item__name class.
+  // Only same-site .html links whose visible text contains "vs" are accepted.
+  if (grouped.size === 0) {
+    const anchorRegex =
+      /<a\b[^>]*href=["']([^"']+\.html(?:\?[^"']*)?)["'][^>]*>([\s\S]{0,2200}?)<\/a>/gi;
+    let anchorHit: RegExpExecArray | null;
+    while ((anchorHit = anchorRegex.exec(html)) !== null) {
+      const href = decodeHtml(anchorHit[1]).trim();
+      const visible = decodeHtml(stripTags(anchorHit[2]))
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!/\bvs\b/i.test(visible)) continue;
+
+      const cleaned = visible
+        .replace(/\s*---\s*CH\s*\d+\s*$/i, "")
+        .trim();
+      const teams = cleaned.split(/\s+vs\s+/i);
+      if (teams.length < 2) continue;
+
+      const pageUrl = absoluteFawaUrl(href);
+      if (!pageUrl) continue;
+      const key = cleaned.toLowerCase();
+
+      const existing = grouped.get(key) ?? {
+        source: "fawa",
+        source_id: key,
+        page_url: pageUrl,
+        league: "Football",
+        home_team: teams[0]?.trim() || cleaned,
+        away_team: teams[1]?.trim() || "",
+        home_logo: null,
+        away_logo: null,
+        match_time: null,
+        time_label: null,
+        hot: false,
+        status: null,
+        match_status: null,
+        anchors: [],
+      };
+
+      if (!existing.anchors.some((item: any) => item.page_url === pageUrl)) {
+        existing.anchors.push({
+          uid: href,
+          nick_name: channelLabel(visible),
+          icon: null,
+          room_num: href,
+          page_url: pageUrl,
+        });
+      }
+
+      grouped.set(key, existing);
+    }
+  }
+
+  const matches = [...grouped.values()].sort((a, b) =>
+    String(a.home_team).localeCompare(String(b.home_team))
+  );
+
+  return json({
+    ok: true,
+    matches,
+    results: matches.length,
+    source: "fawa",
+    generated_at: new Date().toISOString(),
+  });
+}
+
+async function fawaStreams(body: any) {
+  const pageUrl = safeFawaPageUrl(body.page_url ?? body.room_num);
+  if (!pageUrl) {
+    return json({ error: "Invalid Fawa match page." }, 400);
+  }
+
+  const html = await fetchFawaText(pageUrl);
+  const origin = new URL(pageUrl).origin;
+  const urls = extractFawaMediaUrls(html, pageUrl);
+
+  const lines = [...urls]
+    .map((value, index) => ({
+      label: `Fawa Server ${index + 1} · ${detectType(value).toUpperCase()}`,
+      stream_type: detectType(value),
+      resolution: qualityFromUrl(value),
+      url: value,
+      referer: pageUrl,
+      origin,
+      expires_at: streamExpiry(value),
+    }))
+    .filter((line) => line.stream_type !== "auto");
+
+  const checkedLines = await probeLines(lines, skipProbeRequested(body));
+
+  return json({
+    ok: true,
+    page_url: pageUrl,
+    title: pageTitle(html),
+    lines: checkedLines,
+    source: "fawa",
+    generated_at: new Date().toISOString(),
+  });
+}
+
+async function colaMatches() {
+  const payload = await fetchColaMatchesPayload();
+  const rawData = payload?.data;
+  if (!rawData || typeof rawData !== "object" || Array.isArray(rawData)) {
+    throw new Error("ColaTV returned an invalid match payload.");
+  }
+
+  const matches = Object.entries(rawData)
+    .map(([slug, raw]: [string, any]) => colaMatchRow(slug, raw))
+    .filter((row: any) => row != null)
+    .sort(compareMatches);
+
+  return json({
+    ok: true,
+    matches,
+    results: matches.length,
+    source: "cola",
+    language: "en",
+    generated_at: new Date().toISOString(),
+  });
+}
+
+async function colaStreams(body: any) {
+  const payload = await fetchColaMatchesPayload();
+  const rawData = payload?.data;
+  if (!rawData || typeof rawData !== "object" || Array.isArray(rawData)) {
+    return json({ error: "ColaTV match data is unavailable." }, 502);
+  }
+
+  const target = String(
+    body?.schedule_id ?? body?.room_num ?? body?.source_id ?? "",
+  ).trim();
+  const pageUrl = String(body?.page_url ?? "").trim();
+
+  let slug = "";
+  let match: any = null;
+  for (const [candidateSlug, candidate] of Object.entries(rawData) as [string, any][]) {
+    const candidateId = String(
+      candidate?.matchId ?? candidate?.match_id ?? candidate?.node_api_data?.match_id ?? "",
+    ).trim();
+    const candidatePage = `${COLA_HOME}${encodeURI(candidateSlug)}`;
+    if (
+      (target && (target === candidateId || target === candidateSlug)) ||
+      (pageUrl && pageUrl === candidatePage)
+    ) {
+      slug = candidateSlug;
+      match = candidate;
+      break;
+    }
+  }
+
+  if (!match) {
+    return json({ error: "ColaTV match is no longer available." }, 404);
+  }
+
+  const found = new Map<string, any>();
+  const add = (
+    value: unknown,
+    label: string,
+    anchorName: string | null = null,
+  ) => {
+    const url = colaMediaUrl(value);
+    if (!url || found.has(url)) return;
+    const type = detectType(url);
+    if (type === "auto") return;
+    found.set(url, {
+      label: anchorName
+        ? `ColaTV • ${anchorName} • ${label}`
+        : `ColaTV • ${label}`,
+      stream_type: type,
+      resolution: qualityFromUrl(url),
+      url,
+      referer: COLA_HOME,
+      origin: "https://colatv66.live",
+      expires_at: streamExpiry(url),
+    });
+  };
+
+  add(match?.videoUrl, "Main");
+  add(match?.video_url, "Main");
+
+  const anchors = Array.isArray(match?.anchorAppointmentVoList)
+    ? match.anchorAppointmentVoList
+    : [];
+  for (const anchor of anchors) {
+    const anchorName = decodeHtml(
+      stripTags(String(anchor?.nickName ?? anchor?.houseName ?? "Streamer")),
+    ).replace(/\s+/g, " ").trim();
+    add(anchor?.playStreamAddress2, "HLS", anchorName);
+    add(anchor?.playStreamAddress, "FLV", anchorName);
+    if (Array.isArray(anchor?.servers)) {
+      anchor.servers.forEach((server: unknown, index: number) => {
+        add(server, `Backup ${index + 1}`, anchorName);
+      });
+    }
+  }
+
+  const skipProbe = skipProbeRequested(body);
+  const checked = await probeLines([...found.values()], skipProbe);
+  // Admin imports only lines whose manifest/first bytes were reachable now.
+  // Viewer metadata deliberately skips active probes, so preserve its
+  // non-dead unknown lines instead of hiding every Cola source.
+  const lines = checked
+    .filter((line: any) => skipProbe
+      ? String(line.health_status) !== "dead"
+      : ["healthy", "slow"].includes(String(line.health_status)))
+    .sort((a: any, b: any) =>
+      (a.health_status === "healthy" ? 0 : a.health_status === "slow" ? 1 : 2) -
+      (b.health_status === "healthy" ? 0 : b.health_status === "slow" ? 1 : 2)
+    );
+  const row = colaMatchRow(slug, match);
+
+  return json({
+    ok: true,
+    page_url: `${COLA_HOME}${encodeURI(slug)}`,
+    title: row == null ? null : `${row.home_team} vs ${row.away_team}`,
+    lines,
+    source: "cola",
+    language: "en",
+    generated_at: new Date().toISOString(),
+  });
+}
+
+async function fetchColaMatchesPayload() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(`${COLA_API}?v=${Date.now()}`, {
+      headers: {
+        Accept: "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "X-Domain": "colatv66.live",
+        Referer: COLA_HOME,
+        Origin: "https://colatv66.live",
+        "User-Agent":
+          "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36 NCA-Admin/9.8",
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+      },
+      redirect: "follow",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`ColaTV API returned HTTP ${response.status}.`);
+    }
+    const payload = await response.json();
+    if (String(payload?.code ?? "") !== "0000") {
+      throw new Error(
+        String(payload?.message ?? payload?.msg ?? "ColaTV API returned an error."),
+      );
+    }
+    return payload;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function colaMatchRow(slug: string, row: any) {
+  if (Number(row?.sportId ?? row?.sport_id ?? 0) !== 1) return null;
+  const node = row?.node_api_data ?? {};
+  const homeNode = node?.home_team ?? {};
+  const awayNode = node?.away_team ?? {};
+  const competitionNode = node?.competition ?? {};
+  const matchId = String(
+    row?.matchId ?? row?.match_id ?? node?.match_id ?? slug,
+  ).trim();
+  if (!matchId) return null;
+
+  const home = englishFootballName(firstFootballName(
+    providerEnglishName(homeNode), row?.homeTeamNameEn,
+    homeNode, row?.homeTeamName, row?.home_team, "Home",
+  ));
+  const away = englishFootballName(firstFootballName(
+    providerEnglishName(awayNode), row?.awayTeamNameEn,
+    awayNode, row?.awayTeamName, row?.away_team, "Away",
+  ));
+  const league = englishFootballName(firstFootballName(
+    providerEnglishName(competitionNode), row?.competitionNameEn,
+    competitionNode, row?.competitionName,
+    row?.competition, "Football",
+  ), "league");
+  const statusNum = Number(
+    row?.matchStatus ?? row?.match_status_num ?? node?.status_id ?? 1,
+  );
+
+  return {
+    source: "cola",
+    source_id: matchId,
+    schedule_id: matchId,
+    slug,
+    page_url: `${COLA_HOME}${encodeURI(slug)}`,
+    league,
+    home_team: home,
+    away_team: away,
+    home_logo:
+      homeNode?.logo ??
+      row?.homeTeamLogo ??
+      row?.home_team?.logo ??
+      null,
+    away_logo:
+      awayNode?.logo ??
+      row?.awayTeamLogo ??
+      row?.away_team?.logo ??
+      null,
+    match_time: normalizeMatchTime(
+      row?.matchTime ?? row?.match_time ?? node?.match_time,
+    ),
+    hot: statusNum === 2,
+    status: statusNum === 2 ? "LIVE" : statusNum === 3 ? "FT" : "NS",
+    match_status:
+      statusNum === 2 ? "LIVE" : statusNum === 3 ? "FT" : "SCHEDULED",
+    anchors: colaHasPlayableSource(row)
+      ? [{
+          uid: matchId,
+          nick_name: "ColaTV",
+          icon: null,
+          room_num: matchId,
+          page_url: `${COLA_HOME}${encodeURI(slug)}`,
+        }]
+      : [],
+  };
+}
+
+function colaHasPlayableSource(row: any) {
+  const candidates: unknown[] = [row?.videoUrl, row?.video_url];
+  const anchors = Array.isArray(row?.anchorAppointmentVoList)
+    ? row.anchorAppointmentVoList
+    : [];
+  for (const anchor of anchors) {
+    candidates.push(anchor?.playStreamAddress2);
+    candidates.push(anchor?.playStreamAddress);
+    if (Array.isArray(anchor?.servers)) {
+      candidates.push(...anchor.servers);
+    }
+  }
+  return candidates.some((value) => colaMediaUrl(value) != null);
+}
+
+function colaMediaUrl(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!/^https?:\/\//i.test(raw)) return null;
+  const lower = raw.toLowerCase();
+  if (
+    !lower.includes(".m3u8") &&
+    !lower.includes(".flv") &&
+    !lower.includes(".mpd") &&
+    !lower.includes(".mp4")
+  ) {
+    return null;
+  }
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+function staleKickoff(value: unknown) {
+  const normalized = normalizeMatchTime(value);
+  if (!normalized) return false;
+  const millis = Date.parse(normalized);
+  if (!Number.isFinite(millis)) return false;
+  return Date.now() - millis > 4 * 60 * 60 * 1000;
+}
+
+function normalizeMatchTime(value: unknown) {
+  if (value == null || value === "") return null;
+
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    const millis = numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+    const date = new Date(millis);
+    if (Number.isFinite(date.getTime())) return date.toISOString();
+  }
+
+  const parsed = new Date(String(value));
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+}
+
+function roomNumber(anchor: any) {
+  return String(
+    anchor?.anchor?.roomNum ??
+      anchor?.anchor?.room_num ??
+      anchor?.room?.roomNum ??
+      anchor?.roomNum ??
+      anchor?.room_num ??
+      anchor?.roomId ??
+      "",
+  ).trim();
+}
+
+function extractStreamLines(value: any, referer: string) {
+  const found = new Map<string, any>();
+
+  const known = [
+    ["HD (1080p) · M3U8", "hls", value?.hdM3u8 ?? value?.hd_m3u8, "1080p"],
+    ["SD (720p) · M3U8", "hls", value?.m3u8 ?? value?.sdM3u8 ?? value?.sd_m3u8, "720p"],
+    ["HD (1080p) · FLV", "flv", value?.hdFlv ?? value?.hd_flv, "1080p"],
+    ["SD (720p) · FLV", "flv", value?.flv ?? value?.sdFlv ?? value?.sd_flv, "720p"],
+    ["DASH · MPD", "dash", value?.mpd ?? value?.dash ?? value?.dashUrl, "Auto"],
+  ];
+
+  for (const [label, type, raw, resolution] of known) {
+    const line = roomLine(
+      String(label),
+      String(type),
+      raw,
+      String(resolution),
+      referer,
+    );
+    if (line.url) found.set(line.url, line);
+  }
+
+  const walk = (node: any, path: string[] = [], depth = 0) => {
+    if (depth > 7 || node == null) return;
+
+    if (typeof node === "string") {
+      const url = normalizeMediaUrl(node, referer);
+      if (!url || !looksLikeMediaUrl(url)) return;
+      const loweredPath = path.join(".").toLowerCase();
+      if (/license|drm|clearkey|keyid|key_data|keydata/.test(loweredPath)) {
+        return;
+      }
+
+      const type = detectType(url);
+      const resolution = qualityFromUrl(url);
+      const pathLabel = path
+        .filter(Boolean)
+        .slice(-2)
+        .join(" · ")
+        .replace(/[_-]+/g, " ")
+        .trim();
+      const label =
+        (pathLabel ? pathLabel : "Stream") +
+        ` · ${type.toUpperCase()}`;
+
+      if (!found.has(url)) {
+        found.set(url, roomLine(label, type, url, resolution, referer));
+      }
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      node.forEach((item, index) => walk(item, [...path, String(index)], depth + 1));
+      return;
+    }
+
+    if (typeof node === "object") {
+      for (const [key, child] of Object.entries(node)) {
+        walk(child, [...path, key], depth + 1);
+      }
+    }
+  };
+
+  walk(value);
+
+  return [...found.values()].sort((a, b) => {
+    const rank = (line: any) => {
+      const type = String(line.stream_type ?? "");
+      if (type === "hls") return 0;
+      if (type === "dash") return 1;
+      if (type === "mp4") return 2;
+      if (type === "flv") return 3;
+      return 4;
+    };
+    return rank(a) - rank(b);
+  });
+}
+
+// Fawa's Clappr pages also assemble sources from literal URL fragments. Read
+// only those data expressions; never execute downloaded JavaScript or ads.
+function extractFawaMediaUrls(html: string, baseUrl: string) {
+  const urls = extractMediaUrls(html, baseUrl);
+  const limit = 16;
+  const literal = (token: string): string | null => {
+    if (!/^["']/.test(token)) return null;
+    let value = "";
+    for (let i = 1; i < token.length - 1; i++) {
+      if (token[i] !== "\\") { value += token[i]; continue; }
+      const escaped = token[++i];
+      if (/[\\/"']/.test(escaped)) value += escaped;
+      else if (escaped === "u" || escaped === "x") {
+        const size = escaped === "u" ? 4 : 2;
+        const digits = token.slice(i + 1, i + 1 + size);
+        if (!new RegExp("^[0-9a-f]{" + size + "}$", "i").test(digits)) return null;
+        value += String.fromCharCode(parseInt(digits, 16));
+        i += size;
+      } else return null;
+    }
+    return value.length <= 2048 ? value : null;
+  };
+  // The URL fragments and the player constructor can be in separate script
+  // elements on the same page. Keep literal bindings in document order.
+  const values = new Map<string, string | string[]>();
+  let scripts = 0;
+  for (const script of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
+    if (++scripts > 128) break;
+    const code = script[1];
+    if (code.length > 65536) continue;
+    const tokenize = (expression: string): string[] | null => {
+      const tokens: string[] = [];
+      const pattern = /\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_$][\w$]*(?:\s*\[\s*(?:\d+|[A-Za-z_$][\w$]*)\s*\])?|[+,\[\]])/gy;
+      let at = 0;
+      while (at < expression.trimEnd().length) {
+        pattern.lastIndex = at;
+        const hit = pattern.exec(expression);
+        if (!hit || tokens.length >= 128) return null;
+        tokens.push(hit[1]); at = pattern.lastIndex;
+      }
+      return tokens;
+    };
+    const concatenate = (tokens: string[]): string[] | null => {
+      if (!tokens.length || tokens.length % 2 === 0) return null;
+      let output = [""];
+      for (let i = 0; i < tokens.length; i += 2) {
+        if (i && tokens[i - 1] !== "+") return null;
+        const token = tokens[i];
+        const text = literal(token);
+        const indexed = token.match(/^([A-Za-z_$][\w$]*)\s*\[\s*(\d+|[A-Za-z_$][\w$]*)\s*\]$/);
+        const value = values.get(indexed?.[1] ?? token);
+        const parts = text !== null ? [text]
+          : indexed && Array.isArray(value)
+          ? /^\d+$/.test(indexed[2]) ? value.slice(Number(indexed[2]), Number(indexed[2]) + 1) : value
+          : typeof value === "string" ? [value] : null;
+        if (!parts?.length || output.length * parts.length > limit) return null;
+        output = output.flatMap((prefix) => parts.map((part) => prefix + part));
+        if (output.some((part) => part.length > 2048)) return null;
+      }
+      return output;
+    };
+    let declarations = 0;
+    for (const hit of code.matchAll(/\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^;"']){1,8192});/g)) {
+      if (++declarations > 128 || values.size >= 128) break;
+      values.delete(hit[1]);
+      const tokens = tokenize(hit[2]);
+      if (!tokens) continue;
+      if (tokens[0] === "[" && tokens.at(-1) === "]") {
+        const items: string[] = [], parts = tokens.slice(1, -1);
+        let start = 0, valid = true;
+        for (let i = 0; i <= parts.length && parts.length; i++) {
+          if (i !== parts.length && parts[i] !== ",") continue;
+          const item = concatenate(parts.slice(start, i));
+          if (!item || items.length + item.length > limit) { valid = false; break; }
+          items.push(...item); start = i + 1;
+        }
+        if (valid) values.set(hit[1], items);
+      } else {
+        const item = concatenate(tokens);
+        if (item?.length === 1) values.set(hit[1], item[0]);
+      }
+    }
+    let pushes = 0;
+    for (const hit of code.matchAll(/\b([A-Za-z_$][\w$]*)\.push\(\s*([^;]{1,2048})\s*\)\s*;/g)) {
+      if (++pushes > 128) break;
+      const target = values.get(hit[1]), tokens = tokenize(hit[2]);
+      const items = tokens ? concatenate(tokens) : null;
+      if (Array.isArray(target) && items && target.length + items.length <= limit) target.push(...items);
+    }
+    for (const hit of code.matchAll(/\bsource\s*:\s*([A-Za-z_$][\w$]*)(?:\s*\[[^\]\r\n]{1,180}\])?\s*[,}]/g)) {
+      const value = values.get(hit[1]);
+      for (const raw of typeof value === "string" ? [value] : value ?? []) {
+        const url = normalizeMediaUrl(raw, baseUrl);
+        if (url && looksLikeMediaUrl(url) && urls.size < limit) urls.add(url);
+      }
+    }
+  }
+  return urls;
+}
+
+function extractMediaUrls(html: string, baseUrl: string) {
+  const normalized = decodeHtml(
+    html
+      .replace(/\\u002[fF]/g, "/")
+      .replace(/\\\//g, "/"),
+  );
+  const urls = new Set<string>();
+
+  const add = (raw: string) => {
+    const url = normalizeMediaUrl(raw, baseUrl);
+    if (url && looksLikeMediaUrl(url)) urls.add(url);
+  };
+
+  for (const regex of [
+    /(?:source|file|url|src|hls|dash|mpd|m3u8)\s*[:=]\s*["']([^"']+)["']/gi,
+    /<(?:source|video|iframe)[^>]+(?:src|data-src)=["']([^"']+)["']/gi,
+    /["']((?:https?:)?\/\/[^"'<>\s]+)["']/gi,
+  ]) {
+    let hit: RegExpExecArray | null;
+    while ((hit = regex.exec(normalized)) !== null) add(hit[1]);
+  }
+
+  return urls;
+}
+
+function normalizeMediaUrl(value: unknown, baseUrl: string) {
+  let raw = String(value ?? "").trim();
+  if (!raw) return "";
+
+  raw = decodeHtml(raw)
+    .replace(/\\u002[fF]/g, "/")
+    .replace(/\\\//g, "/");
+
+  try {
+    const url = new URL(raw, baseUrl);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    return url.toString();
+  } catch (_) {
+    return "";
+  }
+}
+
+function looksLikeMediaUrl(value: string) {
+  const lower = value.toLowerCase();
+  return (
+    lower.includes(".m3u8") ||
+    lower.includes(".mpd") ||
+    lower.includes(".flv") ||
+    lower.includes(".mp4") ||
+    /(?:manifest|playlist|master|index)\.(?:m3u8|mpd)(?:[?#]|$)/.test(lower)
+  );
+}
+
+function roomLine(
+  label: string,
+  streamType: string,
+  url: unknown,
+  resolution: string,
+  referer: string,
+) {
+  const cleaned = typeof url === "string" ? url.trim() : "";
+  return {
+    label,
+    stream_type: streamType,
+    resolution,
+    url: cleaned,
+    referer,
+    origin: new URL(referer).origin,
+    expires_at: streamExpiry(cleaned),
+  };
+}
+
+function skipProbeRequested(body: any) {
+  return body?.skip_probe === true || body?.skip_probe === "true" ||
+    body?.skip_probe === "1";
+}
+
+async function probeLines(lines: any[], skipProbe = false, strictManifest = false) {
+  if (skipProbe) {
+    return lines.map((line) => ({
+      ...line, health_status: "unknown", health_http: null, checked_at: null,
+    }));
+  }
+  return await Promise.all(lines.map((line) => probeLine(line, strictManifest)));
+}
+
+async function probeLine(line: any, strictManifest = false) {
+  const value = String(line?.url ?? "").trim();
+  if (!value) {
+    return { ...line, health_status: "dead", health_http: null };
+  }
+
+  const headers: Record<string, string> = {
+    Accept: "*/*",
+    Range: "bytes=0-1023",
+    "User-Agent": "Mozilla/5.0 NCA-Admin/9.8",
+  };
+
+  if (line.referer) headers.Referer = String(line.referer);
+  if (line.origin) headers.Origin = String(line.origin);
+
+  const type = String(line.stream_type ?? "").toLowerCase();
+  const result = await probeStreamFirstChunk(value, {
+    headers, timeoutMs: 5500,
+    validateFirstChunk: type === "hls"
+      ? (chunk: Uint8Array, status: number) =>
+        new TextDecoder().decode(chunk).includes("#EXTM3U") || (!strictManifest && status === 206)
+      : strictManifest && type === "dash"
+        ? (chunk: Uint8Array) => /<(?:[\w-]+:)?MPD(?:\s|>)/i.test(new TextDecoder().decode(chunk))
+        : strictManifest && type === "mp4"
+          ? (chunk: Uint8Array) => chunk.length >= 12 &&
+            new TextDecoder().decode(chunk.slice(4, 8)) === "ftyp"
+          : null,
+  });
+  return {
+    ...line,
+    health_status: ["healthy", "slow"].includes(result.status)
+      ? result.status
+      : [404, 410].includes(result.httpStatus) ? "dead" : "unknown",
+    health_http: result.httpStatus || null,
+    checked_at: new Date().toISOString(),
+  };
+}
+
+function streamExpiry(value: string) {
+  if (!value) return null;
+
+  try {
+    const url = new URL(value);
+
+    const txTime = url.searchParams.get("txTime");
+    if (txTime) {
+      const seconds = Number.parseInt(txTime, 16);
+      if (Number.isFinite(seconds) && seconds > 0) {
+        return new Date(seconds * 1000).toISOString();
+      }
+    }
+
+    const authKey = url.searchParams.get("auth_key");
+    if (authKey) {
+      const seconds = Number.parseInt(authKey.split("-")[0], 10);
+      if (Number.isFinite(seconds) && seconds > 0) {
+        return new Date(seconds * 1000).toISOString();
+      }
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+function compareMatches(a: any, b: any) {
+  const at = new Date(a.match_time ?? 0).getTime();
+  const bt = new Date(b.match_time ?? 0).getTime();
+  if (at !== bt) return at - bt;
+  return String(a.home_team ?? "").localeCompare(String(b.home_team ?? ""));
+}
+
+function detectType(url: string) {
+  const lower = url.toLowerCase();
+  if (lower.includes(".m3u8")) return "hls";
+  if (lower.includes(".mpd")) return "dash";
+  if (lower.includes(".flv")) return "flv";
+  if (lower.includes(".mp4")) return "mp4";
+  return "auto";
+}
+
+function qualityFromUrl(url: string) {
+  const lower = url.toLowerCase();
+  if (/(1080|fhd|_hd|lhd)/.test(lower)) return "1080p";
+  if (/(720|_sd|lsd)/.test(lower)) return "720p";
+  return "Auto";
+}
+
+function absoluteFawaUrl(href: string) {
+  try {
+    return new URL(href, FAWA_HOME).toString();
+  } catch (_) {
+    return "";
+  }
+}
+
+function safeFawaPageUrl(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw, FAWA_HOME);
+    if (url.hostname !== "www.fawanews.sc" && url.hostname !== "fawanews.sc") {
+      return null;
+    }
+    return url.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+function channelLabel(name: string) {
+  const channel = name.match(/---\s*(CH\s*\d+)\s*$/i);
+  return channel?.[1]?.toUpperCase() ?? "Main";
+}
+
+function pageTitle(html: string) {
+  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return match ? decodeHtml(stripTags(match[1])).trim() : null;
+}
+
+function stripTags(value: string) {
+  return value.replace(/<[^>]*>/g, " ");
+}
+
+function decodeHtml(value: string) {
+  return value
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+async function fetchFawaText(url: string) {
+  const candidates = [url];
+  const started = Date.now();
+  // The public Cloudflare source request has a 16-second deadline. Do not
+  // spend three sequential ten-second attempts after its caller has given up.
+  const totalBudgetMs = 13500;
+
+  try {
+    const parsed = new URL(url);
+    if (
+      parsed.hostname === "www.fawanews.sc" ||
+      parsed.hostname === "fawanews.sc"
+    ) {
+      const alt = new URL(parsed.toString());
+      alt.protocol = parsed.protocol === "https:" ? "http:" : "https:";
+      candidates.push(alt.toString());
+
+      const hostAlt = new URL(parsed.toString());
+      hostAlt.hostname =
+        parsed.hostname === "www.fawanews.sc"
+          ? "fawanews.sc"
+          : "www.fawanews.sc";
+      candidates.push(hostAlt.toString());
+    }
+  } catch (_) {}
+
+  let lastError: unknown = null;
+  for (const candidate of [...new Set(candidates)]) {
+    const remainingMs = totalBudgetMs - (Date.now() - started);
+    if (remainingMs < 500) break;
+    try {
+      return await fetchText(candidate, Math.min(5000, remainingMs));
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Fawa source is unreachable.");
+}
+
+async function fetchText(url: string, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/javascript,application/json,text/html,text/plain,*/*",
+        "User-Agent":
+          "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36 NCA-Admin/9.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+      },
+      redirect: "follow",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Source returned HTTP ${response.status}.`);
+    }
+
+    return await response.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseJsonp(text: string): any {
+  const trimmed = text.replace(/^\uFEFF/, "").trim().replace(/;\s*$/, "");
+
+  const candidates = [trimmed];
+
+  const firstParen = trimmed.indexOf("(");
+  const lastParen = trimmed.lastIndexOf(")");
+  if (firstParen >= 0 && lastParen > firstParen) {
+    candidates.push(trimmed.slice(firstParen + 1, lastParen).trim());
+  }
+
+  const assignment = trimmed.match(/^[\w.$]+\s*=\s*([\s\S]+)$/);
+  if (assignment?.[1]) candidates.push(assignment[1].trim());
+
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate.replace(/;\s*$/, ""));
+    } catch (_) {}
+  }
+
+  throw new Error("Source returned an invalid JSON/JSONP payload.");
+}
+
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}

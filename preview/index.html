@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Noellyne Bet — Design Preview v2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   Noellyne Bet — Warm Editorial Glassmorphism
+   Tokens locked in DESIGN_SYSTEM.md
+   ============================================================ */
+:root{
+  --canvas:#FAF7F5;
+  --ink:#1D1918;
+  --muted:#736A66;
+  --glow-soft:#F4A28C;
+  --glow-deep:#E88267;
+  --glass:rgba(255,255,255,.74);
+  --glass-border:rgba(255,255,255,.65);
+  --glass-grad-a:rgba(255,255,255,.86);
+  --glass-grad-b:rgba(255,255,255,.62);
+  --inner:rgba(255,255,255,.95);
+  --inner-border:rgba(255,255,255,.6);
+  --live-tint:#FCE5DC;
+  --live-ink:#C85A3F;
+  --live:#E5484D;
+  --shadow:0 12px 32px rgba(29,25,24,.05);
+  --shadow-lift:0 18px 44px rgba(232,130,103,.20);
+  --obsidian:#141212;
+  --ease-tap:cubic-bezier(.22,1,.36,1);
+  --ease-reveal:cubic-bezier(.16,1,.3,1);
+}
+body.dark{
+  --canvas:#141212;
+  --ink:#F5EFEA;
+  --muted:#A89C96;
+  --glow-soft:#E88267;
+  --glow-deep:#D96B52;
+  --glass:rgba(255,255,255,.07);
+  --glass-border:rgba(255,255,255,.08);
+  --glass-grad-a:rgba(255,255,255,.10);
+  --glass-grad-b:rgba(255,255,255,.04);
+  --inner:#241E1C;
+  --inner-border:rgba(255,255,255,.07);
+  --live-tint:rgba(217,107,82,.18);
+  --live-ink:#F4A28C;
+  --shadow:0 12px 32px rgba(0,0,0,.45);
+  --shadow-lift:0 18px 44px rgba(0,0,0,.55);
+}
+
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{-webkit-text-size-adjust:100%}
+body{
+  font-family:'Plus Jakarta Sans',-apple-system,'Segoe UI',Roboto,sans-serif;
+  background:var(--canvas);color:var(--ink);
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;
+  padding:26px 16px 44px;transition:background .4s,color .4s;
+}
+/* tabular numerals everywhere numbers live */
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+
+/* ---------- Page chrome ---------- */
+.page-head{text-align:center;margin-bottom:16px}
+.page-head h1{font-size:25px;font-weight:800;letter-spacing:-.02em}
+.page-head h1 span{color:var(--glow-deep)}
+.page-head p{color:var(--muted);font-size:12.5px;margin-top:5px;font-weight:500}
+.controls{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;justify-content:center}
+.ctl{
+  border:1px solid var(--glass-border);background:var(--glass);color:var(--ink);
+  padding:9px 16px;border-radius:9999px;font:700 12.5px 'Plus Jakarta Sans',sans-serif;
+  cursor:pointer;transition:transform .14s var(--ease-tap),background .3s;
+}
+.ctl:active{transform:scale(.96)}
+.ctl.active{background:var(--ink);color:var(--canvas);border-color:transparent}
+body.dark .ctl.active{background:var(--glow-deep);color:#1D1918}
+
+/* ---------- Phone ---------- */
+.phone{
+  width:min(392px,100%);height:min(812px,calc(100vh - 170px));min-height:580px;
+  border-radius:46px;position:relative;overflow:hidden;flex-shrink:0;
+  background:var(--canvas);border:1px solid rgba(0,0,0,.07);
+  box-shadow:var(--shadow-lift),0 30px 60px -20px rgba(29,25,24,.28);
+  transition:background .4s;
+}
+.orb{position:absolute;border-radius:50%;pointer-events:none;z-index:0;
+  background:radial-gradient(circle,var(--glow-soft),transparent 68%);
+  filter:blur(70px);}
+.orb-1{width:330px;height:330px;top:-130px;right:-90px;opacity:.45}
+.orb-2{width:370px;height:370px;bottom:-150px;left:-110px;opacity:.30;
+  background:radial-gradient(circle,var(--glow-deep),transparent 68%)}
+body.dark .orb-1,body.dark .orb-2{opacity:.18}
+
+.screen{position:absolute;inset:0;display:flex;flex-direction:column;z-index:1;
+  opacity:0;pointer-events:none;transform:translate3d(0,8px,0);
+  transition:opacity .3s var(--ease-reveal),transform .32s var(--ease-reveal)}
+.screen.on{opacity:1;pointer-events:auto;transform:translate3d(0,0,0)}
+
+.statusbar{display:flex;justify-content:space-between;align-items:center;
+  padding:14px 26px 2px;font-size:12px;font-weight:700;flex-shrink:0}
+.statusbar .icons{display:flex;gap:5px;align-items:center;font-size:10.5px;opacity:.9}
+
+/* Sticky header (blur allowed here) */
+.sticky-head{
+  position:relative;z-index:4;padding:8px 16px 10px;flex-shrink:0;
+  background:linear-gradient(to bottom,var(--canvas) 55%,transparent);
+}
+.head-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.league-pill{
+  display:inline-flex;align-items:center;gap:7px;
+  background:var(--glass);border:1px solid var(--glass-border);color:var(--ink);
+  padding:9px 15px;border-radius:9999px;font:800 12.5px 'Plus Jakarta Sans',sans-serif;
+  cursor:pointer;transition:transform .14s var(--ease-tap);
+  backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);
+}
+.league-pill:active{transform:scale(.96)}
+.vip{
+  display:inline-flex;align-items:center;gap:6px;
+  background:linear-gradient(135deg,var(--glow-soft),var(--glow-deep));
+  color:#fff;padding:6px 12px 6px 6px;border-radius:9999px;
+  font:800 11px 'Plus Jakarta Sans',sans-serif;letter-spacing:.3px;
+  box-shadow:0 8px 20px -8px rgba(232,130,103,.9);cursor:pointer;
+  transition:transform .14s var(--ease-tap);
+}
+body.dark .vip{color:#1D1918}
+.vip:active{transform:scale(.96)}
+.vip .av{width:24px;height:24px;border-radius:50%;background:rgba(255,255,255,.32);
+  display:grid;place-items:center;font-size:11px}
+
+.scroll{flex:1;overflow-y:auto;padding:0 16px 128px;scrollbar-width:none;overscroll-behavior:contain}
+.scroll::-webkit-scrollbar{display:none}
+
+/* Glass card — GPU-safe: gradient + 1px border, NO backdrop blur */
+.glass{
+  background:linear-gradient(135deg,var(--glass-grad-a),var(--glass-grad-b));
+  border:1px solid var(--glass-border);border-radius:26px;
+  box-shadow:var(--shadow);position:relative;
+}
+.glass.tap{cursor:pointer;transition:transform .14s var(--ease-tap),box-shadow .2s}
+.glass.tap:active{transform:scale(.96)}
+
+.beacon{position:absolute;width:180px;height:180px;top:-70px;right:-60px;
+  border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,rgba(244,162,140,.55),transparent 70%)}
+body.dark .beacon{background:radial-gradient(circle,rgba(217,107,82,.28),transparent 70%)}
+
+/* Hero / banker slip */
+.hero{padding:18px;overflow:hidden}
+.hero-top{display:flex;align-items:center;justify-content:space-between;
+  position:relative;z-index:1;gap:10px}
+.tag{
+  display:inline-flex;align-items:center;gap:6px;background:var(--live-tint);
+  color:var(--live-ink);font:800 10px 'Plus Jakarta Sans',sans-serif;
+  letter-spacing:.7px;padding:5px 11px;border-radius:9999px;
+}
+.tag.live{background:var(--live);color:#fff}
+.tag .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.tag.live .dot{background:#fff;animation:pulse 1.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.hero-league{font-size:11px;font-weight:700;color:var(--muted)}
+
+.teams{display:flex;align-items:center;justify-content:space-between;
+  margin:16px 4px 4px;position:relative;z-index:1}
+.team{text-align:center;width:92px}
+.crest{
+  width:54px;height:54px;border-radius:50%;margin:0 auto 7px;display:grid;
+  place-items:center;color:#fff;font-weight:800;font-size:15px;letter-spacing:-.3px;
+  border:2px solid rgba(255,255,255,.75);box-shadow:0 8px 20px -8px rgba(29,25,24,.5);
+}
+.team-name{font-size:12.5px;font-weight:800;letter-spacing:-.1px}
+.score{text-align:center}
+.score .n{font-size:32px;font-weight:800;letter-spacing:-.04em;line-height:1;
+  font-variant-numeric:tabular-nums}
+.score .m{font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.6px;margin-top:4px}
+.hero-odds{display:flex;align-items:center;justify-content:center;gap:8px;margin:12px 0 14px;
+  position:relative;z-index:1}
+.odds-pill{display:inline-flex;align-items:center;gap:6px;background:var(--inner);
+  border:1px solid var(--inner-border);border-radius:9999px;padding:6px 12px;
+  font-size:11px;font-weight:800;font-variant-numeric:tabular-nums}
+.odds-pill small{font-weight:600;color:var(--muted);font-size:10px}
+
+/* CTA — matte obsidian pill */
+.cta{
+  width:100%;border:none;cursor:pointer;position:relative;z-index:1;
+  background:var(--ink);color:var(--canvas);
+  font:800 14px 'Plus Jakarta Sans',sans-serif;padding:15px;border-radius:9999px;
+  letter-spacing:.1px;transition:transform .14s var(--ease-tap);
+  box-shadow:0 12px 26px -12px rgba(29,25,24,.8);
+}
+body.dark .cta{background:var(--glow-deep);color:#1D1918;box-shadow:0 12px 26px -12px rgba(217,107,82,.9)}
+.cta:active{transform:scale(.96)}
+
+/* Filter rail */
+.rail{display:flex;gap:8px;overflow-x:auto;padding:14px 2px 4px;scrollbar-width:none}
+.rail::-webkit-scrollbar{display:none}
+.chip{
+  flex-shrink:0;border:none;cursor:pointer;padding:9px 15px;border-radius:9999px;
+  background:var(--inner);border:1px solid var(--inner-border);color:var(--muted);
+  font:700 12px 'Plus Jakarta Sans',sans-serif;
+  transition:transform .14s var(--ease-tap),background .2s,color .2s;
+}
+.chip:active{transform:scale(.96)}
+.chip.on{background:var(--ink);color:var(--canvas);border-color:transparent}
+body.dark .chip.on{background:var(--glow-deep);color:#1D1918}
+
+/* Section head */
+.sec{display:flex;align-items:center;justify-content:space-between;margin:20px 4px 10px}
+.sec h3{font-size:15px;font-weight:800;letter-spacing:-.02em}
+.sec a{font-size:11.5px;font-weight:700;color:var(--glow-deep);text-decoration:none;cursor:pointer}
+
+/* Stream card */
+.stream{padding:13px 14px;margin-bottom:10px;display:flex;align-items:center;gap:12px}
+.st-crest{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;
+  color:#fff;font-weight:800;font-size:12px;flex-shrink:0;
+  border:1.5px solid rgba(255,255,255,.7)}
+.st-mid{flex:1;min-width:0}
+.st-title{font-weight:800;font-size:13.5px;letter-spacing:-.1px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.st-sub{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:10.5px;
+  font-weight:600;color:var(--muted)}
+.mini-live{display:inline-flex;align-items:center;gap:4px;background:var(--live-tint);
+  color:var(--live-ink);padding:2px 8px;border-radius:9999px;font-weight:800;
+  font-size:9.5px;letter-spacing:.4px;font-variant-numeric:tabular-nums}
+.st-btn{flex-shrink:0;border:none;cursor:pointer;background:var(--inner);
+  border:1px solid var(--inner-border);color:var(--ink);
+  font:800 11px 'Plus Jakarta Sans',sans-serif;padding:9px 15px;border-radius:9999px;
+  transition:transform .14s var(--ease-tap)}
+.st-btn:active{transform:scale(.96)}
+.st-btn.solid{background:var(--ink);color:var(--canvas);border-color:transparent}
+body.dark .st-btn.solid{background:var(--glow-deep);color:#1D1918}
+
+/* Pick card (Daily Bets) */
+.pick{padding:16px;margin-bottom:12px;overflow:hidden}
+.pick-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;
+  position:relative;z-index:1}
+.pick-match{font-size:14.5px;font-weight:800;letter-spacing:-.02em}
+.pick-league{font-size:11px;font-weight:700;color:var(--muted);margin-top:2px}
+.conf{flex-shrink:0;display:inline-flex;align-items:center;gap:4px;
+  background:var(--live-tint);color:var(--live-ink);padding:5px 10px;border-radius:9999px;
+  font-size:10.5px;font-weight:800;font-variant-numeric:tabular-nums}
+.reason{font-size:12px;line-height:1.45;color:var(--muted);font-weight:500;
+  margin-top:8px;position:relative;z-index:1}
+.inner{
+  background:var(--inner);border:1px solid var(--inner-border);border-radius:16px;
+  padding:11px 12px;margin-top:12px;display:flex;align-items:center;gap:10px;
+  position:relative;z-index:1;
+}
+.inner-ic{width:32px;height:32px;border-radius:50%;flex-shrink:0;display:grid;
+  place-items:center;font-size:14px;background:rgba(244,162,140,.28);color:var(--live-ink)}
+body.dark .inner-ic{background:rgba(217,107,82,.2);color:var(--glow-soft)}
+.inner-txt{flex:1;min-width:0}
+.inner-txt b{display:block;font-size:12.5px;font-weight:800;letter-spacing:-.1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.inner-txt span{font-size:10px;font-weight:600;color:var(--muted)}
+.inner-right{display:flex;align-items:center;gap:9px;flex-shrink:0}
+.odds{text-align:right}
+.odds b{display:block;font-size:15px;font-weight:800;font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em}
+.odds span{font-size:9.5px;font-weight:700;color:var(--muted)}
+.chev{width:26px;height:26px;border-radius:50%;background:var(--ink);color:var(--canvas);
+  display:grid;place-items:center;font-size:13px;font-weight:800}
+body.dark .chev{background:var(--glow-deep);color:#1D1918}
+.pick-actions{display:flex;gap:8px;margin-top:12px;position:relative;z-index:1}
+.pick-actions .cta{flex:1;padding:12px;font-size:13px;box-shadow:none}
+.ghost-btn{flex-shrink:0;border:1px solid var(--inner-border);background:var(--inner);
+  color:var(--ink);font:800 12.5px 'Plus Jakarta Sans',sans-serif;padding:12px 16px;
+  border-radius:9999px;cursor:pointer;transition:transform .14s var(--ease-tap)}
+.ghost-btn:active{transform:scale(.96)}
+
+/* ---------- Match theatre ---------- */
+.theatre{position:absolute;inset:0;display:flex;flex-direction:column;z-index:1}
+.video{
+  height:42%;background:var(--obsidian);position:relative;flex-shrink:0;
+  display:flex;flex-direction:column;justify-content:space-between;
+  padding:14px 16px;overflow:hidden;
+}
+.pitch-glow{position:absolute;inset:0;
+  background:radial-gradient(ellipse at 50% 120%,rgba(232,130,103,.28),transparent 62%);}
+.video-top{display:flex;align-items:center;justify-content:space-between;position:relative;z-index:1}
+.vchip{display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.12);
+  color:#fff;font:800 10.5px 'Plus Jakarta Sans',sans-serif;padding:5px 11px;
+  border-radius:9999px;backdrop-filter:blur(10px)}
+.vchip.red{background:var(--live)}
+.play-wrap{position:absolute;inset:0;display:grid;place-items:center;z-index:1}
+.play{
+  width:64px;height:64px;border-radius:50%;border:none;cursor:pointer;
+  background:rgba(255,255,255,.94);color:#141212;display:grid;place-items:center;
+  font-size:24px;box-shadow:0 16px 40px -12px rgba(0,0,0,.7);
+  transition:transform .14s var(--ease-tap);
+}
+.play:active{transform:scale(.94)}
+.video-bottom{display:flex;align-items:center;justify-content:space-between;
+  position:relative;z-index:1}
+.timeline{flex:1;height:3px;border-radius:9999px;background:rgba(255,255,255,.22);
+  margin-right:12px;overflow:hidden}
+.timeline i{display:block;height:100%;width:62%;border-radius:9999px;background:var(--glow-soft)}
+.vtime{color:rgba(255,255,255,.85);font-size:10.5px;font-weight:700;
+  font-variant-numeric:tabular-nums}
+
+/* Sheet */
+.sheet{
+  flex:1;margin-top:-26px;border-radius:30px 30px 0 0;position:relative;z-index:2;
+  background:var(--canvas);border:1px solid var(--glass-border);border-bottom:none;
+  display:flex;flex-direction:column;overflow:hidden;
+  box-shadow:0 -18px 44px rgba(29,25,24,.18);
+}
+.sheet-grip{width:42px;height:4px;border-radius:9999px;background:var(--muted);
+  opacity:.35;margin:10px auto 4px}
+.sheet-scroll{flex:1;overflow-y:auto;padding:6px 16px 120px;scrollbar-width:none}
+.sheet-scroll::-webkit-scrollbar{display:none}
+.sheet-title{font-size:17px;font-weight:800;letter-spacing:-.02em;margin-top:6px}
+.sheet-sub{font-size:11.5px;font-weight:600;color:var(--muted);margin-top:2px}
+.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.stat{background:var(--inner);border:1px solid var(--inner-border);border-radius:16px;
+  padding:11px 8px;text-align:center}
+.stat b{display:block;font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em}
+.stat span{font-size:9.5px;font-weight:700;color:var(--muted);letter-spacing:.3px;
+  text-transform:uppercase}
+.twin{display:flex;gap:8px;margin-top:14px}
+
+/* Floating dock */
+.dock-wrap{position:absolute;left:0;right:0;bottom:0;z-index:8;padding:0 14px 14px;
+  display:flex;align-items:flex-end;gap:10px;pointer-events:none}
+.dock{
+  flex:1;display:flex;padding:7px;border-radius:24px;pointer-events:auto;
+  background:var(--glass);border:1px solid var(--glass-border);
+  backdrop-filter:blur(24px) saturate(1.5);-webkit-backdrop-filter:blur(24px) saturate(1.5);
+  box-shadow:0 18px 40px -14px rgba(29,25,24,.35);
+}
+.d-item{flex:1;text-align:center;padding:7px 2px;border-radius:17px;cursor:pointer;
+  transition:background .18s var(--ease-tap),transform .14s var(--ease-tap)}
+.d-item:active{transform:scale(.96)}
+.d-item .ic{font-size:17px;line-height:1}
+.d-item .lb{font-size:9px;font-weight:700;color:var(--muted);margin-top:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.d-item.on{background:var(--ink)}
+.d-item.on .lb{color:var(--canvas)}
+body.dark .d-item.on{background:var(--glow-deep)}
+body.dark .d-item.on .lb{color:#1D1918}
+.ai-btn{
+  width:56px;height:56px;border-radius:50%;border:none;cursor:pointer;pointer-events:auto;
+  flex-shrink:0;display:grid;place-items:center;font-size:22px;
+  background:linear-gradient(135deg,var(--glow-soft),var(--glow-deep));
+  box-shadow:0 14px 34px -10px rgba(232,130,103,.95);
+  transition:transform .14s var(--ease-tap);
+  animation:breathe 4s ease-in-out infinite;
+}
+.ai-btn:active{transform:scale(.94)}
+@keyframes breathe{0%,100%{box-shadow:0 14px 34px -10px rgba(232,130,103,.95)}
+50%{box-shadow:0 18px 44px -8px rgba(232,130,103,1)}}
+
+/* Toast */
+.toast{position:absolute;left:50%;bottom:96px;transform:translate(-50%,16px);z-index:20;
+  background:var(--ink);color:var(--canvas);font-size:12px;font-weight:700;
+  padding:11px 18px;border-radius:9999px;opacity:0;pointer-events:none;
+  transition:all .28s var(--ease-reveal);white-space:nowrap;max-width:88%;
+  overflow:hidden;text-overflow:ellipsis}
+body.dark .toast{background:var(--glow-deep);color:#1D1918}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+
+/* Tokens strip */
+.tokens{margin-top:24px;display:flex;gap:9px;flex-wrap:wrap;justify-content:center;max-width:540px}
+.token{text-align:center}
+.swatch{width:46px;height:46px;border-radius:14px;border:1px solid rgba(0,0,0,.07);
+  margin:0 auto 5px}
+.token span{font-size:9.5px;font-weight:700;color:var(--muted)}
+.foot{margin-top:18px;font-size:11.5px;color:var(--muted);font-weight:600;text-align:center;max-width:520px;line-height:1.5}
+.foot b{color:var(--ink)}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>Noellyne <span>Bet</span> — Preview v2</h1>
+  <p>Warm editorial glass · pill geometry · GPU-safe blur · tabular numbers</p>
+</div>
+
+<div class="controls">
+  <button class="ctl active" id="btnLight" onclick="setTheme(false)">☀️ Light</button>
+  <button class="ctl" id="btnDark" onclick="setTheme(true)">🌙 Dark</button>
+  <button class="ctl" onclick="go(0)">🏠 Lobby</button>
+  <button class="ctl" onclick="go(1)">✨ Picks</button>
+  <button class="ctl" onclick="go(2)">🎬 Theatre</button>
+</div>
+
+<div class="phone">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+
+  <!-- ============ SCREEN 1 · HOME LOBBY ============ -->
+  <div class="screen on" id="s0">
+    <div class="statusbar"><span>Theater</span><span class="icons">5G ▂▄▆ 🔋</span></div>
+
+    <div class="sticky-head">
+      <div class="head-row">
+        <button class="league-pill" onclick="toast('League filter — coming next')">
+          All Leagues <span style="opacity:.5">▾</span>
+        </button>
+        <button class="vip" onclick="toast('VIP · 3 free picks left today')">
+          <span class="av">N</span> VIP
+        </button>
+      </div>
+    </div>
+
+    <div class="scroll">
+      <!-- Hero: Today's Banker Slip -->
+      <div class="glass hero">
+        <div class="beacon"></div>
+        <div class="hero-top">
+          <span class="tag">✨ TODAY'S BANKER</span>
+          <span class="hero-league num">84% conf.</span>
+        </div>
+        <div class="teams">
+          <div class="team">
+            <div class="crest" style="background:linear-gradient(135deg,#C0392B,#8E241A)">ARS</div>
+            <div class="team-name">Arsenal</div>
+          </div>
+          <div class="score">
+            <div class="n num">2–1</div>
+            <div class="m">67' · 2ND HALF</div>
+          </div>
+          <div class="team">
+            <div class="crest" style="background:linear-gradient(135deg,#2E5FA3,#1B3A66)">CHE</div>
+            <div class="team-name">Chelsea</div>
+          </div>
+        </div>
+        <div class="hero-odds">
+          <span class="odds-pill num"><small>Combined</small> 1.85</span>
+          <span class="odds-pill num"><small>Over 1.5</small> ✓</span>
+          <span class="odds-pill num"><small>3 servers</small> 4K</span>
+        </div>
+        <button class="cta" onclick="go(1)">▶ Watch Live &amp; View Slip</button>
+      </div>
+
+      <div class="rail">
+        <button class="chip on" onclick="pickChip(this)">Live Now</button>
+        <button class="chip" onclick="pickChip(this)">EPL</button>
+        <button class="chip" onclick="pickChip(this)">UCL</button>
+        <button class="chip" onclick="pickChip(this)">Safe 2+</button>
+        <button class="chip" onclick="pickChip(this)">Over 2.5</button>
+      </div>
+
+      <div class="sec"><h3>Live now</h3><a onclick="toast('All live matches')">See all</a></div>
+
+      <div class="glass tap stream" onclick="go(2)">
+        <div class="st-crest" style="background:linear-gradient(135deg,#7B2D8B,#4A1A54)">RMA</div>
+        <div class="st-mid">
+          <div class="st-title">Real Madrid vs Barcelona</div>
+          <div class="st-sub"><span class="mini-live">● LIVE 54'</span> La Liga · 1–1</div>
+        </div>
+        <button class="st-btn solid" onclick="event.stopPropagation();go(2)">Stream</button>
+      </div>
+
+      <div class="glass tap stream" onclick="go(2)">
+        <div class="st-crest" style="background:linear-gradient(135deg,#1E8449,#145A32)">SIM</div>
+        <div class="st-mid">
+          <div class="st-title">Simba vs Yanga</div>
+          <div class="st-sub"><span class="mini-live">● LIVE 81'</span> NBC PL · 0–0</div>
+        </div>
+        <button class="st-btn solid" onclick="event.stopPropagation();go(2)">Stream</button>
+      </div>
+
+      <div class="sec"><h3>Upcoming</h3><a onclick="toast('Full fixture list')">Fixtures</a></div>
+
+      <div class="glass tap stream">
+        <div class="st-crest" style="background:linear-gradient(135deg,#B7950B,#7D6608)">MCI</div>
+        <div class="st-mid">
+          <div class="st-title">Man City vs Liverpool</div>
+          <div class="st-sub"><span class="num">Today 22:00</span> · Premier League</div>
+        </div>
+        <button class="st-btn" onclick="event.stopPropagation();remind(this)">🔔 Remind</button>
+      </div>
+
+      <div class="glass tap stream">
+        <div class="st-crest" style="background:linear-gradient(135deg,#CA6F1E,#935116)">BAY</div>
+        <div class="st-mid">
+          <div class="st-title">Bayern vs Dortmund</div>
+          <div class="st-sub"><span class="num">Tomorrow 20:30</span> · Bundesliga</div>
+        </div>
+        <button class="st-btn" onclick="event.stopPropagation();remind(this)">🔔 Remind</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SCREEN 2 · DAILY PICKS (n8n) ============ -->
+  <div class="screen" id="s1">
+    <div class="statusbar"><span>Theater</span><span class="icons">5G ▂▄▆ 🔋</span></div>
+
+    <div class="sticky-head">
+      <div class="head-row">
+        <div>
+          <div style="font-size:22px;font-weight:800;letter-spacing:-.02em">Daily Picks</div>
+          <div style="font-size:11px;font-weight:600;color:var(--muted);margin-top:2px">
+            Curated by Noellyne AI · from n8n
+          </div>
+        </div>
+        <button class="league-pill" onclick="toast('Refreshed 5 slips')">↻</button>
+      </div>
+    </div>
+
+    <div class="scroll">
+      <div class="rail" style="padding-top:6px">
+        <button class="chip on" onclick="pickChip(this)">All Picks</button>
+        <button class="chip" onclick="pickChip(this)">Sure 2+</button>
+        <button class="chip" onclick="pickChip(this)">BTTS</button>
+        <button class="chip" onclick="pickChip(this)">High Odds</button>
+      </div>
+
+      <div class="glass pick">
+        <div class="beacon"></div>
+        <div class="pick-top">
+          <div>
+            <div class="pick-match">Arsenal vs Chelsea</div>
+            <div class="pick-league">Premier League</div>
+          </div>
+          <span class="conf">⚡ 84%</span>
+        </div>
+        <div class="reason">Arsenal scored 2+ in 7 of 9 home games; Chelsea concede 1.6 away. Model leans home win with goals.</div>
+        <div class="inner">
+          <div class="inner-ic">⚽</div>
+          <div class="inner-txt"><b>Arsenal Win &amp; Over 1.5</b><span>Market &amp; Pick</span></div>
+          <div class="inner-right">
+            <div class="odds"><b class="num">1.85</b><span>84% conf.</span></div>
+            <div class="chev">›</div>
+          </div>
+        </div>
+        <div class="pick-actions">
+          <button class="cta" onclick="go(2)">▶ Watch Match Live</button>
+          <button class="ghost-btn" onclick="copySlip('NLY-8K2F')">Copy</button>
+        </div>
+      </div>
+
+      <div class="glass pick">
+        <div class="pick-top">
+          <div>
+            <div class="pick-match">Real Madrid vs Barcelona</div>
+            <div class="pick-league">La Liga · El Clásico</div>
+          </div>
+          <span class="conf">⚡ 88%</span>
+        </div>
+        <div class="reason">Both teams scored in the last 6 Clásicos. Open midfields, high xG on both sides — BTTS is the safest angle.</div>
+        <div class="inner">
+          <div class="inner-ic">🥅</div>
+          <div class="inner-txt"><b>Both Teams To Score</b><span>Market &amp; Pick</span></div>
+          <div class="inner-right">
+            <div class="odds"><b class="num">1.55</b><span>88% conf.</span></div>
+            <div class="chev">›</div>
+          </div>
+        </div>
+        <div class="pick-actions">
+          <button class="cta" onclick="go(2)">▶ Watch Match Live</button>
+          <button class="ghost-btn" onclick="copySlip('NLY-4M7Q')">Copy</button>
+        </div>
+      </div>
+
+      <div class="glass pick">
+        <div class="pick-top">
+          <div>
+            <div class="pick-match">Man City vs Liverpool</div>
+            <div class="pick-league">Premier League</div>
+          </div>
+          <span class="conf" style="background:var(--inner);color:var(--muted)">📈 71%</span>
+        </div>
+        <div class="reason">Priced for value: both attacks rank top-2 for shots on target; both keepers face 4+ big chances per game.</div>
+        <div class="inner">
+          <div class="inner-ic">⚡</div>
+          <div class="inner-txt"><b>Over 3.5 Goals &amp; BTTS</b><span>Market &amp; Pick</span></div>
+          <div class="inner-right">
+            <div class="odds"><b class="num">2.45</b><span>71% conf.</span></div>
+            <div class="chev">›</div>
+          </div>
+        </div>
+        <div class="pick-actions">
+          <button class="cta" onclick="go(2)">▶ Watch Match Live</button>
+          <button class="ghost-btn" onclick="copySlip('NLY-6R3D')">Copy</button>
+        </div>
+      </div>
+
+      <p style="text-align:center;font-size:10px;font-weight:600;color:var(--muted);padding:4px 20px 0;line-height:1.5">
+        Picks are model estimates, not guarantees. 18+. Play responsibly.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ SCREEN 3 · MATCH THEATRE ============ -->
+  <div class="screen" id="s2">
+    <div class="theatre">
+      <div class="video">
+        <div class="pitch-glow"></div>
+        <div class="video-top">
+          <span class="vchip red">● LIVE 67'</span>
+          <span class="vchip">4K · 3 servers</span>
+        </div>
+        <div class="play-wrap"><button class="play" onclick="toast('▶ Playing')">▶</button></div>
+        <div class="video-bottom">
+          <div class="timeline"><i></i></div>
+          <span class="vtime num">67:12 / 90:00</span>
+        </div>
+      </div>
+
+      <div class="sheet">
+        <div class="sheet-grip"></div>
+        <div class="sheet-scroll">
+          <div class="sheet-title">Arsenal <span class="num">2–1</span> Chelsea</div>
+          <div class="sheet-sub">Premier League · Emirates Stadium · 67'</div>
+
+          <div class="glass pick" style="margin-top:12px;padding:14px">
+            <div class="beacon"></div>
+            <div class="pick-top">
+              <div>
+                <div class="pick-match" style="font-size:13.5px">n8n pick for this game</div>
+                <div class="pick-league">Arsenal Win &amp; Over 1.5 · pre-match</div>
+              </div>
+              <span class="conf">⚡ 84%</span>
+            </div>
+            <div class="reason" style="margin-top:6px">Tracking well — Arsenal lead 2–1 with 23 minutes left.</div>
+            <div class="inner">
+              <div class="inner-ic">⚽</div>
+              <div class="inner-txt"><b>1.85 · 84%</b><span>Odds / Confidence</span></div>
+              <div class="inner-right"><div class="chev">›</div></div>
+            </div>
+          </div>
+
+          <div class="stat-grid">
+            <div class="stat"><b class="num">58%</b><span>Possession</span></div>
+            <div class="stat"><b class="num">12</b><span>Shots</span></div>
+            <div class="stat"><b class="num">2.1</b><span>xG</span></div>
+          </div>
+
+          <div class="twin">
+            <button class="cta" onclick="copySlip('NLY-8K2F')">Copy Bet Code</button>
+            <button class="ghost-btn" onclick="toast('Slip shared')">Share Slip</button>
+          </div>
+
+          <!-- sources -->
+          <div class="sec"><h3>Servers</h3><a onclick="toast('Refreshing servers')">Refresh</a></div>
+          <div class="glass tap stream" onclick="toast('Switching to Server 2')">
+            <div class="st-crest" style="background:linear-gradient(135deg,#1E8449,#145A32)">1</div>
+            <div class="st-mid">
+              <div class="st-title">Main · 4K HLS</div>
+              <div class="st-sub"><span class="mini-live" style="background:rgba(30,132,73,.14);color:#1E8449">● HEALTHY</span> 12ms</div>
+            </div>
+            <button class="st-btn solid" onclick="event.stopPropagation();toast('Playing')">Play</button>
+          </div>
+          <div class="glass tap stream" onclick="toast('Switching to Server 3')">
+            <div class="st-crest" style="background:linear-gradient(135deg,#B7950B,#7D6608)">2</div>
+            <div class="st-mid">
+              <div class="st-title">Backup · 1080p</div>
+              <div class="st-sub"><span class="mini-live" style="background:var(--live-tint);color:var(--live-ink)">◐ MEDIUM</span> 48ms</div>
+            </div>
+            <button class="st-btn" onclick="event.stopPropagation();toast('Playing')">Play</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating dock (blur allowed) -->
+  <div class="dock-wrap">
+    <div class="dock">
+      <div class="d-item on" onclick="go(0)"><div class="ic">📺</div><div class="lb">Live</div></div>
+      <div class="d-item" onclick="go(1)"><div class="ic">✨</div><div class="lb">Picks</div></div>
+      <div class="d-item" onclick="toast('Channels — coming next')"><div class="ic">📡</div><div class="lb">Channels</div></div>
+      <div class="d-item" onclick="toast('More — settings, theme, about')"><div class="ic">☰</div><div class="lb">More</div></div>
+    </div>
+    <button class="ai-btn" onclick="go(1);toast('Noellyne AI — today’s slips')">✦</button>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<div class="tokens">
+  <div class="token"><div class="swatch" style="background:#FAF7F5"></div><span>Canvas</span></div>
+  <div class="token"><div class="swatch" style="background:#F4A28C"></div><span>Glow soft</span></div>
+  <div class="token"><div class="swatch" style="background:#E88267"></div><span>Glow deep</span></div>
+  <div class="token"><div class="swatch" style="background:#1D1918"></div><span>Obsidian</span></div>
+  <div class="token"><div class="swatch" style="background:#736A66"></div><span>Muted</span></div>
+  <div class="token"><div class="swatch" style="background:#FCE5DC"></div><span>Live tint</span></div>
+  <div class="token"><div class="swatch" style="background:#141212"></div><span>Dark canvas</span></div>
+</div>
+
+<p class="foot">Preview mirrors <b>user_app/lib/app_theme.dart</b> + <b>design/noellyne_ui.dart</b> · spec in <b>DESIGN_SYSTEM.md</b>. Floating dock &amp; sheets use real blur; scrolling cards use fake glass so mid-range Androids stay smooth.</p>
+
+<script>
+  let current = 0;
+  function setTheme(dark){
+    document.body.classList.toggle('dark',dark);
+    document.getElementById('btnLight').classList.toggle('active',!dark);
+    document.getElementById('btnDark').classList.toggle('active',dark);
+  }
+  function go(i){
+    current = i;
+    for(let n=0;n<3;n++){
+      document.getElementById('s'+n).classList.toggle('on', n===i);
+    }
+    const labels = ['Live','Picks','Channels','More'];
+    document.querySelectorAll('.d-item').forEach((el,idx)=>{
+      el.classList.toggle('on', idx === (i===2 ? 0 : i));
+    });
+    document.querySelectorAll('.screen .scroll, .sheet-scroll').forEach(el=>el.scrollTop=0);
+  }
+  function pickChip(el){
+    el.parentElement.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));
+    el.classList.add('on');
+  }
+  function remind(btn){
+    const on = btn.textContent.includes('Remind');
+    btn.textContent = on ? '✓ Set' : '🔔 Remind';
+    toast(on ? '🔔 Reminder set' : 'Reminder removed');
+  }
+  function copySlip(code){
+    if(navigator.clipboard) navigator.clipboard.writeText(code).catch(()=>{});
+    toast('Slip code ' + code + ' copied');
+  }
+  let t;
+  function toast(msg){
+    const el=document.getElementById('toast');
+    el.textContent=msg; el.classList.add('show');
+    clearTimeout(t); t=setTimeout(()=>el.classList.remove('show'),2100);
+  }
+  // Boot into the lobby.
+  go(0);
+</script>
+</body>
+</html>

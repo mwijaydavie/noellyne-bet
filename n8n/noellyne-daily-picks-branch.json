@@ -1,0 +1,90 @@
+{
+  "name": "Noellyne Bet — Daily Picks branch (Hermes)",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// Hermes → Noellyne Bet: map quant picks to the app's daily_picks feed\n// Attach this node right after \"Quant Model v3.1\" (same input the\n// \"Format Message\" node already receives). Telegram stays as-is.\n// =============================================================\nconst up = $('Quant Model v3.1').first().json || {};\nconst picks = [...(up.footballPicks || []), ...(up.basketballPicks || [])];\nif (!picks.length) return [];\n\nconst strip = (v) => String(v ?? '')\n  .replace(/[\\u{1F000}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{FE0F}\\u{2B00}-\\u{2BFF}]/gu, '')\n  .replace(/\\s+/g, ' ')\n  .trim();\n\nfunction slipCode(p) {\n  const s = `${p.match}|${p.market}`.toLowerCase();\n  let h = 2166136261;\n  for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';\n  let out = '';\n  let n = h;\n  for (let i = 0; i < 5; i++) { out += alphabet[n % alphabet.length]; n = Math.floor(n / alphabet.length); }\n  return `NLY-${out}`;\n}\n\nfunction tagsFor(p) {\n  const tags = [];\n  const market = String(p.market || '').toUpperCase();\n  const prob = Number(p.probPct) || 0;\n  const odds = Number(p.odds) || 0;\n  if (prob >= 80) tags.push('sure2+');\n  if (String(p.tier || '').includes('STRONG')) tags.push('strong');\n  if (market.includes('OVER')) tags.push('over2.5');\n  if (market.includes('UNDER')) tags.push('under2.5');\n  if (market.includes('DC') || market.includes('BTTS') || market.includes('BOTH TEAMS')) tags.push('btts');\n  if (odds >= 2) tags.push('high-odds');\n  return tags;\n}\n\nconst nowIso = new Date().toISOString();\nconst rows = picks\n  .filter((p) => p && p.match && p.market)\n  .map((p) => ({\n    match: strip(p.match),\n    league: strip(p.league) || 'Football',\n    pick: strip(p.market),\n    odds: Math.round((Number(p.odds) || 0) * 100) / 100,\n    confidence: Math.max(0, Math.min(100, Math.round(Number(p.probPct) || 0))),\n    reasoning: strip(\n      [p.explain, p.injuryNote ? `Injury Guard: ${p.injuryNote}` : '']\n        .filter(Boolean)\n        .join(' — ')\n    ).slice(0, 600),\n    kickoff_time: p.kickoffISO || nowIso,\n    tags: tagsFor(p),\n    slip_code: slipCode(p),\n    sport: p.sport === 'basketball' ? 'basketball' : 'football',\n    tier: strip(p.tier),\n    units: Number(p.units) || 0,\n    edge_pct: Number(p.edgePct) || 0,\n    injury_note: strip(p.injuryNote || ''),\n    status: 'published',\n    source: 'hermes-n8n',\n  }));\n\nreturn rows.map((row) => ({ json: row }));"
+      },
+      "id": "b1a1f0c2-1111-4a11-9a11-noellynemap01",
+      "name": "Map Hermes → Noellyne",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "Connect the output of 'Quant Model v3.1' into this node. It never mutates the Telegram path — it only maps picks."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://woggzixprvyjnfjzsglz.supabase.co/rest/v1/daily_picks?on_conflict=match,pick,kickoff_time",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "b1a1f0c2-2222-4a11-9a11-noellynepost2",
+      "name": "POST Supabase daily_picks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        0
+      ],
+      "notes": "Set SUPABASE_SERVICE_ROLE_KEY in your n8n environment. Prefer: resolution=merge-duplicates + on_conflict makes 09/14/19 re-runs idempotent.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Map Hermes → Noellyne": {
+      "main": [
+        [
+          {
+            "node": "POST Supabase daily_picks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "description": "Drop-in branch: Hermes picks → Noellyne Bet Daily Picks feed"
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

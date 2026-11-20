@@ -1,0 +1,1265 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../analytics_service.dart';
+import '../network_endpoints.dart';
+import '../playback_routes.dart';
+import '../native_player.dart';
+import 'channels_page.dart';
+import '../live_feed_controller.dart';
+import '../player_loading.dart';
+import '../source_line_loader.dart';
+import '../widgets/compact_stream_line_title.dart';
+import '../source_match_discovery.dart';
+import '../football_english.dart';
+import '../viewer_navigation.dart';
+import '../viewer_tab_cache.dart';
+import '../repository_logo.dart';
+import '../widgets/premium_bottom_nav.dart';
+import '../widgets/premium_match_card.dart';
+import '../widgets/source_match_filters.dart';
+
+class SourceBrowserPage extends StatefulWidget {
+  const SourceBrowserPage({super.key, required this.source});
+  final String source;
+
+  @override
+  State<SourceBrowserPage> createState() => _SourceBrowserPageState();
+}
+
+class _SourceBrowserPageState extends State<SourceBrowserPage> {
+  static const _primary = String.fromEnvironment(
+    'PUBLIC_API_BASE',
+    defaultValue: 'https://football-api.nyeinchanaung.us.ci',
+  );
+  static const _supabaseFunction =
+      'https://woggzixprvyjnfjzsglz.supabase.co/functions/v1/soco-links';
+  static const _sourceMirrorBase =
+      'https://nyeinchanaung75299-eng.github.io/football-stream-app/sources';
+  static const _rawSourceMirrorBase =
+      'https://raw.githubusercontent.com/nyeinchanaung75299-eng/'
+      'football-stream-app/feed/public/sources';
+
+  // Vercel is a live API route. The old mirror/cache fallback remains opt-in
+  // for a special build with ENABLE_NO_VPN_FALLBACK=1.
+  static final bool _enableNoVpnFallback =
+      const String.fromEnvironment(
+        'ENABLE_NO_VPN_FALLBACK',
+        defaultValue: '0',
+      ).trim() ==
+      '1';
+
+  late LiveFeedController<List<Map<String, dynamic>>> _feed;
+  late ScrollController _listScroll;
+  Timer? _sourceRefreshTimer;
+  DateTime? _lastSourcePoll;
+  bool _openingPlayer = false;
+  int _sourceGeneration = 0;
+  SourceLineLoader? _sourceOperation;
+  final _searchController = TextEditingController();
+  String _query = '';
+  String? _league;
+  bool _todayOnly = false;
+  // YYZB is presented as its watchable football room catalogue, not as its
+  // full score database. The state remains for the shared filter component,
+  // but Viewer never exposes an all-schedule toggle for YYZB.
+
+  String get source => widget.source.toLowerCase();
+  String get title => switch (source) {
+    'repository' => 'Live 2',
+    'yyzb' => 'YYZB',
+    'fawa' => 'Fawa',
+    'cola' => 'ColaTV',
+    _ => 'Soco',
+  };
+  int get navIndex => viewerSourceIndex(source);
+  List<Future<List<Map<String, dynamic>>> Function()> _apiJobs(
+    Future<List<Map<String, dynamic>>> Function(String) load,
+  ) {
+    var winnerRecorded = false;
+    return publicApiRequests<List<Map<String, dynamic>>>(
+      bases, load, onHealthy: (base) {
+        if (!winnerRecorded) {
+          winnerRecorded = true;
+          rememberVerifiedPublicApiBase(base);
+        }
+      },
+    );
+  }
+
+  List<String> get bases {
+    final routes = publicApiBases(
+      primary: _primary,
+      // Keep the same Cloudflare-first ordering as the Live feed.
+      preferVercel: false,
+    );
+    return routes;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // YYZB evening rooms can cross local midnight. Its website lists those
+    // rooms together, so a local-calendar Today filter must not hide them.
+    final ui = ViewerTabCache.sourceUi(source);
+    _query = ui.query;
+    _league = ui.league;
+    _todayOnly = source == 'fawa' ? false : ui.todayOnly;
+    _searchController.text = ui.query;
+    _listScroll = ScrollController(initialScrollOffset: ui.scrollOffset);
+    _feed = LiveFeedController(_loadRemembered,
+        initialData: ViewerTabCache.sourceRows(source));
+    if (!ViewerTabCache.sourceFresh(source)) {
+      unawaited(_feed.refresh());
+    }
+    if (ViewerTabCache.sourceRows(source) == null) {
+      // Safari may evict its in-memory app while the tab is in background.
+      // Restore its last verified public list without pausing revalidation.
+      unawaited(_restoreLastGood(source, _feed));
+    }
+    _sourceRefreshTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      final state = WidgetsBinding.instance.lifecycleState;
+      if (mounted &&
+          !_openingPlayer &&
+          (state == null || state == AppLifecycleState.resumed) &&
+          ModalRoute.of(context)?.isCurrent != false) {
+        final live = _feed.data?.any(_live) ?? false;
+        final now = DateTime.now();
+        if (ViewerTabCache.sourceFresh(source)) return;
+        if (!live && _lastSourcePoll != null &&
+            now.difference(_lastSourcePoll!) < const Duration(minutes: 2)) {
+          return;
+        }
+        _lastSourcePoll = now;
+        unawaited(_refresh(silent: true));
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant SourceBrowserPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.source != widget.source) {
+      _rememberUi(oldWidget.source.toLowerCase());
+      _lastSourcePoll = null;
+      _cancelSourceOperation();
+      final previousFeed = _feed;
+      final ui = ViewerTabCache.sourceUi(source);
+      _query = ui.query;
+      _searchController.text = ui.query;
+      _league = ui.league;
+      _todayOnly = source == 'fawa' ? false : ui.todayOnly;
+      _listScroll.dispose();
+      _listScroll = ScrollController(initialScrollOffset: ui.scrollOffset);
+      _feed = LiveFeedController(_loadRemembered,
+          initialData: ViewerTabCache.sourceRows(source));
+      previousFeed.dispose();
+      if (!ViewerTabCache.sourceFresh(source)) {
+        unawaited(_feed.refresh());
+      }
+      if (ViewerTabCache.sourceRows(source) == null) {
+        unawaited(_restoreLastGood(source, _feed));
+      }
+    }
+  }
+
+  void _rememberUi([String? tab]) {
+    ViewerTabCache.saveSourceUi(tab ?? source, ViewerSourceUiState(
+      query: _query,
+      league: _league,
+      todayOnly: _todayOnly,
+      scrollOffset: _listScroll.hasClients
+          ? _listScroll.offset
+          : ViewerTabCache.sourceUi(tab ?? source).scrollOffset,
+    ));
+  }
+
+  Future<List<Map<String, dynamic>>> _loadRemembered() {
+    final requestedSource = source;
+    return ViewerTabCache.loadSource(
+      requestedSource,
+      () async {
+        final rows = await _loadMatches();
+        if (source != requestedSource) {
+          // A response from the old tab must never overwrite a new tab.
+          throw StateError('Source tab was changed during refresh');
+        }
+        return rows;
+      },
+      force: true,
+    );
+  }
+
+  void _cancelSourceOperation() {
+    _sourceGeneration++;
+    _sourceOperation?.cancel();
+    _openingPlayer = false;
+  }
+
+  @override
+  void dispose() {
+    _rememberUi();
+    _cancelSourceOperation();
+    _listScroll.dispose();
+    _searchController.dispose();
+    _sourceRefreshTimer?.cancel();
+    _feed.dispose();
+    super.dispose();
+  }
+
+  Future<List<Map<String, dynamic>>> _hedged(
+    List<Future<List<Map<String, dynamic>>> Function()> jobs,
+  ) {
+    final c = Completer<List<Map<String, dynamic>>>();
+    var next = 0;
+    var running = 0;
+    List<Map<String, dynamic>>? emptyFallback;
+    Object? error;
+    StackTrace? stack;
+    Timer? timer;
+
+    void finishIfDone() {
+      if (c.isCompleted || next < jobs.length || running > 0) return;
+      timer?.cancel();
+      if (emptyFallback != null) {
+        c.complete(emptyFallback!);
+      } else if (error != null) {
+        c.completeError(error!, stack);
+      } else {
+        c.complete(const <Map<String, dynamic>>[]);
+      }
+    }
+
+    void start() {
+      if (c.isCompleted || next >= jobs.length) {
+        finishIfDone();
+        return;
+      }
+      final job = jobs[next++];
+      running++;
+      job()
+          .then((value) {
+            running--;
+            if (c.isCompleted) return;
+            if (value.isNotEmpty) {
+              timer?.cancel();
+              c.complete(value);
+              return;
+            }
+
+            // An empty source is still a valid last-resort result, but do not let
+            // it win the hedge while another VPN-off/live fallback may have rows.
+            emptyFallback ??= value;
+            if (next < jobs.length) start();
+            finishIfDone();
+          })
+          .catchError((Object e, StackTrace s) {
+            running--;
+            error = e;
+            stack = s;
+            if (!c.isCompleted && next < jobs.length) start();
+            finishIfDone();
+          });
+    }
+
+    start();
+    timer = Timer.periodic(const Duration(milliseconds: 300), (t) {
+      if (c.isCompleted) {
+        t.cancel();
+        return;
+      }
+      if (next < jobs.length) start();
+      if (next >= jobs.length) {
+        t.cancel();
+        finishIfDone();
+      }
+    });
+    return c.future;
+  }
+
+  // Keep the established Soco/YYZB recent-match cutoff. All dates means
+  // all currently available dates, never an archive of completed fixtures.
+  static const _staleAfter = Duration(hours: 4);
+
+  DateTime? _kickoff(Map<String, dynamic> m) {
+    final parsed = DateTime.tryParse(m['match_time']?.toString() ?? '');
+    return parsed?.toUtc();
+  }
+
+  bool _stale(Map<String, dynamic> m) {
+    final kickoff = _kickoff(m);
+    if (kickoff == null) return false;
+    return DateTime.now().toUtc().difference(kickoff) > _staleAfter;
+  }
+
+  Future<List<Map<String, dynamic>>> _authoritativeHedged(
+    List<Future<List<Map<String, dynamic>>> Function()> jobs,
+  ) {
+    final c = Completer<List<Map<String, dynamic>>>();
+    var next = 0;
+    var running = 0;
+    Object? error;
+    StackTrace? stack;
+    Timer? timer;
+
+    void finishIfDone() {
+      if (c.isCompleted || next < jobs.length || running > 0) return;
+      timer?.cancel();
+      if (error != null) {
+        c.completeError(error!, stack);
+      } else {
+        c.completeError(
+          Exception('No authoritative source endpoint succeeded.'),
+        );
+      }
+    }
+
+    void start() {
+      if (c.isCompleted || next >= jobs.length) {
+        finishIfDone();
+        return;
+      }
+      final job = jobs[next++];
+      running++;
+      job()
+          .then((value) {
+            running--;
+            if (c.isCompleted) return;
+            // A valid empty live response is authoritative: do not resurrect
+            // disappeared matches from a stale mirror.
+            timer?.cancel();
+            c.complete(value);
+          })
+          .catchError((Object e, StackTrace s) {
+            running--;
+            error = e;
+            stack = s;
+            if (!c.isCompleted && next < jobs.length) start();
+            finishIfDone();
+          });
+    }
+
+    if (jobs.isEmpty) {
+      return Future.error(
+        Exception('No authoritative source endpoint configured.'),
+      );
+    }
+
+    start();
+    timer = Timer.periodic(const Duration(milliseconds: 300), (t) {
+      if (c.isCompleted) {
+        t.cancel();
+        return;
+      }
+      if (next < jobs.length) start();
+      if (next >= jobs.length) {
+        t.cancel();
+        finishIfDone();
+      }
+    });
+    return c.future;
+  }
+
+  bool _live(Map<String, dynamic> m) {
+    if (_stale(m)) return false;
+    if (m['is_live'] == true) return true;
+
+    // Soco's numeric status/hot fields are availability/featured flags, not a
+    // trustworthy match clock. Only explicit live-state text may mark a card
+    // LIVE; otherwise show the provider kickoff time.
+    for (final value in [m['match_status'], m['status']]) {
+      final status = value?.toString().trim().toUpperCase() ?? '';
+      if (const {
+        'LIVE',
+        'INPLAY',
+        'IN_PLAY',
+        '1H',
+        '2H',
+        'HT',
+      }.contains(status)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _sortRows(List<Map<String, dynamic>> rows) =>
+      rows.sort((a, b) => compareSourceMatches(a, b, isLive: _live));
+
+  void _clearFilters() => setState(() {
+    _query = '';
+    _searchController.clear();
+    _league = null;
+    _todayOnly = false;
+  });
+
+  String _matchName(Map<String, dynamic> m) => m['kind'] == 'channel'
+      ? (m['home_team'] ?? 'Sports channel').toString()
+      : (m['home_team'] ?? 'Home').toString() +
+            ' vs ' +
+            (m['away_team'] ?? 'Away').toString();
+
+  Future<List<Map<String, dynamic>>> _loadFrom(String base) async {
+    final response = await http
+        .get(
+          Uri.parse(base + '/sources/' + source + '/matches').replace(
+            queryParameters: {
+              't': DateTime.now().millisecondsSinceEpoch.toString(),
+            },
+          ),
+          headers: publicApiHeaders(base),
+        )
+        .timeout(const Duration(seconds: 9));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('Source API HTTP ' + response.statusCode.toString());
+    }
+    final decoded = jsonDecode(response.body);
+    if (source == 'soco' && decoded is Map && decoded['ok'] == false) {
+      // An unavailable provider is not an authoritative empty schedule.
+      throw const FormatException('Soco source temporarily unavailable.');
+    }
+    final raw = decoded is Map ? decoded['matches'] : null;
+    if (raw is! List) throw const FormatException('Invalid source matches.');
+    final rows = raw
+        .map((x) => Map<String, dynamic>.from(x as Map))
+        .map((row) => englishSourceMatch(row, source))
+        .where((row) => !_stale(row))
+        .toList();
+    _sortRows(rows);
+    return rows;
+  }
+
+  Future<List<Map<String, dynamic>>> _loadFromMirror([
+    String base = _sourceMirrorBase,
+  ]) async {
+    final response = await http
+        .get(
+          Uri.parse('$base/$source.json').replace(
+            queryParameters: {
+              't': DateTime.now().millisecondsSinceEpoch.toString(),
+            },
+          ),
+          headers: const {'Accept': 'application/json'},
+        )
+        .timeout(const Duration(seconds: 18));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+        'GitHub source mirror HTTP ' + response.statusCode.toString(),
+      );
+    }
+    final decoded = jsonDecode(response.body);
+    if (decoded is Map && decoded['ok'] == false) {
+      // A failed Soco mirror sync must not masquerade as a successful empty
+      // provider schedule. Allow other live routes and local last-good data.
+      throw const FormatException('Source snapshot is unavailable.');
+    }
+    final raw = decoded is Map ? decoded['matches'] : null;
+    if (raw is! List) {
+      throw const FormatException('Invalid GitHub source mirror.');
+    }
+    final rows = raw
+        .map((x) => Map<String, dynamic>.from(x as Map))
+        .map((row) => englishSourceMatch(row, source))
+        .where((row) => !_stale(row))
+        .toList();
+    _sortRows(rows);
+    return rows;
+  }
+
+  Future<List<Map<String, dynamic>>> _loadFromSupabase() async {
+    final response = await http
+        .get(
+          Uri.parse(_supabaseFunction).replace(
+            queryParameters: {
+              'viewer_public': '1',
+              'action': 'matches',
+              'source': source,
+              't': DateTime.now().millisecondsSinceEpoch.toString(),
+            },
+          ),
+          headers: const {'Accept': 'application/json'},
+        )
+        .timeout(const Duration(seconds: 9));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+        'Direct source fallback HTTP ' + response.statusCode.toString(),
+      );
+    }
+    final decoded = jsonDecode(response.body);
+    if (source == 'soco' && decoded is Map && decoded['ok'] == false) {
+      // An unavailable provider is not an authoritative empty schedule.
+      throw const FormatException('Soco source temporarily unavailable.');
+    }
+    final raw = decoded is Map ? decoded['matches'] : null;
+    if (raw is! List)
+      throw const FormatException('Invalid direct source list.');
+    final rows = raw
+        .map((x) => Map<String, dynamic>.from(x as Map))
+        .map((row) => englishSourceMatch(row, source))
+        .where((row) => !_stale(row))
+        .toList();
+    _sortRows(rows);
+    return rows;
+  }
+
+  String _cacheKeyFor(String name) => 'viewer_source_cache_v1_$name';
+
+  // Store public display/schedule data only. Provider stream credentials,
+  // DRM information and headers must never be written to browser storage.
+  dynamic _safeSourceCacheValue(dynamic value) {
+    if (value is List) return value.map(_safeSourceCacheValue).toList();
+    if (value is Map) {
+      const blocked = <String>{
+        'stream_url', 'url', 'key_id', 'key_data', 'token', 'headers',
+        'authorization', 'cookie', 'license_url', 'drm', 'stream_links',
+        'secret', 'access_token', 'refresh_token',
+      };
+      return <String, dynamic>{
+        for (final entry in value.entries)
+          if (!blocked.contains(entry.key.toString().toLowerCase()))
+            entry.key.toString(): _safeSourceCacheValue(entry.value),
+      };
+    }
+    return value;
+  }
+
+  Future<void> _saveLastGood(
+    List<Map<String, dynamic>> rows, {
+    String? forSource,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _cacheKeyFor(forSource ?? source),
+        jsonEncode({
+          'fetched_at': DateTime.now().toUtc().toIso8601String(),
+          'matches': _safeSourceCacheValue(rows),
+        }),
+      );
+    } catch (_) {}
+  }
+
+  Future<List<Map<String, dynamic>>?> _loadLastGood({
+    String? forSource,
+  }) async {
+    final requested = forSource ?? source;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cacheKeyFor(requested));
+      if (raw == null || raw.isEmpty) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map || decoded['matches'] is! List) return null;
+      final fetched = DateTime.tryParse(
+        decoded['fetched_at']?.toString() ?? '',
+      );
+      if (fetched == null ||
+          DateTime.now().toUtc().difference(fetched.toUtc()) >
+              const Duration(minutes: 20)) {
+        return null;
+      }
+      return (decoded['matches'] as List)
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .map((row) => englishSourceMatch(row, requested))
+          .toList();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _restoreLastGood(
+    String requested,
+    LiveFeedController<List<Map<String, dynamic>>> expectedFeed,
+  ) async {
+    final cached = await _loadLastGood(forSource: requested);
+    if (cached == null || !mounted || source != requested ||
+        !identical(_feed, expectedFeed)) return;
+    ViewerTabCache.seedStaleSourceIfMissing(requested, cached);
+    expectedFeed.seedIfMissing(cached);
+  }
+
+  Future<List<Map<String, dynamic>>> _loadMatches() async {
+    final requestedSource = source;
+    if (!_enableNoVpnFallback) {
+      if (bases.isEmpty) {
+        throw StateError('No live source API is configured.');
+      }
+      final rows = await _authoritativeHedged(_apiJobs(_loadFrom));
+      // Previously this early return never saved a public last-good snapshot
+      // in normal builds, causing a blank reload after Safari evicted memory.
+      unawaited(_saveLastGood(rows, forSource: requestedSource));
+      return rows;
+    }
+
+    Object? authoritativeError;
+    StackTrace? authoritativeStack;
+
+    final workerJobs = bases
+        .map<Future<List<Map<String, dynamic>>> Function()>(
+          (base) =>
+              () => _loadFrom(base),
+        )
+        .toList();
+
+    try {
+      // Live source endpoints are authoritative. A successful empty response
+      // means the provider currently has no matches, so return [] rather than
+      // reviving rows from an older GitHub mirror.
+      final rows = await _authoritativeHedged([
+        ...workerJobs,
+        () => _loadFromSupabase(),
+      ]);
+      unawaited(_saveLastGood(rows, forSource: requestedSource));
+      return rows;
+    } catch (error, stack) {
+      authoritativeError = error;
+      authoritativeStack = stack;
+    }
+
+    try {
+      // Mirrors are connectivity fallbacks only (VPN/DNS/backend outage).
+      final rows = await _hedged([
+        () => _loadFromMirror(),
+        () => _loadFromMirror(_rawSourceMirrorBase),
+      ]);
+      unawaited(_saveLastGood(rows, forSource: requestedSource));
+      return rows;
+    } catch (_) {
+      final cached = await _loadLastGood();
+      if (cached != null) return cached;
+      Error.throwWithStackTrace(authoritativeError, authoritativeStack);
+    }
+  }
+
+  Future<void> _refresh({bool silent = false}) async {
+    if (!mounted) return;
+    await _feed.refresh();
+    if (!silent && mounted && _feed.hasData && _feed.error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not refresh. Showing the previous results.'),
+        ),
+      );
+    }
+  }
+
+  List<Map<String, dynamic>> _anchors(Map<String, dynamic> m) =>
+      sourceMatchAnchors(m, source);
+
+  Future<List<Map<String, dynamic>>> _anchorFrom(
+    String base,
+    Map<String, dynamic> m,
+    Map<String, dynamic> anchor, {
+    String? sourceName,
+  }) async {
+    final response = await http
+        .post(
+          Uri.parse(base + '/sources/' + (sourceName ?? source) + '/streams'),
+          headers: publicApiHeaders(base, extra: const {'Content-Type': 'application/json'}),
+          body: jsonEncode({
+            'skip_probe': true,
+            'room_num':
+                anchor['room_num'] ?? m['source_id'] ?? m['schedule_id'],
+            'schedule_id': m['schedule_id'] ?? m['source_id'],
+            'source_id': m['source_id'],
+            'page_url': anchor['page_url'] ?? m['page_url'],
+            if (anchor['player_url'] != null) 'player_url': anchor['player_url'],
+            'anchor_name':
+                anchor['nick_name'] ?? anchor['name'] ?? anchor['room_num'],
+          }),
+        )
+        .timeout(const Duration(seconds: 12));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('Stream API HTTP ' + response.statusCode.toString());
+    }
+    final decoded = jsonDecode(response.body);
+    final raw = decoded is Map ? decoded['streams'] : null;
+    if (raw is! List) throw const FormatException('Invalid source streams.');
+    // An empty verified-source response is a source result, not a failed
+    // network route. Retrying it on every alias repeats the same slow scan.
+    return raw
+        .asMap()
+        .entries
+        .map((entry) {
+          final row = Map<String, dynamic>.from(entry.value as Map);
+          if ((sourceName ?? source) == 'yyzb') {
+            row['label'] = englishStreamLabel(
+              (row['label'] ?? row['resolution'] ?? 'Line ${entry.key + 1}')
+                  .toString(),
+              index: entry.key,
+            );
+          }
+          return row;
+        })
+        .where((x) => (x['stream_url']?.toString() ?? '').trim().isNotEmpty)
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> _anchor(
+    Map<String, dynamic> m,
+    Map<String, dynamic> anchor,
+  ) => _anchorFrom(vercelBackupBase, m, anchor);
+
+  int _compareLines(Map<String, dynamic> a, Map<String, dynamic> b) {
+    int rank(Map<String, dynamic> x) {
+      final t = (x['stream_type'] ?? 'auto').toString().toLowerCase();
+      if (t == 'hls' || t == 'm3u8') return 0;
+      // Web FLV can begin without waiting for a DASH manifest/segment set.
+      if (kIsWeb && t == 'flv') return 1;
+      if (t == 'dash' || t == 'mpd') return 2;
+      if (t == 'mp4') return 3;
+      if (t == 'auto') return 4;
+      if (t == 'flv') return 5;
+      return 6;
+    }
+
+    int healthRank(Map<String, dynamic> x) {
+      return switch ((x['health_status'] ?? 'unknown')
+          .toString()
+          .toLowerCase()) {
+        'healthy' => 0,
+        'unknown' => 1,
+        'slow' => 2,
+        'failed' => 3,
+        _ => 2,
+      };
+    }
+
+    final health = healthRank(a).compareTo(healthRank(b));
+    if (health != 0) return health;
+    final format = rank(a).compareTo(rank(b));
+    if (format != 0) return format;
+    return ((a['priority'] as num?)?.toInt() ?? 100).compareTo(
+      (b['priority'] as num?)?.toInt() ?? 100,
+    );
+  }
+
+  SourceLineLoader _streams(Map<String, dynamic> match) => SourceLineLoader(
+    anchors: _anchors(match)
+        .map<Future<SourceLines> Function()>(
+          (anchor) =>
+              () => _anchor(match, anchor),
+        )
+        .toList(),
+    compare: _compareLines,
+  );
+
+  List<Map<String, dynamic>> _playerSources(SourceLines rows) =>
+      playbackSources(
+        rows
+            .map(
+              (x) => <String, dynamic>{
+                'id': x['id']?.toString(),
+                'label': (x['label'] ?? x['resolution'] ?? 'Server').toString(),
+                'streamType': (x['stream_type'] ?? 'auto').toString(),
+                'url': (x['stream_url'] ?? '').toString(),
+                'referer': (x['referer'] ?? '').toString(),
+                'origin': (x['origin'] ?? '').toString(),
+                'keyId': (x['key_id'] ?? '').toString(),
+                'keyData': (x['key_data'] ?? '').toString(),
+                'resolution': (x['resolution'] ?? '').toString(),
+                'healthStatus': (x['health_status'] ?? 'unknown').toString(),
+                'healthHttpStatus': x['health_http_status'],
+                'playbackStatus': x['playback_status'],
+                'priority': (x['priority'] as num?)?.toInt() ?? 100,
+              },
+            )
+            .toList(),
+      );
+
+  Future<void> _watch(Map<String, dynamic> m) async {
+    if (_openingPlayer || !mounted) return;
+    _cancelSourceOperation();
+    _openingPlayer = true;
+    final generation = _sourceGeneration;
+    try {
+      await _openSourcePlayer(m);
+    } finally {
+      if (generation == _sourceGeneration) _openingPlayer = false;
+    }
+  }
+
+  Future<void> _openSourcePlayer(Map<String, dynamic> m) async {
+    if (_anchors(m).isEmpty) return;
+    final generation = _sourceGeneration;
+    final selectedSource = source;
+    final operation = _streams(m);
+    _sourceOperation = operation;
+    final resolution = Stopwatch()..start();
+    final sessionId = '$selectedSource-$generation-${UniqueKey()}';
+    var playerOpened = false;
+    var publishedCount = 0;
+
+    bool current() =>
+        mounted &&
+        generation == _sourceGeneration &&
+        identical(_sourceOperation, operation) &&
+        !operation.cancelled;
+
+    void publishBackups() {
+      if (!current() ||
+          !playerOpened ||
+          operation.rows.length <= publishedCount) {
+        return;
+      }
+      publishedCount = operation.rows.length;
+      unawaited(
+        NativePlayer.updateSources(
+          sources: _playerSources(operation.rows),
+          sessionId: sessionId,
+        ).catchError((Object _) {}),
+      );
+    }
+
+    operation.addListener(publishBackups);
+    try {
+      final rows = await loadPlayerSources<SourceLines?>(
+        context,
+        () {
+          operation.start();
+          return operation.firstUsable;
+        },
+        onCancelled: operation.cancel,
+        onFailure: null,
+      );
+      resolution.stop();
+      if (rows == null || !current()) return;
+      final providerMatchId = (m['source_id'] ?? m['schedule_id'] ?? '')
+          .toString();
+      final safeMatchId =
+          RegExp(r'^[a-zA-Z0-9_-]{1,100}$').hasMatch(providerMatchId)
+          ? providerMatchId
+          : 'unknown';
+      unawaited(
+        AnalyticsService.capture(
+          'stream sources loaded',
+          properties: {
+            'source': selectedSource,
+            'match_id': '$selectedSource:$safeMatchId',
+            'resolution_ms': resolution.elapsedMilliseconds,
+            'count': rows.length,
+          },
+        ),
+      );
+      if (rows.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(
+            title + ' lists streamer rooms, but none returned a playable '
+            'video line right now. Try again closer to kickoff.',
+          )),
+        );
+        return;
+      }
+
+      NativePlayer.prewarm(sources: _playerSources(rows));
+
+      final picked = await showModalBottomSheet<int>(
+        context: context,
+        useSafeArea: true,
+        isScrollControlled: true,
+        showDragHandle: true,
+        builder: (sheet) => AnimatedBuilder(
+          animation: operation,
+          builder: (_, __) {
+            final allSources = _playerSources(operation.rows);
+            final visibleIndices = visiblePlaybackIndices(allSources);
+            final sources = [
+              for (final index in visibleIndices) allSources[index],
+            ];
+            return DraggableScrollableSheet(
+              expand: false,
+              initialChildSize: sources.length <= 4 ? .52 : .72,
+              minChildSize: .38,
+              maxChildSize: .90,
+              builder: (_, controller) => Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            title + ' • ' + _matchName(m),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          sources.length.toString() +
+                              (operation.loading ? ' lines…' : ' lines'),
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: ListView.separated(
+                      controller: controller,
+                      padding: const EdgeInsets.all(14),
+                      itemCount: sources.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (_, i) {
+                        final x = sources[i];
+                        final label = compactStreamLineTitle(
+                          label: (x['label'] ?? '').toString(),
+                          resolution: (x['resolution'] ?? '').toString(),
+                          streamType: (x['streamType'] ?? 'auto').toString(),
+                          index: visibleIndices[i],
+                        );
+                        return ListTile(
+                          dense: true,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            side: BorderSide(
+                              color: Theme.of(sheet).colorScheme.outlineVariant,
+                            ),
+                          ),
+                          leading: const Icon(Icons.live_tv_rounded, size: 20),
+                          title: Text(
+                            label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          onTap: () => Navigator.pop(sheet, visibleIndices[i]),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      );
+
+      if (!current()) return;
+      if (picked == null) return;
+      publishedCount = operation.rows.length;
+      await NativePlayer.open(
+        context: context,
+        sources: _playerSources(operation.rows),
+        selectedIndex: picked,
+        title: _matchName(m),
+        matchId:
+            selectedSource +
+            ':' +
+            (m['source_id'] ?? m['schedule_id'] ?? '').toString(),
+        sessionId: sessionId,
+      );
+      playerOpened = true;
+      publishBackups();
+      if (generation == _sourceGeneration) _openingPlayer = false;
+      // Opening returns immediately on Web/Android. Keep forwarding late
+      // anchors until they settle; the player rejects a closed/stale session.
+      await operation.settled;
+      publishBackups();
+    } finally {
+      operation.removeListener(publishBackups);
+      operation.dispose();
+      if (identical(_sourceOperation, operation)) _sourceOperation = null;
+    }
+  }
+
+  void _select(int index) {
+    _rememberUi();
+    if (index == navIndex) {
+      unawaited(_refresh());
+      return;
+    }
+    if (index == 0) {
+      Navigator.of(context).popUntil((route) => route.isFirst);
+      return;
+    }
+    if (index == 6) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(builder: (_) => const ChannelsPage()),
+      );
+      return;
+    }
+    final next = viewerSourceAt(index);
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(builder: (_) => SourceBrowserPage(source: next)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      // Keep the source search/filter header below the Android status bar,
+      // including when the app uses edge-to-edge system navigation.
+      // The Channels tab already gets this inset from its AppBar.
+      body: SafeArea(
+        top: true,
+        bottom: false,
+        child: AnimatedBuilder(
+        animation: _feed,
+        builder: (_, _) {
+          if (_feed.loading && !_feed.hasData) {
+            return _SourceLoading(title: title);
+          }
+          if (_feed.error != null && !_feed.hasData) {
+            return _StateView(
+              title: title + ' unavailable',
+              text: source == 'fawa'
+                  ? 'Fawa website or source API is unreachable. Refresh later.'
+                  : 'Network temporarily unavailable. Refresh to retry backup routes.',
+              onRefresh: _refresh,
+            );
+          }
+
+          // A failed refresh may retain the last visible feed. Do not show
+          // fixtures that became stale while the source was unreachable.
+          final allMatches = (_feed.data ?? const <Map<String, dynamic>>[])
+              .where((row) => source != 'soco' || !_stale(row))
+              .toList();
+          if (allMatches.isEmpty) {
+            return _StateView(
+              title: 'No $title matches',
+              text: 'No matches are available from this source right now.',
+              onRefresh: _refresh,
+            );
+          }
+
+          // YYZB mirrors its website's own football-room catalogue:
+          // an actual streamer room is mandatory and there is no score-only
+          // fallback view.
+          final availableMatches = source == 'yyzb'
+              ? allMatches
+                  .where((row) => sourceMatchAnchors(row, source).isNotEmpty)
+                  .toList()
+              : allMatches;
+          final matches = filterSourceMatches(
+            availableMatches,
+            source: source,
+            todayOnly: source == 'fawa' ? false : _todayOnly,
+            query: _query,
+            league: _league,
+          );
+          return RefreshIndicator(
+            onRefresh: _refresh,
+            child: CustomScrollView(
+              controller: _listScroll,
+              physics: const AlwaysScrollableScrollPhysics(),
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              slivers: [
+                if (_feed.error != null && _feed.hasData)
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(12, 5, 12, 3),
+                      child: Text('Offline • showing last available results',
+                        style: TextStyle(fontSize: 11)),
+                    ),
+                  ),
+                SliverToBoxAdapter(
+                  child: SourceMatchFilters(
+                    controller: _searchController,
+                    todayOnly: _todayOnly,
+                    league: _league,
+                    leagues: sourceMatchLeagues(availableMatches),
+                    visibleCount: matches.length,
+                    showDateChoices: source != 'yyzb' && source != 'fawa',
+                    onRefresh: _refresh,
+                    onQueryChanged: (value) => setState(() => _query = value),
+                    onTodayChanged: (value) =>
+                        setState(() => _todayOnly = value),
+                    onLeagueChanged: (value) => setState(() => _league = value),
+                  ),
+                ),
+                if (matches.isEmpty)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('No matches for these filters'),
+                          const SizedBox(height: 6),
+                          TextButton(
+                            onPressed: _clearFilters,
+                            child: const Text('Clear filters'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(10, 6, 10, 104),
+                    sliver: SliverList.separated(
+                      itemCount: matches.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (_, index) {
+                        final m = matches[index];
+                        final live = _live(m);
+                        final anchors = _anchors(m);
+                        final ready = anchors.isNotEmpty;
+                        final time = sourceMatchKickoff(m)?.toLocal();
+
+                        return PremiumMatchCard(
+                          league: (m['league'] ?? 'Football').toString(),
+                          homeName: (m['home_team'] ?? 'Home').toString(),
+                          awayName: (m['away_team'] ?? 'Away').toString(),
+                          homeLogo: repositoryLogoUrl((m['home_logo'] ?? m['home_logo_url'] ?? '').toString()),
+                          awayLogo: repositoryLogoUrl((m['away_logo'] ?? m['away_logo_url'] ?? '').toString()),
+                          kickoff: time,
+                          timeLabel: sourceMatchScheduleLabel(m, source),
+                          timeZoneLabel: '',
+                          isLive: live,
+                          canWatch: ready,
+                          actionLabel: source == 'soco'
+                                  ? (ready
+                                      ? 'CHECK  •  ${anchors.length} ROOMS'
+                                      : 'NO STREAM ROOMS YET')
+                                  : ready
+                                      ? (anchors.length > 1
+                                          ? 'WATCH  •  ${anchors.length} SOURCES'
+                                          : 'WATCH')
+                                      : 'NOT READY',
+                          onWatch: () => _watch(m),
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
+        ),
+      ),
+      extendBody: true,
+      bottomNavigationBar: PremiumBottomNav(
+        selectedIndex: navIndex,
+        onSelected: _select,
+      ),
+    );
+  }
+}
+
+class _SourceLoading extends StatelessWidget {
+  const _SourceLoading({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        decoration: BoxDecoration(
+          color: colors.surfaceContainerHighest.withValues(alpha: .55),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: colors.outlineVariant.withValues(alpha: .24),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.4,
+                color: colors.primary,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              'Loading ' + title + '…',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StateView extends StatelessWidget {
+  const _StateView({
+    required this.title,
+    required this.text,
+    required this.onRefresh,
+  });
+
+  final String title;
+  final String text;
+  final Future<void> Function() onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 420),
+          padding: const EdgeInsets.fromLTRB(24, 26, 24, 22),
+          decoration: BoxDecoration(
+            color: colors.surface,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: colors.outlineVariant.withValues(alpha: .28),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  color: colors.primary.withValues(alpha: .09),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Icon(
+                  Icons.sports_soccer_outlined,
+                  size: 29,
+                  color: colors.primary,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 7),
+              Text(
+                text,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: colors.onSurfaceVariant, height: 1.35),
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: () => onRefresh(),
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('REFRESH'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

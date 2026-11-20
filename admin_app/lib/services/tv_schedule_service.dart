@@ -1,0 +1,662 @@
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+
+import '../backend_endpoint.dart';
+import '../network_endpoints.dart';
+
+/// Public programme metadata for a channel in the Admin catalog.
+///
+/// This model intentionally has no stream URL, playback token or DRM field.
+class TvScheduleProgramme {
+  const TvScheduleProgramme({
+    required this.start,
+    required this.end,
+    required this.title,
+    required this.subtitle,
+    required this.description,
+    this.ambiguous = false,
+  });
+
+  final bool ambiguous;
+  final DateTime start;
+  final DateTime? end;
+  final String title;
+  final String subtitle;
+  final String description;
+
+  factory TvScheduleProgramme.fromJson(Map<String, dynamic> json) {
+    final start = _milliseconds(json['start']);
+    if (start == null) {
+      throw const FormatException('Schedule programme has no start time.');
+    }
+    return TvScheduleProgramme(
+      start: DateTime.fromMillisecondsSinceEpoch(start, isUtc: true),
+      end: _milliseconds(json['end']) == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(
+              _milliseconds(json['end'])!,
+              isUtc: true,
+            ),
+      title: _text(json['title']),
+      subtitle: _text(json['subtitle']),
+      description: _text(json['description']),
+      ambiguous: json['stream_ambiguous'] == true,
+    );
+  }
+}
+
+/// One of the Admin's saved TV channels plus its public guide entries.
+class TvScheduleChannel {
+  const TvScheduleChannel({
+    required this.id,
+    required this.name,
+    required this.category,
+    required this.imageUrl,
+    required this.hasGuide,
+    required this.region,
+    required this.programmes,
+    this.epgId = '',
+    this.epgSource = '',
+  });
+
+  final String id;
+  final String name;
+  final String category;
+  final String imageUrl;
+  final bool hasGuide;
+  final String region;
+  final List<TvScheduleProgramme> programmes;
+  final String epgId, epgSource;
+  String get coverageStatus => coverageAt(DateTime.now().toUtc());
+  String coverageAt(DateTime now) {
+    if (epgId.isEmpty || epgSource.isEmpty) return 'not_linked';
+    if (hasGuide &&
+        programmes.any((p) =>
+            (p.end ?? p.start.add(const Duration(hours: 3))).isAfter(now)))
+      return 'ready';
+    return 'awaiting_guide';
+  }
+
+  factory TvScheduleChannel.fromJson(Map<String, dynamic> json) {
+    final rows = json['programmes'];
+    final imageUrl = _text(json['image_url']);
+    return TvScheduleChannel(
+      id: _text(json['id']),
+      name: _text(json['name']),
+      category: _text(json['category']),
+      imageUrl: imageUrl.isEmpty ? _text(json['image']) : imageUrl,
+      hasGuide: json['matchedEPG'] == true,
+      epgId: _text(json['epg_id']),
+      epgSource: _text(json['epg_source']),
+      region: _text(json['region']),
+      programmes: rows is List
+          ? rows
+              .whereType<Map>()
+              .map((row) => TvScheduleProgramme.fromJson(
+                    Map<String, dynamic>.from(row),
+                  ))
+              .toList(growable: false)
+          : const [],
+    );
+  }
+}
+
+class TvScheduleAiring {
+  const TvScheduleAiring({
+    required this.channel,
+    required this.when,
+    required this.title,
+    required this.region,
+  });
+
+  final String channel;
+  final DateTime when;
+  final String title;
+  final String region;
+}
+
+/// A current or future match shown in the compact Admin channel guide.
+///
+/// This contains schedule metadata only. It deliberately has no playback
+/// address, token, key, or DRM value.
+class TvScheduleListing {
+  const TvScheduleListing({
+    required this.channel,
+    required this.programme,
+    required this.isLive,
+  });
+
+  final TvScheduleChannel channel;
+  final TvScheduleProgramme programme;
+  final bool isLive;
+}
+
+class TvScheduleGuide {
+  const TvScheduleGuide({
+    required this.timezone,
+    required this.updatedAt,
+    required this.channels,
+    this.totalSources = 0,
+    this.onlineSources = 0,
+  });
+
+  final String timezone;
+  final DateTime? updatedAt;
+  final List<TvScheduleChannel> channels;
+  final int totalSources;
+  final int onlineSources;
+
+  factory TvScheduleGuide.fromJson(Map<String, dynamic> json) {
+    final rawChannels = json['channels'];
+    final rawSources = json['sources'];
+    final sources = rawSources is List
+        ? rawSources.whereType<Map>().toList(growable: false)
+        : const <Map>[];
+    return TvScheduleGuide(
+      totalSources: sources.length,
+      onlineSources: sources.where((source) => source['ok'] == true).length,
+      timezone: _text(json['timezone']).isEmpty
+          ? 'Asia/Yangon'
+          : _text(json['timezone']),
+      updatedAt: DateTime.tryParse(_text(json['updated_at']))?.toUtc(),
+      channels: rawChannels is List
+          ? rawChannels
+              .whereType<Map>()
+              .map((row) => TvScheduleChannel.fromJson(
+                    Map<String, dynamic>.from(row),
+                  ))
+              .where(
+                  (channel) => channel.id.isNotEmpty && channel.name.isNotEmpty)
+              .toList(growable: false)
+          : const [],
+    );
+  }
+
+  /// Finds live, non-replay guide entries near a match kickoff. Matching is
+  /// deliberately conservative: a channel is shown only when both teams are
+  /// present in the guide entry and its time is close to kickoff.
+  List<TvScheduleAiring> airingsForMatch(Map<String, dynamic> match) {
+    final kickoff = DateTime.tryParse(_text(match['kickoff_at']))?.toUtc();
+    if (kickoff == null) return const [];
+
+    final home = _teamAliases(_text(match['home_team']));
+    final away = _teamAliases(_text(match['away_team']));
+    if (home.isEmpty || away.isEmpty) return const [];
+
+    final airings = <TvScheduleAiring>[];
+    for (final channel in channels) {
+      if (!channel.hasGuide) continue;
+      TvScheduleProgramme? best;
+      for (final programme in channel.programmes) {
+        final gap = programme.start.difference(kickoff).inMinutes;
+        if (gap < -90 || gap > 75) continue;
+        final body = _programmeBody(programme);
+        if (body.isEmpty ||
+            programme.ambiguous ||
+            _isReplay(body) ||
+            _isNonFootball(body)) continue;
+        if (!_containsAlias(body, home) || !_containsAlias(body, away)) {
+          continue;
+        }
+        if (best == null ||
+            programme.start.difference(kickoff).abs() <
+                best.start.difference(kickoff).abs()) {
+          best = programme;
+        }
+      }
+      if (best != null) {
+        airings.add(
+          TvScheduleAiring(
+            channel: channel.name,
+            when: best.start,
+            title: best.title,
+            region: channel.region,
+          ),
+        );
+      }
+    }
+    airings.sort((a, b) {
+      final byTime = a.when.compareTo(b.when);
+      return byTime != 0 ? byTime : a.channel.compareTo(b.channel);
+    });
+    return airings;
+  }
+
+  /// Generic football listings with no verified team names are potential
+  /// coverage only, not match confirmations. Keep these separate from
+  /// [airingsForMatch] so Admin never promotes a generic EPG slot to LIVE.
+  List<TvScheduleAiring> possibleAiringsForMatch(Map<String, dynamic> match) {
+    final kickoff = DateTime.tryParse(_text(match['kickoff_at']))?.toUtc();
+    if (kickoff == null) return const [];
+    final home = _teamAliases(_text(match['home_team']));
+    final away = _teamAliases(_text(match['away_team']));
+    if (home.isEmpty || away.isEmpty) return const [];
+
+    final possibles = <TvScheduleAiring>[];
+    for (final channel in channels) {
+      if (!channel.hasGuide) continue;
+      TvScheduleProgramme? best;
+      for (final programme in channel.programmes) {
+        final gap = programme.start.difference(kickoff).inMinutes;
+        if (gap < -90 || gap > 75) continue;
+        final end =
+            programme.end ?? programme.start.add(const Duration(hours: 3));
+        if (end.isBefore(kickoff)) continue;
+        final body = _programmeBody(programme);
+        if (body.isEmpty ||
+            programme.ambiguous ||
+            _isReplay(body) ||
+            _isNonFootball(body)) continue;
+        // A slot that names another fixture must never be suggested.
+        if (RegExp(r'\b(?:vs|v|versus|x)\b').hasMatch(body)) continue;
+        if (!_isGenericFootballSlot(body)) continue;
+        if (_containsAlias(body, home) && _containsAlias(body, away)) {
+          continue; // Already in the verified list.
+        }
+        if (best == null ||
+            programme.start.difference(kickoff).abs() <
+                best.start.difference(kickoff).abs()) {
+          best = programme;
+        }
+      }
+      if (best != null) {
+        possibles.add(TvScheduleAiring(
+          channel: channel.name,
+          when: best.start,
+          title: best.title,
+          region: channel.region,
+        ));
+      }
+    }
+    possibles.sort((a, b) {
+      final byTime = a.when.compareTo(b.when);
+      return byTime != 0 ? byTime : a.channel.compareTo(b.channel);
+    });
+    return possibles;
+  }
+
+  /// Returns only current or upcoming team-v-team programmes.
+  ///
+  /// Replays, classics and recap shows are hidden so My Channels and TV
+  /// Schedule show the useful live/next-match time rather than a long EPG
+  /// history.
+  List<TvScheduleListing> liveAndUpcomingMatchListings({
+    DateTime? now,
+    int days = 8,
+  }) {
+    final listings = <TvScheduleListing>[];
+
+    for (final channel in channels) {
+      listings.addAll(
+        liveAndUpcomingMatchListingsForChannel(channel, now: now, days: days),
+      );
+    }
+
+    listings.sort((a, b) {
+      if (a.isLive != b.isLive) return a.isLive ? -1 : 1;
+      final byTime = a.programme.start.compareTo(b.programme.start);
+      if (byTime != 0) return byTime;
+      return a.channel.name.compareTo(b.channel.name);
+    });
+    return listings;
+  }
+
+  /// Lists schedule-only live/next match entries for one catalog channel.
+  ///
+  /// A channel without matched EPG data intentionally returns an empty list;
+  /// callers still keep it in the catalog instead of silently hiding it.
+  List<TvScheduleListing> liveAndUpcomingMatchListingsForChannel(
+    TvScheduleChannel channel, {
+    DateTime? now,
+    int days = 8,
+  }) {
+    if (!channel.hasGuide) return const [];
+
+    final current = (now ?? DateTime.now()).toUtc();
+    final key = '${current.millisecondsSinceEpoch ~/ 60000}:$days';
+    final cached = _listingCache[channel];
+    if (cached?.key == key &&
+        !current.isBefore(cached!.at) &&
+        (cached.validUntil == null || current.isBefore(cached.validUntil!)))
+      return cached.rows;
+    final latest = current.add(Duration(days: days));
+    final listings = <TvScheduleListing>[];
+    for (final programme in channel.programmes) {
+      final body = _programmeBody(programme);
+      if (body.isEmpty ||
+          programme.ambiguous ||
+          _isReplay(body) ||
+          _isNonFootball(body) ||
+          !_looksLikeMatch(body)) {
+        continue;
+      }
+      final end =
+          programme.end ?? programme.start.add(const Duration(hours: 3));
+      if (end.isBefore(current) || programme.start.isAfter(latest)) {
+        continue;
+      }
+      listings.add(
+        TvScheduleListing(
+          channel: channel,
+          programme: programme,
+          isLive: !programme.start.isAfter(current) && end.isAfter(current),
+        ),
+      );
+    }
+
+    listings.sort((a, b) {
+      if (a.isLive != b.isLive) return a.isLive ? -1 : 1;
+      return a.programme.start.compareTo(b.programme.start);
+    });
+    DateTime? boundary;
+    for (final programme in channel.programmes) {
+      for (final time in [
+        programme.start,
+        programme.end ?? programme.start.add(const Duration(hours: 3))
+      ]) {
+        if (time.isAfter(current) &&
+            (boundary == null || time.isBefore(boundary))) boundary = time;
+      }
+    }
+    _listingCache[channel] =
+        _ChannelListingCache(key, current, boundary, listings);
+    return listings;
+  }
+}
+
+/// Reads schedule metadata through NCA's public Worker. The Worker filters the
+/// upstream payload, adds CORS for Admin Web, and never relays playback data.
+class TvScheduleService {
+  TvScheduleService({http.Client? httpClient, List<String>? apiBases})
+      : _httpClient = httpClient,
+        _apiBases = apiBases;
+
+  final http.Client? _httpClient;
+  final List<String>? _apiBases;
+
+  // Both Admin tabs read exactly the same public guide. Reuse one in-flight
+  // request and the successful response for two minutes when changing tabs.
+  // Injected clients / explicit dates remain uncached for deterministic tests.
+  static Future<TvScheduleGuide>? _sharedGuide;
+  static Future<TvScheduleGuide>? _sharedCatalog;
+  static int _catalogGeneration = 0;
+  static TvScheduleGuide? _lastGuide;
+  static TvScheduleGuide? get cachedGuide => _lastGuide;
+  static String? _sharedDate;
+  static DateTime? _sharedLoadedAt;
+  static int _sharedGeneration = 0;
+  static const guideDays = 3;
+  static const _sharedTtl = Duration(minutes: 2);
+  static DateTime? _mutationFreshUntil;
+  static bool get _needsFreshMetadata =>
+      _mutationFreshUntil?.isAfter(DateTime.now()) == true;
+
+  /// Called on Admin editing route exit so a saved/deleted match or channel
+  /// can never reappear from the old shared guide when entering a tab again.
+  /// Do not clear public guide metadata on an ordinary tab switch.
+  static void invalidateShared() {
+    _mutationFreshUntil = DateTime.now().add(const Duration(seconds: 30));
+    _sharedGeneration++;
+    _catalogGeneration++;
+    _sharedGuide = null;
+    _sharedCatalog = null;
+    _lastGuide = null;
+    _sharedDate = null;
+    _sharedLoadedAt = null;
+  }
+
+  Future<TvScheduleGuide> load({DateTime? now, bool refresh = false}) {
+    final date = _yangonDate(now ?? DateTime.now());
+    if (_httpClient != null || _apiBases != null || now != null) {
+      return _fetch(date, fresh: refresh || _needsFreshMetadata);
+    }
+    final loaded = _sharedLoadedAt;
+    if (!refresh &&
+        _sharedGuide != null &&
+        _sharedDate == date &&
+        (loaded == null || DateTime.now().difference(loaded) < _sharedTtl)) {
+      return _sharedGuide!;
+    }
+    final generation = ++_sharedGeneration;
+    _sharedDate = date;
+    _sharedLoadedAt = null;
+    Future<TvScheduleGuide> getAndRemember() async {
+      try {
+        final guide = await _fetch(date, fresh: refresh || _needsFreshMetadata);
+        if (generation == _sharedGeneration) {
+          _sharedLoadedAt = DateTime.now();
+          _lastGuide = guide;
+        }
+        return guide;
+      } catch (_) {
+        if (generation == _sharedGeneration) {
+          _sharedGuide = null;
+          _sharedDate = null;
+          _sharedLoadedAt = null;
+        }
+        rethrow;
+      }
+    }
+
+    return _sharedGuide = getAndRemember();
+  }
+
+  /// Catalog is small and independent of optional programme enrichment.
+  /// Never replace an existing full guide with this partial response.
+  Future<TvScheduleGuide> loadCatalog() {
+    Future<TvScheduleGuide> fetchCatalog() async {
+      final client = _httpClient ?? http.Client();
+      try {
+        for (final base in (_apiBases ?? publicDataApiBases(preferVercel: usesVercelBackend)).toSet()) {
+          try {
+            final response = await client
+                .get(Uri.parse('$base/channels').replace(
+                  queryParameters: _needsFreshMetadata ? {'fresh': '1'} : null,
+                ), headers: publicApiHeaders(base))
+                .timeout(const Duration(seconds: 8));
+            if (response.statusCode != 200) continue;
+            final json = jsonDecode(response.body);
+            if (json is! Map || json['channels'] is! List) continue;
+            return TvScheduleGuide.fromJson(Map<String, dynamic>.from(json));
+          } catch (_) {}
+        }
+        throw StateError('Channel catalog is unavailable.');
+      } finally {
+        if (_httpClient == null) client.close();
+      }
+    }
+
+    if (_httpClient != null || _apiBases != null) return fetchCatalog();
+    final generation = _catalogGeneration;
+    return _sharedCatalog ??= fetchCatalog().catchError((Object error) {
+      if (generation == _catalogGeneration) _sharedCatalog = null;
+      throw error;
+    });
+  }
+
+  Future<TvScheduleGuide> _fetch(String date, {bool fresh = false}) async {
+    final client = _httpClient ?? http.Client();
+    final ownsClient = _httpClient == null;
+    try {
+      // Use the configured custom domain first. The workers.dev hostname can
+      // serve an older deployment while the production route is updated.
+      final bases = _apiBases ?? publicDataApiBases(preferVercel: usesVercelBackend);
+      for (final rawBase in bases.toSet()) {
+        final base = rawBase.trim().replaceAll(RegExp(r'/+$'), '');
+        if (base.isEmpty) continue;
+        try {
+          final uri = Uri.parse('$base/tv-schedule').replace(
+            queryParameters: {'date': date, 'days': '$guideDays',
+              if (fresh) 'fresh': '1'},
+          );
+          final response = await client.get(uri, headers: publicApiHeaders(base)).timeout(const Duration(seconds: 16));
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            throw StateError(
+                'TV schedule returned HTTP ${response.statusCode}.');
+          }
+          final decoded = jsonDecode(response.body);
+          if (decoded is! Map) {
+            throw const FormatException('Invalid TV schedule response.');
+          }
+          return TvScheduleGuide.fromJson(Map<String, dynamic>.from(decoded));
+        } catch (_) {}
+      }
+      throw StateError('TV schedule is unavailable.');
+    } finally {
+      if (ownsClient) client.close();
+    }
+  }
+}
+
+int? _milliseconds(Object? value) {
+  final number = value is num ? value.toInt() : int.tryParse('$value');
+  return number != null && number > 0 ? number : null;
+}
+
+String _text(Object? value) => value?.toString().trim() ?? '';
+
+String _yangonDate(DateTime value) {
+  final yangon = value.toUtc().add(const Duration(hours: 6, minutes: 30));
+  final month = yangon.month.toString().padLeft(2, '0');
+  final day = yangon.day.toString().padLeft(2, '0');
+  return '${yangon.year}-$month-$day';
+}
+
+final _nonWordPattern = RegExp(r'[^a-z0-9]+');
+final _spacesPattern = RegExp(r'\s+');
+String _normalise(String value) {
+  // Brazilian EPG programme titles use accented Portuguese country names,
+  // e.g. "Espanha x Inglaterra" and "França x Turquia".
+  final latin = value.toLowerCase()
+      .replaceAll(RegExp(r'[áàâãä]'), 'a')
+      .replaceAll(RegExp(r'[éèêë]'), 'e')
+      .replaceAll(RegExp(r'[íìîï]'), 'i')
+      .replaceAll(RegExp(r'[óòôõö]'), 'o')
+      .replaceAll(RegExp(r'[úùûü]'), 'u')
+      .replaceAll('ç', 'c');
+  return latin.replaceAll(_nonWordPattern, ' ')
+      .replaceAll(_spacesPattern, ' ').trim();
+}
+
+List<String> _teamAliases(String team) {
+  final normalised = _normalise(team);
+  if (normalised.isEmpty) return const [];
+  final values = <String>[normalised];
+  final short = normalised
+      .replaceFirst(RegExp(r'^(?:acf|afc|fc|sc|cf|cd|sv|tsg|1 fc)\s+'), '')
+      .replaceFirst(RegExp(r'\s+(?:fc|afc|cf|bc|b c|football club)$'), '')
+      .trim();
+  if (short.length >= 4) values.add(short);
+  final simplified = normalised
+      .replaceFirst(
+          RegExp(r'^(?:s s c|a s|a c|r c|u s|f c|fc|cf|ac|rc|ssc|sc)\s+'), '')
+      .replaceFirst(
+          RegExp(r'\s+(?:f c|a c|s c|c f|fc|cf|afc|sc|balompie)$'), '')
+      .trim();
+  if (simplified.length >= 5) values.add(simplified);
+
+  const overrides = <String, List<String>>{
+    'udinese calcio': ['udinese'],
+    'a s roma': ['roma', 'as roma'],
+    'real betis balompie': ['real betis', 'betis'],
+    'racing santander': ['racing de santander'],
+    'juventus f c': ['juventus'],
+    's s c napoli': ['napoli'],
+    'rc strasbourg alsace': ['strasbourg'],
+    'olympique lyonnais': ['lyon'],
+    'olympique de marseille': ['marseille'],
+    'bologna f c 1909': ['bologna'],
+    'a c monza': ['monza'],
+    'ac milan': ['milan'],
+    'inter milan': ['inter'],
+    'bayer 04 leverkusen': ['leverkusen', 'bayer leverkusen'],
+    'vfb stuttgart': ['stuttgart'],
+    'fc bayern munich': ['bayern', 'bayern munich'],
+    'borussia dortmund': ['dortmund'],
+    'atalanta b c': ['atalanta'],
+    'acf fiorentina': ['fiorentina'],
+    'newcastle united': ['newcastle'],
+    'newcastle utd': ['newcastle'],
+    'fc bayern munchen': ['bayern munchen', 'bayern munich', 'bayern'],
+    'athletic club': ['athletic bilbao', 'athletic club'],
+    'sevilla fc': ['sevilla'],
+    'ae prat': ['ae prat', 'prat'],
+    'sporting hortaleza': ['sporting hortaleza'],
+    'fc magdeburg': ['magdeburg'],
+    '1 fc magdeburg': ['magdeburg'],
+    // Exact country translations used in Brazilian football EPG entries.
+    'spain': ['espanha', 'espana', 'esp'],
+    'england': ['inglaterra', 'eng'],
+    'france': ['franca', 'fra'],
+    'turkiye': ['turquia', 'turkey', 'tur'],
+    'turkey': ['turquia', 'turkiye', 'tur'],
+    'belgium': ['belgica', 'bel'],
+    'italy': ['italia', 'ita'],
+    'croatia': ['croacia', 'cro'],
+    'czechia': ['tchequia', 'republica tcheca', 'cze'],
+  };
+  values.addAll(overrides[normalised] ?? const []);
+  return values
+      .map(_normalise)
+      .where((value) => value.length >= 4)
+      .toSet()
+      .toList(growable: false);
+}
+
+bool _containsAlias(String body, List<String> aliases) => aliases.any(
+      (alias) => ' $body '.contains(' $alias '),
+    );
+
+final _matchPattern = RegExp(
+  // Portuguese schedules often use "x" instead of "vs".
+  r'\b(?:vs|v|versus|x)\b',
+  caseSensitive: false,
+);
+bool _looksLikeMatch(String body) =>
+    _matchPattern.hasMatch(body) ||
+    (RegExp(r'\blive\b').hasMatch(body) &&
+        RegExp(r'\b(?:soccer|premier league|la liga|bundesliga|serie a|ligue 1|champions league)\b')
+            .hasMatch(body) &&
+        RegExp(r'\b(?:host|hosts|hosting|face|faces|take on|takes on)\b')
+            .hasMatch(body));
+
+// Generic programme names are not evidence of a specific fixture.
+// Keep this list deliberately narrow and label every result as unverified.
+bool _isGenericFootballSlot(String body) => RegExp(
+      r'\b(?:soccer|la liga|laliga|primera division|serie a|bundesliga|ligue 1|'
+      r'premier league|uefa champions league|football)\b',
+    ).hasMatch(body);
+
+final _replayPattern = RegExp(
+  r'\b(?:replay|repeat|re run|rebroadcast|recorded|highlights?|mini match|full impact|classic|recap|review|magazine|preview|match of the day|z zaznam|zaznam|aufzeichnung|ripetizione|rediffusion|resume|resumen|souhrn)\b',
+  caseSensitive: false,
+);
+bool _isReplay(String body) => _replayPattern.hasMatch(body);
+
+/// Other sports may also have team-v-team listings, but they are not soccer.
+final _nonFootballPattern = RegExp(
+  r'\b(?:aflw?|australian rules|aussie rules|essendon bombers|collingwood magpies|'
+  r'american football|super bowl|nfl|nba|wnba|basketball|baseball|mlb|nhl|'
+  r'ice hockey|field hockey|cricket|rugby|nrl|six nations|grand prix|'
+  r'formula one|formula 1|motogp|motorsport|tennis|atp tour|wta tour|'
+  r'badminton|darts|snooker|boxing|mma|ufc|esports|e sports)\b',
+  caseSensitive: false,
+);
+bool _isNonFootball(String body) => _nonFootballPattern.hasMatch(body);
+
+// Immutable guide records may be visited by both tabs. Cache derived text and
+// minute-scoped listings by object identity, without retaining old sessions.
+final _programmeBodies = Expando<String>();
+String _programmeBody(TvScheduleProgramme programme) =>
+    _programmeBodies[programme] ??= _normalise(
+        '${programme.title} ${programme.subtitle} ${programme.description}');
+final _listingCache = Expando<_ChannelListingCache>();
+
+class _ChannelListingCache {
+  _ChannelListingCache(this.key, this.at, this.validUntil, this.rows);
+  final DateTime at;
+  final DateTime? validUntil;
+  final String key;
+  final List<TvScheduleListing> rows;
+}

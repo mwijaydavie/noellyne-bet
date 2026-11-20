@@ -1,0 +1,675 @@
+name: Build Android V9.8 APKs
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_update:
+        description: 'Publish both Viewer and Admin APKs to the in-app updater (manual only)'
+        type: boolean
+        required: true
+        default: false
+      publish_admin_only:
+        description: 'Publish only the signed Admin APK, leaving Viewer release unchanged'
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - "user_app/**"
+      - "admin_app/**"
+      - "scripts/test_web_player.mjs"
+      - "scripts/generate_embedded_player.py"
+      - "scripts/write_android_release_metadata.py"
+      - "scripts/test_android_release_metadata.py"
+      - ".github/workflows/build-apks.yml"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nca-android-release
+  cancel-in-progress: true
+
+jobs:
+  verify-ios:
+    if: ${{ (github.event_name != 'push' || !contains(github.event.head_commit.message, '[admin-web-only]')) && !((github.event_name == 'workflow_dispatch' && inputs.publish_admin_only == true && inputs.publish_update != true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-admin-only]'))) }}
+    name: Verify iOS Viewer simulator build
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create iOS platform and compile Viewer
+        working-directory: user_app
+        run: |
+          HAD_WIDGET_TEST=false
+          if [ -e test/widget_test.dart ]; then HAD_WIDGET_TEST=true; fi
+          flutter create --platforms=ios .
+          if [ "$HAD_WIDGET_TEST" = false ]; then rm -f test/widget_test.dart; fi
+          python3 - <<'PY2'
+          from pathlib import Path
+          import plistlib
+
+          p = Path('ios/Runner/Info.plist')
+          with p.open('rb') as fh:
+              data = plistlib.load(fh)
+
+          ats = data.setdefault('NSAppTransportSecurity', {})
+          domains = ats.setdefault('NSExceptionDomains', {})
+          for host in [
+              'fawa41-origin.nyeinchanaung.us.ci',
+              'fawa44-origin.nyeinchanaung.us.ci',
+              'fawa55-origin.nyeinchanaung.us.ci',
+              'fawa59-origin.nyeinchanaung.us.ci',
+          ]:
+              domains[host] = {
+                  'NSExceptionAllowsInsecureHTTPLoads': True,
+                  'NSIncludesSubdomains': False,
+              }
+
+          with p.open('wb') as fh:
+              plistlib.dump(data, fh)
+          PY2
+          python3 ../scripts/generate_embedded_player.py --check
+          node ../scripts/test_web_player.mjs
+          flutter pub get
+          flutter build ios --simulator --debug --no-codesign
+
+  build:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[admin-web-only]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Check native source session races
+        run: java scripts/test_native_source_sessions.java
+
+      - name: Verify in-app signing continuity gate tests
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_android_update_signing.py'
+          python3 -m unittest discover -s scripts -p 'test_android_release_metadata.py' -v
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Android platform for Admin
+        working-directory: admin_app
+        run: |
+          HAD_WIDGET_TEST=false
+          if [ -e test/widget_test.dart ]; then HAD_WIDGET_TEST=true; fi
+          flutter create --platforms=android .
+          python3 ../scripts/configure_gradle_distribution.py android/gradle/wrapper/gradle-wrapper.properties
+          # The generated counter test targets MyApp, which is not this app.
+          # Keep any test that was already part of the checked-out project.
+          if [ "$HAD_WIDGET_TEST" = false ]; then rm -f test/widget_test.dart; fi
+
+      - name: Patch Admin permissions
+        working-directory: admin_app
+        run: |
+          python3 - <<'PY2'
+          from pathlib import Path
+          p=Path('android/app/src/main/AndroidManifest.xml')
+          s=p.read_text()
+          marker='<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
+          perms=['<uses-permission android:name="android.permission.INTERNET"/>','<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>','<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>']
+          missing=[x for x in perms if x not in s]
+          if missing:
+              s=s.replace(marker, marker+'\n    '+'\n    '.join(missing))
+          posthog_meta='        <meta-data android:name="com.posthog.posthog.AUTO_INIT" android:value="false" />\n'
+          if 'com.posthog.posthog.AUTO_INIT' not in s:
+              s=s.replace('    </application>', posthog_meta+'    </application>')
+          import re, shutil
+          s=re.sub(r'android:label="[^"]+"','android:label="NCA Admin"',s,count=1)
+          s=s.replace('@mipmap/ic_launcher','@drawable/nca_icon')
+          p.write_text(s)
+          icon=Path('android/app/src/main/res/drawable/nca_icon.webp')
+          icon.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2('../user_app/assets/nca_icon.webp', icon)
+          PY2
+
+      - name: Configure stable Admin signing
+        working-directory: admin_app
+        env:
+          NCA_KEYSTORE_B64: ${{ secrets.NCA_KEYSTORE_B64 }}
+          NCA_KEYSTORE_PASSWORD: ${{ secrets.NCA_KEYSTORE_PASSWORD }}
+          NCA_KEY_ALIAS: ${{ secrets.NCA_KEY_ALIAS }}
+          NCA_KEY_PASSWORD: ${{ secrets.NCA_KEY_PASSWORD }}
+        run: |
+          set -e
+          if [ -z "$NCA_KEYSTORE_B64" ] || [ -z "$NCA_KEYSTORE_PASSWORD" ] || [ -z "$NCA_KEY_ALIAS" ] || [ -z "$NCA_KEY_PASSWORD" ]; then
+            echo "NCA_ADMIN_SIGNING_READY=false" >> "$GITHUB_ENV"
+            echo "Stable signing secrets are not configured. Building fallback Admin APK only."
+            exit 0
+          fi
+
+          echo "$NCA_KEYSTORE_B64" | base64 -d > android/app/nca-release.jks
+          cat > android/key.properties <<EOF
+          storePassword=$NCA_KEYSTORE_PASSWORD
+          keyPassword=$NCA_KEY_PASSWORD
+          keyAlias=$NCA_KEY_ALIAS
+          storeFile=nca-release.jks
+          EOF
+
+          python3 - <<'PY2'
+          from pathlib import Path
+
+          gk = Path('android/app/build.gradle.kts')
+          if not gk.exists():
+              raise SystemExit('Expected Kotlin Gradle build file was not generated.')
+
+          s = gk.read_text()
+          if 'val ncaKeystoreProperties = Properties()' not in s:
+              imports = (
+                  'import java.io.FileInputStream\n'
+                  'import java.util.Properties\n\n'
+              )
+              properties = (
+                  'val ncaKeystoreProperties = Properties()\n'
+                  'val ncaKeystorePropertiesFile = rootProject.file("key.properties")\n'
+                  'if (ncaKeystorePropertiesFile.exists()) {\n'
+                  '    ncaKeystoreProperties.load(FileInputStream(ncaKeystorePropertiesFile))\n'
+                  '}\n\n'
+              )
+              if 'plugins {' not in s or 'android {' not in s:
+                  raise SystemExit('Expected Flutter Gradle template blocks were not found.')
+              # Gradle requires plugins before arbitrary declarations/blocks.
+              s = imports + s.replace('android {', properties + 'android {', 1)
+
+          if 'create("ncaRelease")' not in s:
+              signing = (
+                  '    signingConfigs {\n'
+                  '        create("ncaRelease") {\n'
+                  '            keyAlias = ncaKeystoreProperties["keyAlias"] as String\n'
+                  '            keyPassword = ncaKeystoreProperties["keyPassword"] as String\n'
+                  '            storeFile = file(ncaKeystoreProperties["storeFile"] as String)\n'
+                  '            storePassword = ncaKeystoreProperties["storePassword"] as String\n'
+                  '        }\n'
+                  '    }\n\n'
+              )
+              if '    buildTypes {' not in s:
+                  raise SystemExit('Expected Flutter Gradle buildTypes block was not found.')
+              s = s.replace('    buildTypes {', signing + '    buildTypes {', 1)
+
+          s = s.replace(
+              'signingConfig = signingConfigs.getByName("debug")',
+              'signingConfig = signingConfigs.getByName("ncaRelease")',
+          )
+          if 'signingConfig = signingConfigs.getByName("ncaRelease")' not in s:
+              raise SystemExit('Release signing configuration was not applied.')
+          gk.write_text(s)
+          PY2
+
+          echo "NCA_ADMIN_SIGNING_READY=true" >> "$GITHUB_ENV"
+
+      - name: Get Admin dependencies
+        working-directory: admin_app
+        run: flutter pub get
+
+      - name: Verify Admin source
+        working-directory: admin_app
+        run: |
+          flutter analyze --no-fatal-infos
+          if find test -type f -name '*_test.dart' -print -quit 2>/dev/null | grep -q .; then
+            flutter test
+          else
+            echo "No Admin tests found; analyze gate passed."
+          fi
+
+      - name: Build Admin release APKs
+        working-directory: admin_app
+        run: |
+          # Historic installed builds reached 32748. Use a higher monotonic
+          # namespace for BOTH apps; signer + prior versionCode still checked
+          # before the updater feed can publish.
+          # Preserve the shared Admin/Viewer build-number contract.
+          # The signing gate checks the actual split-ABI versionCode
+          # against the installed Admin release before publishing.
+          BUILD_NUMBER=$((40000 + GITHUB_RUN_NUMBER))
+          test "$BUILD_NUMBER" -gt 32748
+          flutter build apk --release --split-per-abi \
+            --build-name 2.5.23 --build-number "$BUILD_NUMBER"
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk /tmp/NCA-admin-arm64-v8a-latest.apk
+          echo "NCA_ADMIN_BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "NCA_ADMIN_APK_SHA256=$(sha256sum /tmp/NCA-admin-arm64-v8a-latest.apk | awk '{print $1}')" >> "$GITHUB_ENV"
+          echo "NCA_ADMIN_APK_SIZE=$(stat -c%s /tmp/NCA-admin-arm64-v8a-latest.apk)" >> "$GITHUB_ENV"
+
+      - name: Upload Admin APKs
+        if: ${{ env.NCA_ADMIN_SIGNING_READY == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: NCA-Admin-V9.8-Release-APKs
+          path: admin_app/build/app/outputs/flutter-apk/*-release.apk
+
+      - name: Create Android platform for Viewer
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.publish_admin_only == true && inputs.publish_update != true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-admin-only]'))) }}
+        working-directory: user_app
+        run: |
+          HAD_WIDGET_TEST=false
+          if [ -e test/widget_test.dart ]; then HAD_WIDGET_TEST=true; fi
+          flutter create --platforms=android .
+          python3 ../scripts/configure_gradle_distribution.py android/gradle/wrapper/gradle-wrapper.properties
+          if [ "$HAD_WIDGET_TEST" = false ]; then rm -f test/widget_test.dart; fi
+
+      - name: Patch Viewer for Android 12 Media3
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.publish_admin_only == true && inputs.publish_update != true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-admin-only]'))) }}
+        working-directory: user_app
+        run: |
+          python3 - <<'PY2'
+          from pathlib import Path
+          import shutil
+          m=Path('android/app/src/main/AndroidManifest.xml')
+          s=m.read_text()
+          marker='<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
+          perms=['<uses-permission android:name="android.permission.INTERNET"/>','<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>','<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>']
+          missing=[x for x in perms if x not in s]
+          if missing: s=s.replace(marker, marker+'\n    '+'\n    '.join(missing))
+          activity='        <activity android:name=".NativePlayerActivity" android:screenOrientation="unspecified" android:configChanges="orientation|screenSize|keyboardHidden" android:exported="false" android:theme="@style/LaunchTheme" />\n'
+          if 'NativePlayerActivity' not in s: s=s.replace('    </application>', activity+'    </application>')
+          posthog_meta='        <meta-data android:name="com.posthog.posthog.AUTO_INIT" android:value="false" />\n'
+          if 'com.posthog.posthog.AUTO_INIT' not in s:
+              s=s.replace('    </application>', posthog_meta+'    </application>')
+          import re
+          s=re.sub(r'android:label="[^"]+"','android:label="NCA"',s,count=1)
+          if 'android:usesCleartextTraffic=' not in s:
+              s=s.replace(
+                  '<application',
+                  '<application android:usesCleartextTraffic="false" android:networkSecurityConfig="@xml/network_security_config"',
+                  1,
+              )
+          elif 'android:networkSecurityConfig=' not in s:
+              s=s.replace(
+                  '<application',
+                  '<application android:networkSecurityConfig="@xml/network_security_config"',
+                  1,
+              )
+          s=s.replace('@mipmap/ic_launcher','@drawable/nca_icon')
+          m.write_text(s)
+
+          network=Path('android/app/src/main/res/xml/network_security_config.xml')
+          network.parent.mkdir(parents=True, exist_ok=True)
+          network.write_text(
+              '\n'.join([
+                  '<?xml version="1.0" encoding="utf-8"?>',
+                  '<network-security-config>',
+                  '    <base-config cleartextTrafficPermitted="false" />',
+                  '    <domain-config cleartextTrafficPermitted="true">',
+                  '        <domain includeSubdomains="false">fawa41-origin.nyeinchanaung.us.ci</domain>',
+                  '        <domain includeSubdomains="false">fawa44-origin.nyeinchanaung.us.ci</domain>',
+                  '        <domain includeSubdomains="false">fawa55-origin.nyeinchanaung.us.ci</domain>',
+                  '        <domain includeSubdomains="false">fawa59-origin.nyeinchanaung.us.ci</domain>',
+                  '        <domain includeSubdomains="false">193.47.62.41</domain>',
+                  '        <domain includeSubdomains="false">193.47.62.44</domain>',
+                  '        <domain includeSubdomains="false">193.47.62.55</domain>',
+                  '        <domain includeSubdomains="false">193.47.62.59</domain>',
+                  '    </domain-config>',
+                  '</network-security-config>',
+                  '',
+              ])
+          )
+          icon=Path('android/app/src/main/res/drawable/nca_icon.webp')
+          icon.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2('assets/nca_icon.webp', icon)
+
+          gk=Path('android/app/build.gradle.kts')
+          if gk.exists():
+              g=gk.read_text().replace('minSdk = flutter.minSdkVersion','minSdk = 24')
+              if 'androidx.media3:media3-exoplayer:' not in g:
+                  g += '\n\ndependencies {\n    implementation("androidx.media3:media3-exoplayer:1.4.1")\n    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")\n    implementation("androidx.media3:media3-exoplayer-dash:1.4.1")\n    implementation("androidx.media3:media3-ui:1.4.1")\n}\n'
+              gk.write_text(g)
+          else:
+              gp=Path('android/app/build.gradle')
+              g=gp.read_text().replace('minSdkVersion flutter.minSdkVersion','minSdkVersion 24')
+              if 'androidx.media3:media3-exoplayer:' not in g:
+                  g += '\n\ndependencies {\n    implementation "androidx.media3:media3-exoplayer:1.4.1"\n    implementation "androidx.media3:media3-exoplayer-hls:1.4.1"\n    implementation "androidx.media3:media3-exoplayer-dash:1.4.1"\n    implementation "androidx.media3:media3-ui:1.4.1"\n}\n'
+              gp.write_text(g)
+
+          dest=Path('android/app/src/main/kotlin/com/example/football_viewer')
+          dest.mkdir(parents=True, exist_ok=True)
+          shutil.copy2('android_patch/MainActivity.kt', dest/'MainActivity.kt')
+          shutil.copy2('android_patch/NativePlayerActivity.kt', dest/'NativePlayerActivity.kt')
+          java_dest=Path('android/app/src/main/java/com/example/football_viewer')
+          java_dest.mkdir(parents=True, exist_ok=True)
+          shutil.copy2('android_patch/PlaybackSourceSessions.java', java_dest/'PlaybackSourceSessions.java')
+          PY2
+
+      - name: Configure stable Viewer signing
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.publish_admin_only == true && inputs.publish_update != true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-admin-only]'))) }}
+        working-directory: user_app
+        env:
+          NCA_KEYSTORE_B64: ${{ secrets.NCA_KEYSTORE_B64 }}
+          NCA_KEYSTORE_PASSWORD: ${{ secrets.NCA_KEYSTORE_PASSWORD }}
+          NCA_KEY_ALIAS: ${{ secrets.NCA_KEY_ALIAS }}
+          NCA_KEY_PASSWORD: ${{ secrets.NCA_KEY_PASSWORD }}
+          NCA_PUBLISH_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_update == true }}
+        run: |
+          set -e
+          if [ -z "$NCA_KEYSTORE_B64" ] || [ -z "$NCA_KEYSTORE_PASSWORD" ] || [ -z "$NCA_KEY_ALIAS" ] || [ -z "$NCA_KEY_PASSWORD" ]; then
+            echo "NCA_SIGNING_READY=false" >> "$GITHUB_ENV"
+            if [ "$NCA_PUBLISH_REQUESTED" = "true" ]; then
+              echo "Cannot publish a Viewer update without all four stable signing secrets." >&2
+              exit 1
+            fi
+            echo "Stable signing secrets are not configured. Building fallback APK only; no update will be published."
+            exit 0
+          fi
+
+          echo "$NCA_KEYSTORE_B64" | base64 -d > android/app/nca-release.jks
+          cat > android/key.properties <<EOF
+          storePassword=$NCA_KEYSTORE_PASSWORD
+          keyPassword=$NCA_KEY_PASSWORD
+          keyAlias=$NCA_KEY_ALIAS
+          storeFile=nca-release.jks
+          EOF
+
+          python3 - <<'PY2'
+          from pathlib import Path
+
+          gk = Path('android/app/build.gradle.kts')
+          if not gk.exists():
+              raise SystemExit('Expected Kotlin Gradle build file was not generated.')
+
+          s = gk.read_text()
+          if 'val ncaKeystoreProperties = Properties()' not in s:
+              imports = (
+                  'import java.io.FileInputStream\n'
+                  'import java.util.Properties\n\n'
+              )
+              properties = (
+                  'val ncaKeystoreProperties = Properties()\n'
+                  'val ncaKeystorePropertiesFile = rootProject.file("key.properties")\n'
+                  'if (ncaKeystorePropertiesFile.exists()) {\n'
+                  '    ncaKeystoreProperties.load(FileInputStream(ncaKeystorePropertiesFile))\n'
+                  '}\n\n'
+              )
+              if 'plugins {' not in s or 'android {' not in s:
+                  raise SystemExit('Expected Flutter Gradle template blocks were not found.')
+              # Gradle requires plugins before arbitrary declarations/blocks.
+              s = imports + s.replace('android {', properties + 'android {', 1)
+
+          if 'create("ncaRelease")' not in s:
+              signing = (
+                  '    signingConfigs {\n'
+                  '        create("ncaRelease") {\n'
+                  '            keyAlias = ncaKeystoreProperties["keyAlias"] as String\n'
+                  '            keyPassword = ncaKeystoreProperties["keyPassword"] as String\n'
+                  '            storeFile = file(ncaKeystoreProperties["storeFile"] as String)\n'
+                  '            storePassword = ncaKeystoreProperties["storePassword"] as String\n'
+                  '        }\n'
+                  '    }\n\n'
+              )
+              if '    buildTypes {' not in s:
+                  raise SystemExit('Expected Flutter Gradle buildTypes block was not found.')
+              s = s.replace('    buildTypes {', signing + '    buildTypes {', 1)
+
+          s = s.replace(
+              'signingConfig = signingConfigs.getByName("debug")',
+              'signingConfig = signingConfigs.getByName("ncaRelease")',
+          )
+          if 'signingConfig = signingConfigs.getByName("ncaRelease")' not in s:
+              raise SystemExit('Release signing configuration was not applied.')
+          gk.write_text(s)
+          PY2
+
+          echo "NCA_SIGNING_READY=true" >> "$GITHUB_ENV"
+
+      - name: Get Viewer dependencies
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.publish_admin_only == true && inputs.publish_update != true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-admin-only]'))) }}
+        working-directory: user_app
+        run: flutter pub get
+
+      - name: Verify Viewer source
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.publish_admin_only == true && inputs.publish_update != true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-admin-only]'))) }}
+        working-directory: user_app
+        run: |
+          python3 ../scripts/generate_embedded_player.py --check
+          node ../scripts/test_web_player.mjs
+          flutter analyze --no-fatal-infos
+          if find test -type f -name '*_test.dart' -print -quit 2>/dev/null | grep -q .; then
+            flutter test
+          else
+            echo "No Viewer tests found; analyze gate passed."
+          fi
+
+      - name: Build Viewer release APKs
+        if: ${{ !((github.event_name == 'workflow_dispatch' && inputs.publish_admin_only == true && inputs.publish_update != true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-admin-only]'))) }}
+        working-directory: user_app
+        run: |
+          # Keep updater version codes above older ad-hoc/CI builds such as
+          # 12688, while retaining a monotonically increasing run component.
+          # Historic installed builds reached 32748. Use a higher monotonic
+          # namespace for BOTH apps; signer + prior versionCode still checked
+          # before the updater feed can publish.
+          BUILD_NUMBER=$((40000 + GITHUB_RUN_NUMBER))
+          test "$BUILD_NUMBER" -gt 32748
+          flutter build apk --release --split-per-abi \
+            --build-name 9.8.12 \
+            --build-number "$BUILD_NUMBER"
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk /tmp/NCA-arm64-v8a-latest.apk
+          APK_SHA256="$(sha256sum /tmp/NCA-arm64-v8a-latest.apk | awk '{print $1}')"
+          APK_SIZE="$(stat -c%s /tmp/NCA-arm64-v8a-latest.apk)"
+          echo "NCA_BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "NCA_APK_SHA256=$APK_SHA256" >> "$GITHUB_ENV"
+          echo "NCA_APK_SIZE=$APK_SIZE" >> "$GITHUB_ENV"
+
+      - name: Upload Viewer APKs
+        if: ${{ env.NCA_SIGNING_READY == 'true' && !((github.event_name == 'workflow_dispatch' && inputs.publish_admin_only == true && inputs.publish_update != true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-admin-only]'))) }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: NCA-V9.8-Release-APKs
+          path: user_app/build/app/outputs/flutter-apk/*-release.apk
+
+      # NCA Admin-only update: publish only when signing/version/hash checks pass.
+      # Publish an Admin-only release when explicitly requested. The Viewer
+      # updater feed, APK bytes and manifest are intentionally untouched.
+      - name: Publish signed Admin APK only
+        if: ${{ env.NCA_ADMIN_SIGNING_READY == 'true' && github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && inputs.publish_admin_only == true && inputs.publish_update != true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-admin-only]'))) }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin feed:refs/remotes/origin/feed
+          git worktree add --detach /tmp/nca-admin-only-feed origin/feed
+          cd /tmp/nca-admin-only-feed
+          git switch -C feed origin/feed
+
+          export ANDROID_BUILD_TOOLS="$(find "${ANDROID_HOME}/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          test -x "${ANDROID_BUILD_TOOLS}/apksigner"
+          test -x "${ANDROID_BUILD_TOOLS}/aapt"
+          PYTHONPATH="${GITHUB_WORKSPACE}/scripts" python3 - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          from verify_android_update_signing import check_update
+          from write_android_release_metadata import release_metadata
+
+          output = Path('public/releases')
+          candidate = Path('/tmp/NCA-admin-arm64-v8a-latest.apk')
+          tools = Path(os.environ['ANDROID_BUILD_TOOLS'])
+          check_update('Admin', feed_dir=output, new_path=candidate,
+                       apksigner=str(tools/'apksigner'), aapt=str(tools/'aapt'))
+          manifest = release_metadata('Admin',candidate,'2.5.23',
+                         apksigner=str(tools/'apksigner'), aapt=str(tools/'aapt'))
+          manifest['notes'] = (
+              'Removed unused LiveXTV picker, extraction and detection code. '
+              'Other Stream Sources, the Quality Picker and Live 2 remain unchanged.'
+          )
+          shutil.copy2(candidate,output/'NCA-admin-arm64-v8a-latest.apk')
+          (output/'admin-latest.json').write_text(
+              json.dumps(manifest,separators=(',',':')),encoding='utf-8')
+          PY
+
+          git add public/releases/NCA-admin-arm64-v8a-latest.apk public/releases/admin-latest.json
+          if git diff --cached --quiet; then
+            echo 'Admin release feed already up to date.'
+            exit 0
+          fi
+          git commit -m "Publish NCA Admin-only update ${GITHUB_SHA::12}"
+          for attempt in 1 2 3 4; do
+            git pull --rebase origin feed
+            if git push origin feed; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'Could not publish Admin-only updater release.' >&2
+          exit 1
+      # Routine pushes and unchecked manual builds never publish an update.
+      # Both apps must be stably signed, and both signing certificates, package
+      # names, and versionCodes must be compatible with the published feed.
+      # An unsigned/debug-signed fallback is never distributed as an update.
+      - name: Publish in-app updater release
+        if: ${{ env.NCA_SIGNING_READY == 'true' && env.NCA_ADMIN_SIGNING_READY == 'true' && ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_update == true) || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[publish-update]'))) }}
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin feed:refs/remotes/origin/feed
+
+          rm -rf /tmp/nca-feed
+          git worktree add --detach /tmp/nca-feed origin/feed
+          cd /tmp/nca-feed
+          git switch -C feed origin/feed
+
+          # Check the published APK files before replacing them. The feed is the
+          # signing baseline for users installing the current Telegram APK.
+          # Any changed cert/package or non-increasing versionCode BLOCKS release.
+          ANDROID_BUILD_TOOLS="$(find "${ANDROID_HOME}/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          test -x "${ANDROID_BUILD_TOOLS}/apksigner"
+          test -x "${ANDROID_BUILD_TOOLS}/aapt"
+          python3 "${GITHUB_WORKSPACE}/scripts/verify_android_update_signing.py" \
+            --feed-dir "$PWD/public/releases" \
+            --viewer-apk /tmp/NCA-arm64-v8a-latest.apk \
+            --admin-apk /tmp/NCA-admin-arm64-v8a-latest.apk \
+            --apksigner "${ANDROID_BUILD_TOOLS}/apksigner" \
+            --aapt "${ANDROID_BUILD_TOOLS}/aapt"
+
+          mkdir -p public/releases
+          cp /tmp/NCA-arm64-v8a-latest.apk public/releases/NCA-arm64-v8a-latest.apk
+          if [ "$NCA_ADMIN_SIGNING_READY" = "true" ]; then
+            cp /tmp/NCA-admin-arm64-v8a-latest.apk public/releases/NCA-admin-arm64-v8a-latest.apk
+          fi
+
+          python3 "${GITHUB_WORKSPACE}/scripts/write_android_release_metadata.py" \
+            --output-dir public/releases \
+            --viewer-apk /tmp/NCA-arm64-v8a-latest.apk \
+            --admin-apk /tmp/NCA-admin-arm64-v8a-latest.apk \
+            --viewer-version 9.8.12 --admin-version 2.5.23 \
+            --apksigner "${ANDROID_BUILD_TOOLS}/apksigner" \
+            --aapt "${ANDROID_BUILD_TOOLS}/aapt"
+
+          git add public/releases/NCA-arm64-v8a-latest.apk public/releases/latest.json
+          if [ "$NCA_ADMIN_SIGNING_READY" = "true" ]; then
+            git add public/releases/NCA-admin-arm64-v8a-latest.apk public/releases/admin-latest.json
+          fi
+          if git diff --cached --quiet; then
+            echo "Release feed already up to date."
+            exit 0
+          fi
+
+          git commit -m "Publish NCA Android update $NCA_BUILD_NUMBER"
+
+          for attempt in 1 2 3; do
+            git pull --rebase origin feed || true
+            if git push origin feed; then
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "Failed to publish in-app updater release."
+          exit 1
+
+      - name: Refresh GitHub Pages release files
+        if: ${{ env.NCA_SIGNING_READY == 'true' && env.NCA_ADMIN_SIGNING_READY == 'true' && ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_update == true) || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[publish-update]'))) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-web.yml --ref "${GITHUB_REF_NAME}"
+
+
+  report:
+    name: Record current-main mobile build status
+    if: always()
+    needs: [verify-ios, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Publish mobile CI status to feed
+        env:
+          VERIFY_IOS_RESULT: ${{ needs.verify-ios.result }}
+          ANDROID_RESULT: ${{ needs.build.result }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          ADMIN_ONLY_RELEASE: ${{ ((github.event_name == 'workflow_dispatch' && inputs.publish_admin_only == true && inputs.publish_update != true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-admin-only]'))) }}
+        run: |
+          set -e
+          python3 - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          ios = os.environ["VERIFY_IOS_RESULT"]
+          android = os.environ["ANDROID_RESULT"]
+          admin_only = os.environ["ADMIN_ONLY_RELEASE"] == "true"
+          data = {
+              "sha": os.environ["HEAD_SHA"],
+              "run_id": int(os.environ["RUN_ID"]),
+              "run_number": int(os.environ["RUN_NUMBER"]),
+              "workflow": "Build Android V9.8 APKs",
+              "verify_ios": ios,
+              "android": android,
+              "overall": "success" if android == "success" and
+                  (admin_only or ios == "success") else "failure",
+              "artifacts": ["NCA-Admin-V9.8-Release-APKs"] if admin_only else [
+                  "NCA-Admin-V9.8-Release-APKs",
+                  "NCA-V9.8-Release-APKs",
+              ],
+              "updated_at": datetime.now(timezone.utc).isoformat(),
+          }
+          Path("/tmp/mobile-ci.json").write_text(
+              json.dumps(data, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin feed
+          git switch -C feed origin/feed
+          mkdir -p public/ci
+          cp /tmp/mobile-ci.json public/ci/mobile.json
+          git add public/ci/mobile.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Record mobile CI status for ${HEAD_SHA::12}"
+
+          for attempt in 1 2 3 4; do
+            if git push origin feed; then
+              exit 0
+            fi
+            git pull --rebase origin feed
+            sleep 2
+          done
+          exit 1

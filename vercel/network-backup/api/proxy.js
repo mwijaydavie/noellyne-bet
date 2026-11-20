@@ -1,0 +1,234 @@
+// Use the enabled Cloudflare Worker custom domain. The workers.dev
+// subdomain is intentionally disabled and returns Cloudflare 404 pages.
+const publicOrigin = "https://football-api.nyeinchanaung.us.ci";
+// Vercel reaches Supabase directly. Cloudflare's Supabase relay returned 502
+// from Vercel even when the public Viewer API was healthy; do not route Auth
+// through that unreachable relay. JWT + anon/publishable key stay client-owned.
+const backendOrigin = "https://woggzixprvyjnfjzsglz.supabase.co";
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS, POST, PUT, PATCH, DELETE",
+  "Access-Control-Allow-Headers": "Accept, Authorization, apikey, Content-Type, Range, Prefer, X-Client-Info, X-Supabase-Api-Version, Accept-Profile, Content-Profile, X-Upsert, Cache-Control, If-Match, If-None-Match",
+  "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Location, X-Total-Count, Retry-After",
+  "Cache-Control": "no-store",
+};
+const functionNames = "football-fixtures|stream-health|soco-links|source-match-list|channel-source-sync|system-monitor|telegram-connect";
+
+function failure(message, status) {
+  return Response.json({ error: message }, { status, headers: cors });
+}
+
+function routeKind(path) {
+  if (["/health", "/matches", "/channels", "/tv-schedule", "/backend-health"].includes(path) ||
+      /^\/matches\/[A-Za-z0-9_-]+\/streams$/.test(path) ||
+      /^\/channels\/[A-Za-z0-9_-]+\/streams$/.test(path) ||
+      /^\/team-logos\/\d{1,12}$/.test(path) ||
+      /^\/p\/[A-Za-z0-9_-]+(?:\/.*)?$/.test(path) ||
+      /^\/sources\/(soco|yyzb|fawa|cola|arena|repository)\/(matches|streams)$/.test(path)) return "public";
+  if (path === "/admin/stream-detect" || path === "/admin/stream-detect-browser") return "admin";
+  if (new RegExp("^/admin/functions/(" + functionNames + ")$").test(path)) return "admin";
+  if (/^\/(auth|rest|storage)\/v1(?:\/.*)?$/.test(path) ||
+      new RegExp("^/functions/v1/(" + functionNames + ")$").test(path)) return "backend";
+  return null;
+}
+
+async function serviceHealth() {
+  const targets = [
+    ["viewer-web", "https://nyeinchanaung75299-eng.github.io/football-stream-app/"],
+    ["admin-web", "https://nyeinchanaung75299-eng.github.io/football-stream-app/admin/"],
+    ["posthog", "https://us.i.posthog.com/i/v0/e/"],
+    ["google-drive", "https://www.googleapis.com/drive/v3/about?fields=kind"],
+  ];
+  const results = await Promise.all(targets.map(async ([service, target]) => {
+    const start = Date.now();
+    try {
+      const response = await fetch(target, { signal: AbortSignal.timeout(6000), redirect: "follow" });
+      await response.body?.cancel();
+      return { service, reachable: response.status < 500, http: response.status, ms: Date.now() - start };
+    } catch (_) { return { service, reachable: false, error: "Connection timed out or failed." }; }
+  }));
+  // These probes do not inspect ChatGPT plugin credentials or account access.
+  return Response.json({ results, scope: "service-reachability-via-vercel" }, { headers: cors });
+}
+
+async function proxy(request) {
+  const incoming = new URL(request.url);
+  const routes = incoming.searchParams.getAll("route");
+  if (routes.length > 1) return failure("Invalid route.", 400);
+  const path = routes.length ? "/" + routes[0].replace(/^\/+/, "") : incoming.pathname;
+  incoming.searchParams.delete("route");
+  // Vercel includes rewrite captures as query parameters. Keep them in a
+  // reserved namespace and strip them so PostgREST does not parse them as
+  // table-column filters. Real filters such as id/eq and path/eq stay intact.
+  for (const name of ["ncaPath", "ncaId", "ncaSource", "ncaAction", "ncaFunction"]) {
+    incoming.searchParams.delete(name);
+  }
+  if (path === "/" && ["GET", "HEAD"].includes(request.method)) {
+    const reply = Response.json({ service: "nca-vercel-network-backup", experimental: false }, { headers: cors });
+    return request.method === "HEAD" ? new Response(null, { headers: reply.headers }) : reply;
+  }
+  if (path === "/service-health") {
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+    if (request.method !== "GET") return failure("Method not allowed.", 405);
+    return serviceHealth();
+  }
+  const kind = routeKind(path);
+  if (!kind) return failure("Not found.", 404);
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+  const sourcePost = /^\/sources\/(soco|yyzb|fawa|cola|arena|repository)\/streams$/.test(path);
+  const methods = kind === "backend" ? ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] :
+    (kind === "admin" || sourcePost ? ["POST"] : ["GET", "HEAD"]);
+  if (!methods.includes(request.method)) return failure("Method not allowed.", 405);
+  if (kind === "admin" && !/^Bearer \S+$/i.test(request.headers.get("Authorization") || "")) {
+    return failure("Admin session is required.", 401);
+  }
+
+  const backend = kind === "backend" || path === "/backend-health";
+  // Probe the *real* Auth endpoint, not a generic Worker /health success.
+  const upstream = new URL(path === "/backend-health" ? "/auth/v1/health" : path, backend ? backendOrigin : publicOrigin);
+  if (path !== "/backend-health" && routeKind(upstream.pathname) !== kind) return failure("Not found.", 404);
+  upstream.search = incoming.search;
+  const headers = new Headers({
+    Accept: request.headers.get("Accept") || "*/*",
+    // A server relay has its own identity. Forwarding Python/tool/client
+    // fingerprints made the owned API reject valid requests with BIC 1010.
+    "User-Agent": "NCA-Relay/1.0",
+  });
+  for (const name of ["Range", "Content-Type", "Authorization", "apikey", "Prefer", "X-Client-Info",
+    "X-Supabase-Api-Version", "Accept-Profile", "Content-Profile", "X-Upsert", "If-Match", "If-None-Match"]) {
+    if (["Authorization", "apikey"].includes(name) && !backend && kind !== "admin") continue;
+    if (request.headers.has(name)) headers.set(name, request.headers.get(name));
+  }
+  // JWTs and publishable keys pass through unchanged. The original backend
+  // enforces authentication, Admin roles, and RLS; no privileged key is added.
+  const controller = new AbortController();
+  const signal = AbortSignal.any([request.signal, controller.signal]);
+  const timer = setTimeout(() => controller.abort(), path.endsWith('/channel-source-sync') ? 50000 : 20000);
+  let bodyOwnsTimer = false;
+  try {
+    const method = request.method === "HEAD" && !path.startsWith("/p/") ? "GET" : request.method;
+    const init = { method, headers, signal, redirect: "manual" };
+    if (!["GET", "HEAD"].includes(method) && request.body) {
+      init.body = request.body;
+      init.duplex = "half";
+    }
+    const response = await fetch(upstream, init);
+    const outputHeaders = new Headers(cors);
+    // Cache only safe public GET metadata. Never cache signed playback
+    // manifests/segments, Admin functions, auth, user data or stream URLs.
+    const fresh = incoming.searchParams.get('fresh') === '1' ||
+      /(?:^|,)\s*no-cache\b/i.test(request.headers.get('Cache-Control') || '');
+    if (!backend && kind === "public" && method === "GET" && response.ok &&
+        !fresh && !request.headers.has('Authorization') && !request.headers.has('Cookie')) {
+      if (path === "/tv-schedule") {
+        outputHeaders.set("Cache-Control",
+          response.headers.get("Cache-Control")?.startsWith("public,")
+            ? response.headers.get("Cache-Control")
+            : "public, max-age=15");
+      } else if (path === "/channels") {
+        outputHeaders.set("Cache-Control", "public, max-age=15");
+      } else if(path.startsWith('/team-logos/')) {
+        outputHeaders.set('Cache-Control','public, max-age=86400');
+      } else if (path === '/matches' || /^\/sources\/[a-z]+\/matches$/.test(path)) {
+        outputHeaders.set('Cache-Control', 'public, max-age=15');
+      }
+      // max-age alone caches only in the browser. Explicit CDN caching avoids
+      // invoking this Node function for repeated public catalog/guide reads.
+      if (outputHeaders.get('Cache-Control') !== 'no-store') {
+        const ttl = path === '/channels' ? 30 : path === '/tv-schedule' ? 60 :
+          path.startsWith('/team-logos/') ? 86400 : 15;
+        outputHeaders.set('Vercel-CDN-Cache-Control', `public, s-maxage=${ttl}`);
+      }
+    }
+    for (const name of ["Content-Type", "Content-Range", "Accept-Ranges", "Content-Location", "Retry-After"]) {
+      if (response.headers.has(name)) outputHeaders.set(name, response.headers.get(name));
+    }
+    if (response.status >= 300 && response.status < 400) {
+      if (!backend) { await response.body?.cancel(); return failure("Unexpected upstream redirect.", 502); }
+      const location = response.headers.get("Location");
+      if (location) {
+        const redirect = new URL(location, upstream);
+        outputHeaders.set("Location", redirect.origin === backendOrigin ? incoming.origin + redirect.pathname + redirect.search : redirect.href);
+      }
+    }
+    if (request.method === "HEAD" || [204, 304].includes(response.status)) {
+      await response.body?.cancel();
+      return new Response(null, { status: response.status, headers: outputHeaders });
+    }
+    const type = response.headers.get("Content-Type") || "";
+    if (response.body && !backend && path.startsWith('/p/') &&
+        /mpegurl|dash\+xml/i.test(type) && response.ok) {
+      const reader = response.body.getReader();
+      const parts = []; let size = 0;
+      try {
+        for (;;) {
+          const part = await reader.read();
+          if (part.done) break;
+          size += part.value.byteLength;
+          if (size > 2 * 1024 * 1024) throw new Error("Metadata response too large");
+          parts.push(part.value);
+        }
+      } finally { await reader.cancel().catch(() => {}); }
+      const body = new Uint8Array(size); let offset = 0;
+      for (const part of parts) { body.set(part, offset); offset += part.byteLength; }
+      let text = new TextDecoder().decode(body);
+      // Metadata keeps canonical Worker URLs, so healthy networks use the
+      // shortest route. When a client explicitly opens a Vercel /p/ fallback,
+      // keep absolute manifest children on that same fallback origin; relative
+      // children already resolve there without changes.
+      if (path.startsWith("/p/") && /mpegurl|dash\+xml/i.test(type)) {
+        text = text.replaceAll(publicOrigin + "/p/", incoming.origin + "/p/");
+      }
+      return new Response(text, { status: response.status, headers: outputHeaders });
+    }
+    if (response.body && /json/i.test(type)) {
+      // Keep canonical Cloudflare playback URLs and static image URLs intact.
+      // Count bytes while streaming, without decoding/parsing a whole catalog,
+      // guide, Auth session or private REST response in Node.
+      const reader = response.body.getReader();
+      const first = await reader.read();
+      let size = first.value?.byteLength || 0;
+      if (size > 2 * 1024 * 1024) {await reader.cancel(); throw Error('Metadata response too large');}
+      bodyOwnsTimer = !first.done;
+      const bounded = new ReadableStream({
+        start(stream) {
+          if (first.done) {clearTimeout(timer); stream.close();}
+          else stream.enqueue(first.value);
+        },
+        async pull(stream) {
+          try {
+            const chunk = await reader.read();
+            if (chunk.done) {clearTimeout(timer); stream.close(); return;}
+            size += chunk.value.byteLength;
+            if (size > 2 * 1024 * 1024) throw Error('Metadata response too large');
+            stream.enqueue(chunk.value);
+          } catch (error) {
+            clearTimeout(timer); controller.abort();
+            await reader.cancel().catch(() => {});
+            stream.error(error);
+          }
+        },
+        cancel(reason) {
+          clearTimeout(timer); controller.abort();
+          return reader.cancel(reason).catch(() => {});
+        },
+      });
+      return new Response(bounded, {status: response.status, headers: outputHeaders});
+    }
+    // A media response can remain open after its headers arrive. A header
+    // timeout must not terminate an otherwise healthy continuous FLV stream.
+    clearTimeout(timer);
+    return new Response(response.body, { status: response.status, headers: outputHeaders });
+  } catch (error) {
+    console.error("Network backup upstream failure", { category: error?.name || "Error", kind });
+    return failure(signal.aborted ? "Upstream timed out or was cancelled." : "Upstream connection failed.", signal.aborted ? 504 : 502);
+  } finally { if (!bodyOwnsTimer) clearTimeout(timer); }
+}
+
+export const GET = proxy;
+export const HEAD = proxy;
+export const OPTIONS = proxy;
+export const POST = proxy;
+export const PUT = proxy;
+export const PATCH = proxy;
+export const DELETE = proxy;
