@@ -181,6 +181,8 @@ jobs:
                        kotlin_dest / 'PlaybackAudioService.kt')
           shutil.copy2('android_patch/AudioStageView.kt',
                        kotlin_dest / 'AudioStageView.kt')
+          shutil.copy2('android_patch/PlayerLoaderView.kt',
+                       kotlin_dest / 'PlayerLoaderView.kt')
           java_dest = Path('android/app/src/main/java/com/example/football_viewer')
           java_dest.mkdir(parents=True, exist_ok=True)
           shutil.copy2('android_patch/PlaybackSourceSessions.java',

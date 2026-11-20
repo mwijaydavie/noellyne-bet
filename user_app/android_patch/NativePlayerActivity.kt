@@ -20,6 +20,7 @@ import android.util.Rational
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -940,7 +941,9 @@ class NativePlayerActivity : Activity() {
                     .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
                     .build()
                 if (::playerView.isInitialized) {
-                    exo.setVideoSurfaceView(playerView.videoSurfaceView)
+                    (playerView.videoSurfaceView as? SurfaceView)?.let { surface ->
+                        exo.setVideoSurfaceView(surface)
+                    }
                 }
             }
         } catch (_: Throwable) {
