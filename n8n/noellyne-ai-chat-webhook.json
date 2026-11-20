@@ -1,0 +1,96 @@
+{
+  "name": "Noellyne Bet — AI Chat webhook (app)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "noellyne-ai-chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c1a1f0c2-1111-4a11-9a11-noellyneaiwh",
+      "name": "App Chat Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "noellyne-ai-chat"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// Noellyne AI — app chat endpoint (reuses the Hermes brain)\n// Webhook POST { message, history[] } -> { reply }\n// Provider chain: Groq -> Gemini -> OpenRouter, with per-key cooldowns.\n// =============================================================\nconst body = $input.first().json || {};\nconst question = String(body.message || body.text || '').trim();\nif (!question) return [{ json: { reply: 'Uliza swali kuhusu mechi, picks au mtaji.' } }];\n\nconst sd = $getWorkflowStaticData('global');\nconst picks =\n  sd.lastPicksText ||\n  'Hakuna picks zilizohifadhiwa bado. Picks huwekwa saa 09:00 / 14:00 / 19:00 EAT.';\n\nconst SYS =\n  'Wewe ni Noellyne Hermes Sports AI — mshauri wa Football na NBA betting. ' +\n  'Jibu kwa Kiswahili safi, ufupi (mistari 4-8), bila Markdown (* au **) wala HTML. ' +\n  'Tumia picks zilizotolewa kama chanzo cha ukweli.';\nconst prompt = `PICKS ZA LEO:\\n${picks}\\n\\nUJUMBE WA MTUMIAJI:\\n\"${question}\"`;\n\nconst MAX_TOK = 700;\nconst DEADLINE = Date.now() + 30000;\nconst ENV_MAP = { groq: 'GROQ_KEYS', gemini: 'GEMINI_KEYS', openrouter: 'OPENROUTER_KEYS' };\nconst URLS = {\n  groq: 'https://api.groq.com/openai/v1/chat/completions',\n  openrouter: 'https://openrouter.ai/api/v1/chat/completions',\n};\nconst MODELS = {\n  groq: ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile'],\n  gemini: ['gemini-2.5-flash'],\n  openrouter: ['nvidia/nemotron-nano-9b-v2:free'],\n};\nsd.rr = sd.rr || {};\nsd.cool = sd.cool || {};\nconst now = () => Date.now();\nconst keysOf = (p) => String($env[ENV_MAP[p]] || '').split(',').map((s) => s.trim()).filter(Boolean);\nconst isCool = (p, i) => (sd.cool[`${p}:${i}`] || 0) > now();\nconst cool = (p, i, ms) => { sd.cool[`${p}:${i}`] = now() + ms; };\nconst nextIdx = (p, len) => { const c = Number.isFinite(sd.rr[p]) ? sd.rr[p] : -1; const n = (c + 1) % len; sd.rr[p] = n; return n; };\n\nasync function callOpenAi(prov, model, key) {\n  const payload = {\n    model,\n    messages: [\n      { role: 'system', content: SYS },\n      { role: 'user', content: prompt },\n    ],\n    temperature: 0.3,\n  };\n  if (/gpt-oss/.test(model)) { payload.max_completion_tokens = MAX_TOK; payload.reasoning_effort = 'low'; }\n  else payload.max_tokens = MAX_TOK;\n  const headers = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };\n  if (prov === 'openrouter') headers['HTTP-Referer'] = 'https://noellyne.bet';\n  const r = await this.helpers.httpRequest({\n    method: 'POST', url: URLS[prov], headers, body: payload, json: true,\n    returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 20000,\n  });\n  return { status: r.statusCode, text: r.body?.choices?.[0]?.message?.content };\n}\n\nasync function callGemini(model, key) {\n  const r = await this.helpers.httpRequest({\n    method: 'POST',\n    url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,\n    headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' },\n    body: {\n      system_instruction: { parts: [{ text: SYS }] },\n      contents: [{ role: 'user', parts: [{ text: prompt }] }],\n      generationConfig: { maxOutputTokens: MAX_TOK, temperature: 0.3 },\n    },\n    json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 20000,\n  });\n  const parts = r.body?.candidates?.[0]?.content?.parts || [];\n  return { status: r.statusCode, text: parts.map((p) => p.text).join('') };\n}\n\nfor (const prov of ['groq', 'gemini', 'openrouter']) {\n  if (now() > DEADLINE) break;\n  const keys = keysOf(prov);\n  if (!keys.length) continue;\n  for (const model of MODELS[prov]) {\n    if (now() > DEADLINE) break;\n    for (let a = 0; a < Math.min(keys.length, 2); a++) {\n      const idx = nextIdx(prov, keys.length);\n      if (isCool(prov, idx)) continue;\n      try {\n        const res = prov === 'gemini'\n          ? await callGemini.call(this, model, keys[idx])\n          : await callOpenAi.call(this, prov, model, keys[idx]);\n        if (res.status >= 200 && res.status < 300 && res.text) {\n          return [{ json: { reply: String(res.text).trim(), provider: prov, model } }];\n        }\n        cool(prov, idx, res.status === 429 ? 60000 : 25000);\n      } catch (e) {\n        cool(prov, idx, 20000);\n      }\n    }\n  }\n}\n\nreturn [{ json: { reply: '⚠️ AI iko busy kwa sasa. Jaribu tena baada ya sekunde chache, au angalia tab ya Picks.' } }];"
+      },
+      "id": "c1a1f0c2-2222-4a11-9a11-noellyneaihs",
+      "name": "Hermes Chat Brain",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ],
+      "notes": "Reuses the same GROQ_KEYS / GEMINI_KEYS / OPENROUTER_KEYS env vars as the Telegram workflow. Picks come from lastPicksText written by 'Format Message'."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "c1a1f0c2-3333-4a11-9a11-noellyners",
+      "name": "Respond to App",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "App Chat Webhook": {
+      "main": [
+        [
+          {
+            "node": "Hermes Chat Brain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hermes Chat Brain": {
+      "main": [
+        [
+          {
+            "node": "Respond to App",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "description": "Powers the Noellyne Bet in-app AI chat (AI_CHAT_WEBHOOK)."
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
