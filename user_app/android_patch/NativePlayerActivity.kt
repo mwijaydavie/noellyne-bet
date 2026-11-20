@@ -149,6 +149,8 @@ class NativePlayerActivity : Activity() {
     private lateinit var compactTime: TextView
     private lateinit var compactSeek: SeekBar
     private lateinit var displayModeButton: TextView
+    private lateinit var audioStage: LinearLayout
+    private var audioOnlyMode = false
     private lateinit var theatrePanel: ScrollView
     private lateinit var theatreBody: LinearLayout
     private lateinit var settingsPanel: LinearLayout
@@ -297,6 +299,13 @@ class NativePlayerActivity : Activity() {
         selectedServerIndex = intent.getIntExtra("selectedIndex", 0)
             .coerceIn(0, sources.length() - 1)
 
+        if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 91)
+            } catch (_: Throwable) {
+            }
+        }
+
         val portraitStart = sources.optJSONObject(selectedServerIndex)?.optBoolean("portraitStart", false) == true
         // Start with the compact top-aligned portrait player; Rotate enters
         // full landscape playback. Preserve a manual turn across recreation.
@@ -421,6 +430,11 @@ class NativePlayerActivity : Activity() {
             contentDescription = "Play in mini player"
             setOnClickListener { enterMiniPlayer() }
         }
+        val audioButton = overlayButton("\u266A").apply {
+            contentDescription = "Audio only mode"
+            setOnClickListener { setAudioOnly(!audioOnlyMode) }
+        }
+        topBar.addView(audioButton, LinearLayout.LayoutParams(dp(36), dp(36)))
         topBar.addView(miniButton, LinearLayout.LayoutParams(dp(36), dp(36)))
         topBar.addView(rotateButton, LinearLayout.LayoutParams(dp(36), dp(36)))
 
@@ -676,6 +690,41 @@ class NativePlayerActivity : Activity() {
             }
         )
 
+        // Audio-only stage: video decoding is switched off, the picture area
+        // becomes a coral equalizer so data and battery are saved.
+        audioStage = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.rgb(11, 10, 10))
+            visibility = View.GONE
+        }
+        audioStage.addView(AudioStageView(this), LinearLayout.LayoutParams(
+            dp(150), dp(58)
+        ))
+        audioStage.addView(TextView(this).apply {
+            text = "AUDIO MODE \u00B7 SAVING DATA"
+            textSize = 9.5f
+            letterSpacing = 0.16f
+            setTextColor(Color.rgb(232, 130, 103))
+            setPadding(0, dp(14), 0, dp(14))
+        })
+        audioStage.addView(TextView(this).apply {
+            text = "Back to video"
+            textSize = 12f
+            setTextColor(Color.rgb(245, 239, 234))
+            setPadding(dp(18), dp(9), dp(18), dp(9))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(999).toFloat()
+                setColor(Color.argb(255, 35, 32, 32))
+                setStroke(dp(1), Color.argb(90, 232, 130, 103))
+            }
+            setOnClickListener { setAudioOnly(false) }
+        })
+        videoHost.addView(audioStage, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+
         // Portrait companion panel: the 16:9 picture stays pinned to the top
         // and everything below it becomes the Match Theatre.
         buildTheatrePanel(root)
@@ -717,7 +766,40 @@ class NativePlayerActivity : Activity() {
             safeHideSystemBars()
             root.requestApplyInsets()
             playServer(selectedServerIndex)
+            // Keep audio alive if the viewer locks the screen or leaves.
+            PlaybackAudioService.start(
+                this,
+                intent.getStringExtra("title").orEmpty().ifBlank { "Noellyne Bet" },
+                "Live stream"
+            )
         }
+    }
+
+    /**
+     * Headphones mode: keep the stream audio and the foreground service alive
+     * while the video surface is released, exactly like YouTube's audio-only
+     * playback.
+     */
+    private fun setAudioOnly(enabled: Boolean) {
+        audioOnlyMode = enabled
+        if (::playerView.isInitialized) {
+            playerView.visibility = if (enabled) View.INVISIBLE else View.VISIBLE
+        }
+        if (::audioStage.isInitialized) {
+            audioStage.visibility = if (enabled) View.VISIBLE else View.GONE
+            for (index in 0 until audioStage.childCount) {
+                val child = audioStage.getChildAt(index)
+                if (child is AudioStageView) child.setActive(enabled)
+            }
+        }
+        if (enabled) {
+            PlaybackAudioService.start(
+                this,
+                intent.getStringExtra("title").orEmpty().ifBlank { "Noellyne Bet" },
+                "Audio only \u00B7 saving data"
+            )
+        }
+        setControlsVisible(true)
     }
 
     override fun onUserLeaveHint() {
@@ -894,6 +976,7 @@ class NativePlayerActivity : Activity() {
                 .setHandleAudioBecomingNoisy(true)
                 .build()
 
+            PlaybackAudioBridge.player = exo
             val generation = playbackGeneration
             fun currentPlayback() = generation == playbackGeneration && player === exo && pendingFallback == null &&
                 !isFinishing && !isDestroyed
@@ -1959,6 +2042,8 @@ class NativePlayerActivity : Activity() {
     }
 
     override fun onDestroy() {
+        PlaybackAudioService.stop(this)
+        PlaybackAudioBridge.player = null
         clearControlsHideTimer()
         sourceSessions.close(sessionId)
         if (activePlayer.get() === this) activePlayer.clear()
