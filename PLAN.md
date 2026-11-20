@@ -188,7 +188,14 @@ Each sprint ends with a working preview you can tap through on your phone.
 - [x] Branded launcher icon (`assets/noellyne_icon.*`) + Android label "Noellyne Bet" in CI.
 - [x] **`build-noellyne-apk.yml`** — push builds a release APK, uploads an artifact and publishes a GitHub Release with a direct download link.
 
-### Next (Sprint 3)
+### Sprint 3 — Logos, Hermes feed & polish 🚧
+
+- [x] **Every team always has a badge** — `TeamCrest`: feed crest → curated club colours (90+ clubs incl. Simba/Yanga/Azam, African & European leagues) → deterministic hue + initials fallback. Used by the hero card, match cards.
+- [x] Daily Picks carries Hermes metadata: `sport` (⚽/🏀 icon), `tier`, `units`, `edge_pct`, `injury_note` — rendered as chips on the card.
+- [x] `n8n/noellyne-daily-picks-branch.json` — drop-in n8n branch (2 nodes) that mirrors `Quant Model v3.1` picks into `daily_picks`; Telegram flow untouched.
+- [x] `daily_picks` schema extended; unique index switched to plain `(match, pick, kickoff_time)` so PostgREST upserts are idempotent across 09/14/19 runs.
+
+### Next (Sprint 4)
 
 - [ ] Match Theatre: obsidian player surface + draggable pick sheet.
 - [ ] Favorites / history / kickoff reminders.

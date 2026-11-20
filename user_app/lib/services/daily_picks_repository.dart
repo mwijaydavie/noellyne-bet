@@ -23,7 +23,8 @@ class DailyPicksRepository {
           .from('daily_picks')
           .select(
             'id,match,league,pick,odds,confidence,reasoning,stream_id,'
-            'kickoff_time,tags,slip_code',
+            'kickoff_time,tags,slip_code,sport,tier,units,edge_pct,'
+            'injury_note',
           )
           .eq('status', 'published')
           .order('kickoff_time', ascending: true)

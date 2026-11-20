@@ -24,6 +24,13 @@ Warm editorial glassmorphism — alabaster canvas, terracotta ambient glow, fros
 | `preview/` | Static design preview (no Flutter SDK needed) |
 | `docs/` | Integration docs — start with [`docs/N8N_DAILY_PICKS.md`](docs/N8N_DAILY_PICKS.md) |
 
+## Team badges
+
+`TeamCrest` guarantees a badge for **every** fixture: the feed's crest when it
+has one, otherwise a curated club-colour crest (90+ clubs, including NBC Premier
+League sides), otherwise a deterministic hue + initials. Nobody ever sees a
+grey shield.
+
 ## Daily Picks (n8n)
 
 The Daily Bets feed renders structured JSON from the n8n pipeline as filterable cards with odds, confidence, AI reasoning and a one-tap deep-link into the live player. Contract and wiring: [`docs/N8N_DAILY_PICKS.md`](docs/N8N_DAILY_PICKS.md).

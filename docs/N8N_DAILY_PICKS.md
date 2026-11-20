@@ -38,6 +38,11 @@ n8n sends **one JSON object per pick** (or an array — loop and POST each).
 | `kickoff_time` | ISO-8601 | — | Drives ordering + "today" grouping |
 | `tags` | string[] | — | `sure2+`, `btts`, `over2.5`, `high-odds` power the filters |
 | `slip_code` | text | — | Shown/copyable in Match Theatre |
+| `sport` | text | — | `football` \| `basketball` (drives the card icon) |
+| `tier` | text | — | Hermes tier, e.g. `🟢 STRONG` |
+| `units` | numeric | — | Recommended stake (1u = 1% bankroll) |
+| `edge_pct` | numeric | — | Model edge over implied probability |
+| `injury_note` | text | — | NBA Injury Guard note (who is OUT) |
 | `status` | text | — | `draft` \| `published` \| `settled` \| `void` |
 
 **Ordering:** published picks are ordered by `kickoff_time` ascending.
@@ -66,6 +71,69 @@ HTTP Request node:
 2. n8n POSTs the array to it; the function validates, normalises tags and upserts.
 
 This keeps the service-role key entirely out of n8n.
+
+## 3b. From YOUR Hermes v5.0 workflow (drop-in)
+
+Your existing Telegram workflow is the brain — **don't rewrite it**. Keep the
+`Quant Model v3.1 → Format Message → Send Telegram` path exactly as it is and
+add one branch that mirrors the same picks into the app.
+
+**File:** [`n8n/noellyne-daily-picks-branch.json`](../n8n/noellyne-daily-picks-branch.json)
+
+### Wiring (4 steps)
+
+1. n8n → **Workflows → Import from File** → pick the JSON above.
+2. In your Hermes workflow, drag a connection from **`Quant Model v3.1`** to the
+   imported **`Map Hermes → Noellyne`** node (the Telegram chain keeps running —
+   one node output can fan out to many branches).
+3. In n8n, add an environment variable
+   `SUPABASE_SERVICE_ROLE_KEY=<your service role key>`
+   (Settings → Variables, or your `.env` / Docker env).
+4. Run the schedule once manually — the app's **Daily Picks** tab fills up.
+
+### What the mapping does
+
+| Hermes field (`footballPicks` / `basketballPicks`) | `daily_picks` column |
+|---|---|
+| `match` ("Arsenal vs Chelsea") | `match` |
+| `league` ("⚽ EPL" → emoji stripped) | `league` |
+| `market` ("DC 1X", "OVER 2.5 Pts") | `pick` |
+| `odds` | `odds` |
+| `probPct` (84.3 → 84) | `confidence` |
+| `explain` + `injuryNote` | `reasoning` |
+| `kickoffISO` | `kickoff_time` |
+| `tier` ("🟢 STRONG") | `tier` |
+| `units` ("2.50u") | `units` |
+| `edgePct` | `edge_pct` |
+| `injuryNote` | `injury_note` |
+| `sport` | `sport` (football / basketball → ⚽ / 🏀 icon) |
+| `match` + `market` (hashed) | `slip_code` (`NLY-XXXXX`, copyable) |
+| derived from the pick | `tags` (`sure2+`, `strong`, `over2.5`, `under2.5`, `btts`, `high-odds`) |
+
+`tags` are what power the in-app filter pills, so your `ANCHOR` picks land in
+**Sure 2+** automatically and `OVER/UNDER` markets land in the right chip.
+
+### Why this beats Telegram-only
+
+| Telegram post | Noellyne Bet |
+|---|---|
+| Linear text, scroll to find a pick | Filter pills: Sure 2+ / BTTS / High Odds |
+| Odds + confidence buried in prose | Nested stat row, tabular numerals |
+| "Watch it on…" → manual search | **Watch Live** deep-links by `stream_id` |
+| Re-sharing screenshots | One-tap **Copy slip code** (`NLY-…`) |
+| History scroll | Persistent feed ordered by kickoff |
+
+### Idempotency
+
+The unique index on `(match, pick, kickoff_time)` plus
+`Prefer: resolution=merge-duplicates` means the 09:00 / 14:00 / 19:00 runs
+**update** the same row instead of duplicating the card.
+
+### Linking a stream (optional but powerful)
+
+If you also store the fixture in `matches`, set `stream_id` to that row's id in
+the mapping node (e.g. look it up by team names) and the app's **Watch Live**
+button jumps straight into the player.
 
 ## 4. n8n flow sketch
 

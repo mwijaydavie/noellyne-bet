@@ -17,6 +17,9 @@
 --
 -- Auth: n8n calls the `ingest-daily-picks` Edge Function with a shared
 -- secret header, OR writes with the service-role key. Viewers only read.
+--
+-- Hermes mapping: footballPicks/basketballPicks → one row each
+-- (sport, tier, units, edge_pct, injury_note carry the quant metadata).
 
 create table if not exists public.daily_picks (
   id uuid primary key default gen_random_uuid(),
@@ -31,6 +34,13 @@ create table if not exists public.daily_picks (
   kickoff_time timestamptz,
   tags text[] not null default '{}',
   slip_code text,
+  -- Hermes (n8n) extras
+  sport text not null default 'football'
+    check (sport in ('football', 'basketball')),
+  tier text,
+  units numeric(4, 2),
+  edge_pct numeric(5, 1),
+  injury_note text,
   status text not null default 'published'
     check (status in ('draft', 'published', 'settled', 'void')),
   result text check (result in ('won', 'lost', 'void')),
@@ -45,10 +55,11 @@ create index if not exists daily_picks_feed_idx
 create index if not exists daily_picks_created_idx
   on public.daily_picks (created_at desc);
 
--- Dedupe guard for repeated n8n runs (same match + pick + kickoff day).
+-- Dedupe guard for repeated n8n runs. Plain columns so PostgREST can upsert
+-- with `?on_conflict=match,pick,kickoff_time` (expression indexes cannot be
+-- used as conflict targets).
 create unique index if not exists daily_picks_dedupe_idx
-  on public.daily_picks (match, pick, (kickoff_time::date))
-  where status = 'published';
+  on public.daily_picks (match, pick, kickoff_time);
 
 alter table public.daily_picks enable row level security;
 

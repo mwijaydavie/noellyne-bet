@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'resilient_logo.dart';
+import 'team_crest.dart';
 import 'package:intl/intl.dart';
 
 class PremiumMatchCard extends StatelessWidget {
@@ -257,38 +257,11 @@ class _Team extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final hasLogo = logo != null && logo!.trim().isNotEmpty;
-
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Container(
-          width: 46,
-          height: 46,
-          padding: const EdgeInsets.all(6),
-          decoration: BoxDecoration(
-            color: colors.surfaceContainerHighest.withValues(alpha: .72),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: colors.outlineVariant.withValues(alpha: .28),
-            ),
-          ),
-          child: hasLogo
-              ? ResilientLogo(
-                  value: logo!,
-                  fallback: Icon(
-                    Icons.shield_outlined,
-                    color: colors.onSurfaceVariant,
-                    size: 23,
-                  ),
-                )
-              : Icon(
-                  Icons.shield_outlined,
-                  color: colors.onSurfaceVariant,
-                  size: 28,
-                ),
-        ),
+        // Always renders a badge: feed crest → curated colours → initials.
+        TeamCrest(name: name, logoUrl: logo, size: 46),
         const SizedBox(height: 8),
         Text(
           name,

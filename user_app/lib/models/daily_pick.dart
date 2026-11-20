@@ -15,6 +15,11 @@ class DailyPick {
     this.kickoffTime,
     this.tags = const [],
     this.slipCode,
+    this.sport = 'football',
+    this.tier = '',
+    this.units = 0,
+    this.edgePct = 0,
+    this.injuryNote = '',
   });
 
   final String id;
@@ -39,7 +44,23 @@ class DailyPick {
   /// Shareable bet-slip code shown in Match Theatre.
   final String? slipCode;
 
+  /// `football` | `basketball` (Hermes dual-sport pipeline).
+  final String sport;
+
+  /// Quant tier from the model, e.g. "🟢 STRONG".
+  final String tier;
+
+  /// Recommended stake in units (1u = 1% of bankroll).
+  final double units;
+
+  /// Model edge over the implied market probability, in %.
+  final double edgePct;
+
+  /// NBA Injury Guard note (who is OUT).
+  final String injuryNote;
+
   bool get isHighConfidence => confidence >= 80;
+  bool get isBasketball => sport == 'basketball';
 
   factory DailyPick.fromJson(Map<String, dynamic> json) {
     final rawTags = json['tags'];
@@ -60,6 +81,11 @@ class DailyPick {
           ? rawTags.map((t) => '$t'.toLowerCase().trim()).toList()
           : const [],
       slipCode: _asNullableString(json['slip_code'] ?? json['slipCode']),
+      sport: _asNullableString(json['sport'])?.toLowerCase() ?? 'football',
+      tier: '${json['tier'] ?? ''}'.trim(),
+      units: _asDouble(json['units']),
+      edgePct: _asDouble(json['edge_pct'] ?? json['edgePct']),
+      injuryNote: '${json['injury_note'] ?? json['injuryNote'] ?? ''}'.trim(),
     );
   }
 

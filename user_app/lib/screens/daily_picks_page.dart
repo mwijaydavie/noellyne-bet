@@ -280,7 +280,9 @@ class PickCard extends StatelessWidget {
           ],
           const SizedBox(height: 12),
           _InnerRow(
-            icon: Icons.sports_soccer_rounded,
+            icon: pick.isBasketball
+                ? Icons.sports_basketball_rounded
+                : Icons.sports_soccer_rounded,
             title: pick.pick,
             subtitle: 'Market & Pick',
             trailing: Row(
@@ -324,12 +326,41 @@ class PickCard extends StatelessWidget {
               ],
             ),
           ),
+          if (pick.units > 0 ||
+              pick.edgePct > 0 ||
+              pick.injuryNote.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                if (pick.tier.isNotEmpty)
+                  _MetaChip(icon: Icons.workspace_premium_rounded, label: pick.tier),
+                if (pick.units > 0)
+                  _MetaChip(
+                    icon: Icons.savings_rounded,
+                    label: '${pick.units.toStringAsFixed(2)}u stake',
+                  ),
+                if (pick.edgePct > 0)
+                  _MetaChip(
+                    icon: Icons.trending_up_rounded,
+                    label: '+${pick.edgePct.toStringAsFixed(1)}% edge',
+                  ),
+                if (pick.injuryNote.isNotEmpty)
+                  _MetaChip(
+                    icon: Icons.medical_services_rounded,
+                    label: pick.injuryNote,
+                    warn: true,
+                  ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
                 child: PillButton(
-                  label: 'Watch Live',
+                  label: pick.isBasketball ? 'Watch Game' : 'Watch Live',
                   icon: Icons.play_arrow_rounded,
                   onPressed: onWatch,
                   height: 44,
@@ -423,6 +454,61 @@ class _InnerRow extends StatelessWidget {
             ),
           ),
           if (trailing != null) trailing!,
+        ],
+      ),
+    );
+  }
+}
+
+class _MetaChip extends StatelessWidget {
+  const _MetaChip({
+    required this.icon,
+    required this.label,
+    this.warn = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool warn;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    final accent = warn ? NoellyneColors.liveInk : scheme.onSurfaceVariant;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: warn
+            ? (dark
+                ? NoellyneColors.glowDark.withValues(alpha: .16)
+                : NoellyneColors.liveBg)
+            : (dark ? NoellyneColors.innerDark : NoellyneColors.innerLight),
+        borderRadius: BorderRadius.circular(9999),
+        border: Border.all(
+          color: dark
+              ? NoellyneColors.glassBorderDark
+              : const Color(0x66FFFFFF),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 11.5, color: accent),
+          const SizedBox(width: 4),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 190),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w700,
+                color: accent,
+              ),
+            ),
+          ),
         ],
       ),
     );

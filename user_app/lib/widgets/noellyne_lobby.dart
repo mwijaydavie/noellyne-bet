@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app_theme.dart';
 import '../design/noellyne_ui.dart';
-import 'resilient_logo.dart';
+import 'team_crest.dart';
 
 /// Lobby filter applied to the live feed list.
 enum LobbyFilter {
@@ -250,33 +250,10 @@ class _TeamBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final value = (logo ?? '').trim();
     return Column(
       children: [
-        Container(
-          width: 56,
-          height: 56,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: Theme.of(context).brightness == Brightness.dark
-                  ? NoellyneColors.glassBorderDark
-                  : Colors.white.withValues(alpha: .8),
-              width: 1.5,
-            ),
-          ),
-          padding: const EdgeInsets.all(6),
-          child: value.isEmpty
-              ? Icon(Icons.shield_outlined, size: 22, color: scheme.onSurfaceVariant)
-              : ResilientLogo(
-                  value: value,
-                  fallback: Icon(
-                    Icons.shield_outlined,
-                    size: 22,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-        ),
+        // Always renders a badge: feed crest → curated colours → initials.
+        TeamCrest(name: name, logoUrl: logo, size: 56),
         const SizedBox(height: 8),
         Text(
           name,
