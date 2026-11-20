@@ -12,21 +12,36 @@
 class NoellyneConfig {
   const NoellyneConfig._();
 
-  /// Supabase is OPTIONAL. Leave both empty (the default) and the app still
-  /// runs: the match feed, playback and AI chat work without it. Only
-  /// realtime updates and cloud Daily Picks need a project.
+  /// Supabase is ON by default — it is not decoration, it powers:
+  ///   • realtime refresh: websocket on `matches` + `stream_links`, so a new
+  ///     match or a fixed line appears in ~1s instead of the 60s poll;
+  ///   • a second authoritative match source (Postgres) that is raced against
+  ///     the Cloudflare API when a network blocks one route;
+  ///   • channel group ordering (`channel_group_order`);
+  ///   • the cloud Daily Picks feed written by n8n.
+  ///
+  /// Every call is guarded, so the app still runs if the project is
+  /// unreachable — you just lose freshness and cloud picks. Pass empty
+  /// defines (`SUPABASE_URL=""`) to disable it entirely.
   static const supabaseUrl = String.fromEnvironment(
     'SUPABASE_URL',
-    defaultValue: '',
+    defaultValue: 'https://woggzixprvyjnfjzsglz.supabase.co',
   );
 
   static const supabaseAnonKey = String.fromEnvironment(
     'SUPABASE_ANON_KEY',
-    defaultValue: '',
+    defaultValue: 'sb_publishable_ka-rZxHdJUMYng6WJDDQUg_ZcWZJl3O',
   );
 
   static bool get supabaseEnabled =>
       supabaseUrl.trim().isNotEmpty && supabaseAnonKey.trim().isNotEmpty;
+
+  /// Shown in diagnostics/More so the operator can see which project is live.
+  static String get supabaseLabel {
+    if (!supabaseEnabled) return 'disabled (local only)';
+    final uri = Uri.tryParse(supabaseUrl);
+    return uri?.host ?? supabaseUrl;
+  }
 
   /// n8n webhook that powers the in-app Noellyne AI chat. Point this at a
   /// `Webhook` node wired to your Hermes prompt + provider fallback chain.

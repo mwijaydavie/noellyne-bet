@@ -47,10 +47,13 @@ node preview/server.mjs                                # design preview
 
 | Define | Default | Purpose |
 |---|---|---|
-| `SUPABASE_URL` | current project | Auth, realtime, Daily Picks |
-| `SUPABASE_ANON_KEY` | publishable key | Supabase client |
+| `SUPABASE_URL` | upstream project (on) | Realtime match updates, DB fallback source, channel ordering, cloud Daily Picks |
+| `SUPABASE_ANON_KEY` | publishable key | Supabase client (RLS-protected, safe to ship) |
 | `PUBLIC_API_BASE` | Cloudflare feed | Match list |
 | `UPDATE_MANIFEST_URL` | our `viewer-latest/latest.json` | In-app updater |
+
+Supabase is **on by default** and every call is guarded, so an unreachable
+project degrades to the public feed + 60s polling instead of breaking the app.
 
 In-app updates are served from **this repo's** `viewer-latest` release; the CI
 job rewrites `latest.json` (version, build, sha256, size) on every APK build.
