@@ -106,6 +106,18 @@ jobs:
           if 'PlaybackAudioService' not in s:
               s = s.replace('    </application>', audio_service + '    </application>')
 
+          # OAuth PKCE deep-link callback (`noellyne://login-callback`) on MainActivity.
+          auth_intent = (
+              '            <intent-filter>\n'
+              '                <action android:name="android.intent.action.VIEW" />\n'
+              '                <category android:name="android.intent.category.DEFAULT" />\n'
+              '                <category android:name="android.intent.category.BROWSABLE" />\n'
+              '                <data android:scheme="noellyne" android:host="login-callback" />\n'
+              '            </intent-filter>\n'
+          )
+          if 'android:scheme="noellyne"' not in s:
+              s = s.replace('        </activity>', auth_intent + '        </activity>', 1)
+
           # Dock icons (vector, so they stay crisp on every density).
           drawable_dir = Path('android/app/src/main/res/drawable')
           drawable_dir.mkdir(parents=True, exist_ok=True)

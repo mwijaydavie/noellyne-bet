@@ -5,8 +5,8 @@ import 'package:flutter/services.dart';
 
 import '../app_theme.dart';
 import '../design/noellyne_ui.dart';
-import '../noellyne_config.dart';
 import '../services/noellyne_ai_service.dart';
+import '../services/noellyne_auth_service.dart';
 
 /// Noellyne AI — a real chat view over the n8n betting brain, with an offline
 /// fallback so it never looks broken when the webhook isn't wired yet.
@@ -194,36 +194,62 @@ class _AiChatPageState extends State<AiChatPage> {
                     color: scheme.onSurface,
                   ),
                 ),
-                Row(
-                  children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: _service.isConfigured
-                            ? NoellyneColors.winDark
-                            : NoellyneColors.glowDeep,
-                      ),
-                    ),
-                    const SizedBox(width: 5),
-                    Text(
-                      _service.isConfigured
-                          ? 'Noellyne AI live · n8n'
-                          : 'offline brain · add webhook',
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
+                ValueListenableBuilder<NoellyneUser?>(
+                  valueListenable: NoellyneAuthService.instance.user,
+                  builder: (context, account, _) {
+                    final statusLabel = !_service.isConfigured
+                        ? 'offline brain · add webhook'
+                        : account == null
+                            ? 'Noellyne AI live · Guest (12/hr)'
+                            : account.isVipOwner
+                                ? 'VIP Unlimited · Noellyne AI'
+                                : 'Member · Noellyne AI (25/hr)';
+                    return Row(
+                      children: [
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: _service.isConfigured
+                                ? NoellyneColors.winDark
+                                : NoellyneColors.glowDeep,
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          statusLabel,
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: account?.isVipOwner == true
+                                ? NoellyneColors.winDark
+                                : scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ],
             ),
           ],
         ),
         actions: [
+          ValueListenableBuilder<NoellyneUser?>(
+            valueListenable: NoellyneAuthService.instance.user,
+            builder: (context, account, _) {
+              if (account != null) return const SizedBox.shrink();
+              return IconButton(
+                onPressed: () {
+                  HapticFeedback.lightImpact();
+                  NoellyneAuthService.instance.signInWithGoogle();
+                },
+                icon: const Icon(Icons.login_rounded, size: 19),
+                tooltip: 'Sign in with Google',
+              );
+            },
+          ),
           if (widget.onOpenPicks != null)
             TextButton.icon(
               onPressed: widget.onOpenPicks,

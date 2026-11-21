@@ -8,6 +8,8 @@ import '../channel_library.dart';
 import '../design/noellyne_skeleton.dart';
 import '../design/noellyne_ui.dart';
 import '../noellyne_config.dart';
+import '../services/daily_picks_repository.dart';
+import '../services/noellyne_auth_service.dart';
 import '../widgets/theme_mode_button.dart';
 import 'reminders_page.dart';
 
@@ -165,10 +167,12 @@ class _SettingsPageState extends State<SettingsPage> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('nca_channel_favorites_v1');
     await prefs.remove('nca_channel_recent_v1');
+    await prefs.remove('noellyne_daily_picks_board_v1');
+    DailyPicksRepository.clearCache();
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('Channel data cleared')));
+      ..showSnackBar(const SnackBar(content: Text('Cached data cleared')));
   }
 
   @override
@@ -189,6 +193,8 @@ class _SettingsPageState extends State<SettingsPage> {
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(14, 8, 14, 32),
                 children: [
+                  const _AccountCard(),
+                  const SizedBox(height: 12),
                   _ProfileCard(
                     name: _name,
                     pinned: _pinned,
@@ -306,9 +312,9 @@ class _SettingsPageState extends State<SettingsPage> {
                         const Divider(height: 1, indent: 16, endIndent: 16),
                         ListTile(
                           leading: const _TileIcon(Icons.cleaning_services_rounded),
-                          title: const _TileTitle('Clear channel data'),
+                          title: const _TileTitle('Clear cached data'),
                           subtitle: const _TileSub(
-                            'Favorites and recent channels on this device',
+                            'Favorites, recent channels and cached picks',
                           ),
                           trailing: const Icon(Icons.chevron_right_rounded),
                           onTap: _clearData,
@@ -377,6 +383,200 @@ class _SettingsPageState extends State<SettingsPage> {
                 ],
               ),
             ),
+    );
+  }
+}
+
+class _AccountCard extends StatelessWidget {
+  const _AccountCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final auth = NoellyneAuthService.instance;
+
+    return ValueListenableBuilder<NoellyneUser?>(
+      valueListenable: auth.user,
+      builder: (context, account, _) {
+        return ValueListenableBuilder<bool>(
+          valueListenable: auth.busy,
+          builder: (context, busy, _) {
+            return ValueListenableBuilder<String?>(
+              valueListenable: auth.lastError,
+              builder: (context, err, _) {
+                if (account == null) {
+                  return GlassCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            const _TileIcon(Icons.verified_user_outlined),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Noellyne Account',
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                      color: scheme.onSurface,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Sign in with Google for 25 AI chats/hr and VIP access',
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w600,
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (err != null && err.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            err,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: scheme.error,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        FilledButton.icon(
+                          onPressed: busy
+                              ? null
+                              : () {
+                                  HapticFeedback.lightImpact();
+                                  auth.signInWithGoogle();
+                                },
+                          icon: busy
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(Icons.login_rounded, size: 18),
+                          label: Text(
+                            busy ? 'Opening Google...' : 'Sign in with Google',
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                final isVip = account.isVipOwner;
+                return GlassCard(
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: (isVip
+                                  ? NoellyneColors.winDark
+                                  : NoellyneColors.glowDeep)
+                              .withValues(alpha: .16),
+                        ),
+                        child: Icon(
+                          isVip
+                              ? Icons.verified_rounded
+                              : Icons.account_circle_rounded,
+                          size: 24,
+                          color: isVip
+                              ? NoellyneColors.winDark
+                              : NoellyneColors.glowDeep,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    account.displayName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 14.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: scheme.onSurface,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 7,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: (isVip
+                                            ? NoellyneColors.winDark
+                                            : NoellyneColors.glowDeep)
+                                        .withValues(alpha: .16),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  child: Text(
+                                    isVip ? 'VIP UNLIMITED' : 'MEMBER',
+                                    style: TextStyle(
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w800,
+                                      letterSpacing: .5,
+                                      color: isVip
+                                          ? NoellyneColors.winDark
+                                          : NoellyneColors.glowDeep,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              account.email,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          HapticFeedback.lightImpact();
+                          auth.signOut();
+                        },
+                        child: const Text('Sign out'),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
     );
   }
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -11,6 +13,9 @@ enum _PicksSection { picks, results }
 
 /// Daily Bets feed — n8n Hermes picks & settled ROI rendered as interactive
 /// cards (zero emojis in structural UI, vector icons + design tokens only).
+///
+/// Uses Stale-While-Revalidate (L1 RAM + L2 disk cache): revisiting the tab or
+/// hitting a flaky mobile network NEVER blanks previously loaded picks.
 class DailyPicksPage extends StatefulWidget {
   const DailyPicksPage({
     super.key,
@@ -27,20 +32,75 @@ class DailyPicksPage extends StatefulWidget {
 }
 
 class _DailyPicksPageState extends State<DailyPicksPage> {
-  late Future<DailyPicksBoard> _future;
-  _PicksSection _section = _PicksSection.picks;
-  PickFilter _filter = PickFilter.all;
+  static _PicksSection _lastSection = _PicksSection.picks;
+  static PickFilter _lastFilter = PickFilter.all;
+
+  DailyPicksBoard? _board;
+  bool _initialLoading = true;
+  bool _refreshing = false;
+  _PicksSection _section = _lastSection;
+  PickFilter _filter = _lastFilter;
 
   @override
   void initState() {
     super.initState();
-    _future = widget.repository.fetchBoard();
+    final mem = widget.repository.peekCachedBoard();
+    if (mem != null && mem.hasData) {
+      _board = mem;
+      _initialLoading = false;
+    }
+    unawaited(_bootstrap());
   }
 
-  Future<void> _refresh() async {
-    final next = widget.repository.fetchBoard();
-    setState(() => _future = next);
-    await next;
+  Future<void> _bootstrap() async {
+    // 1. Cold-start disk restore so picks appear immediately even offline.
+    if (_board == null) {
+      final disk = await widget.repository.loadCachedBoard();
+      if (!mounted) return;
+      if (disk != null && disk.hasData) {
+        setState(() {
+          _board = disk;
+          _initialLoading = false;
+        });
+      }
+    }
+
+    // 2. Skip DB round-trip if memory cache is still fresh (< 3 min).
+    if (widget.repository.isCacheFresh && _board != null) {
+      if (_initialLoading && mounted) {
+        setState(() => _initialLoading = false);
+      }
+      return;
+    }
+
+    // 3. Revalidate silently in background without blanking existing cards.
+    await _refresh(force: false);
+  }
+
+  Future<void> _refresh({bool force = true}) async {
+    if (_refreshing) return;
+    if (mounted) {
+      setState(() {
+        _refreshing = true;
+        if (_board == null) _initialLoading = true;
+      });
+    }
+    final next = await widget.repository.fetchBoard(force: force);
+    if (!mounted) return;
+    setState(() {
+      // Never wipe an already-loaded board with an empty failed response.
+      if (next.hasData || _board == null || next.errorMessage == null) {
+        _board = next;
+      } else {
+        _board = _board!.copyWith(
+          fromCache: true,
+          syncNotice: next.syncNotice ??
+              'Mtandao umecheza — unaona picks zilizohifadhiwa.',
+        );
+      }
+      _initialLoading = false;
+      _refreshing = false;
+    });
   }
 
   void _toast(String message) {
@@ -68,14 +128,39 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
     openAiChat(context, initialPrompt: 'Nina 10,000 leo');
   }
 
+  String _subtitleText() {
+    final b = _board;
+    if (b == null || b.fetchedAt == null) {
+      return 'Hermes Sports AI · Football & NBA';
+    }
+    final mins = DateTime.now().difference(b.fetchedAt!).inMinutes;
+    final ageLabel = mins <= 0
+        ? 'just now'
+        : mins < 60
+            ? '${mins}m ago'
+            : '${(mins / 60).floor()}h ago';
+    if (b.syncNotice != null) {
+      return 'Offline cache · Updated $ageLabel';
+    }
+    return 'Hermes Sports AI · Updated $ageLabel';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final board =
+        _board ?? const DailyPicksBoard(published: [], settled: []);
+    final activeList = _section == _PicksSection.picks
+        ? board.published
+        : board.settled;
+    final filtered =
+        activeList.where((p) => _filter.matches(p)).toList(growable: false);
+
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
         toolbarHeight: 66,
         titleSpacing: 0,
-        title: const _Header(),
+        title: _Header(subtitle: _subtitleText()),
         actions: [
           IconButton(
             onPressed: _openStakeSplit,
@@ -83,179 +168,176 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
             tooltip: 'BetPawa stake split',
           ),
           IconButton(
-            onPressed: _refresh,
+            onPressed: _refreshing ? null : () => _refresh(force: true),
             icon: const Icon(Icons.refresh_rounded),
             tooltip: 'Refresh picks',
           ),
           const SizedBox(width: 4),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Divider(
-            height: 1,
-            color: Theme.of(context)
-                .colorScheme
-                .outlineVariant
-                .withValues(alpha: .35),
-          ),
+          preferredSize: const Size.fromHeight(2),
+          child: _refreshing && !_initialLoading
+              ? const LinearProgressIndicator(
+                  minHeight: 2,
+                  color: NoellyneColors.glowDeep,
+                  backgroundColor: Colors.transparent,
+                )
+              : Divider(
+                  height: 1,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .outlineVariant
+                      .withValues(alpha: .35),
+                ),
         ),
       ),
       extendBody: true,
       bottomNavigationBar: const NoellyneDockBar(current: NoellyneTab.picks),
       body: NoellyneBackground(
-        child: Column(
-          children: [
-            Expanded(
-              child: FutureBuilder<DailyPicksBoard>(
-                future: _future,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const _PicksSkeleton();
-                  }
-                  final board = snapshot.data ??
-                      const DailyPicksBoard(published: [], settled: []);
-                  final activeList = _section == _PicksSection.picks
-                      ? board.published
-                      : board.settled;
-                  final filtered = activeList
-                      .where((p) => _filter.matches(p))
-                      .toList(growable: false);
-
-                  return RefreshIndicator(
-                    color: NoellyneColors.glowDeep,
-                    onRefresh: _refresh,
-                    child: CustomScrollView(
-                      physics: const AlwaysScrollableScrollPhysics(
-                        parent: BouncingScrollPhysics(),
+        child: _initialLoading
+            ? const _PicksSkeleton()
+            : RefreshIndicator(
+                color: NoellyneColors.glowDeep,
+                onRefresh: () => _refresh(force: true),
+                child: CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(
+                    parent: BouncingScrollPhysics(),
+                  ),
+                  slivers: [
+                    if (board.errorMessage != null && board.isEmpty)
+                      SliverToBoxAdapter(
+                        child: _ErrorState(
+                          message: board.errorMessage!,
+                          onRetry: () => _refresh(force: true),
+                        ),
+                      )
+                    else ...[
+                      if (board.syncNotice != null)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                            child: _CacheStatusBanner(
+                              message: board.syncNotice!,
+                              onRetry: () => _refresh(force: true),
+                            ),
+                          ),
+                        ),
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                          child: _SectionSwitch(
+                            selected: _section,
+                            picksCount: board.published.length,
+                            resultsCount: board.settled.length,
+                            onChanged: (s) {
+                              HapticFeedback.lightImpact();
+                              _lastSection = s;
+                              setState(() => _section = s);
+                            },
+                          ),
+                        ),
                       ),
-                      slivers: [
-                        if (board.errorMessage != null &&
-                            board.published.isEmpty &&
-                            board.settled.isEmpty)
-                          SliverToBoxAdapter(
-                            child: _ErrorState(
-                              message: board.errorMessage!,
-                              onRetry: _refresh,
-                            ),
-                          )
-                        else ...[
-                          SliverToBoxAdapter(
-                            child: Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                              child: _SectionSwitch(
-                                selected: _section,
-                                picksCount: board.published.length,
-                                resultsCount: board.settled.length,
-                                onChanged: (s) {
-                                  HapticFeedback.lightImpact();
-                                  setState(() => _section = s);
-                                },
+                      if (DailyPicksRepository.showsSampleData &&
+                          board.published.isNotEmpty &&
+                          _section == _PicksSection.picks)
+                        const SliverToBoxAdapter(
+                          child: Padding(
+                            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+                            child: _SampleBanner(),
+                          ),
+                        ),
+                      if (_section == _PicksSection.results &&
+                          board.settled.isNotEmpty)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding:
+                                const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                            child: _RoiSummaryCard(settled: board.settled),
+                          ),
+                        ),
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                          child: _FilterRail(
+                            selected: _filter,
+                            onSelected: (f) {
+                              HapticFeedback.lightImpact();
+                              _lastFilter = f;
+                              setState(() => _filter = f);
+                            },
+                          ),
+                        ),
+                      ),
+                      if (filtered.isEmpty)
+                        SliverToBoxAdapter(
+                          child: _EmptyPicks(
+                            isResults: _section == _PicksSection.results,
+                            onRefresh: () => _refresh(force: true),
+                          ),
+                        )
+                      else
+                        SliverPadding(
+                          padding:
+                              const EdgeInsets.fromLTRB(16, 0, 16, 120),
+                          sliver: SliverList.separated(
+                            itemCount: filtered.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 12),
+                            itemBuilder: (context, i) => RevealIn(
+                              delay: Duration(
+                                milliseconds: (35 * i).clamp(0, 280).toInt(),
                               ),
+                              child: _section == _PicksSection.results
+                                  ? _SettledPickCard(pick: filtered[i])
+                                  : PickCard(
+                                      pick: filtered[i],
+                                      onAskAi: () =>
+                                          _askAiAboutPick(filtered[i]),
+                                      onWatch: () {
+                                        final id = filtered[i].streamId;
+                                        if (id == null) {
+                                          _toast('No stream linked yet');
+                                          return;
+                                        }
+                                        if (widget.onWatchMatch == null) {
+                                          _toast(
+                                            'Open this pick from the Live tab',
+                                          );
+                                          return;
+                                        }
+                                        widget.onWatchMatch!.call(id);
+                                      },
+                                      onCopy: () async {
+                                        final code = filtered[i].slipCode;
+                                        if (code == null) {
+                                          _toast(
+                                            'No slip code for this pick',
+                                          );
+                                          return;
+                                        }
+                                        await Clipboard.setData(
+                                          ClipboardData(text: code),
+                                        );
+                                        _toast('Slip code $code copied');
+                                      },
+                                    ),
                             ),
                           ),
-                          if (DailyPicksRepository.showsSampleData &&
-                              board.published.isNotEmpty &&
-                              _section == _PicksSection.picks)
-                            const SliverToBoxAdapter(
-                              child: Padding(
-                                padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
-                                child: _SampleBanner(),
-                              ),
-                            ),
-                          if (_section == _PicksSection.results &&
-                              board.settled.isNotEmpty)
-                            SliverToBoxAdapter(
-                              child: Padding(
-                                padding:
-                                    const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                                child: _RoiSummaryCard(settled: board.settled),
-                              ),
-                            ),
-                          SliverToBoxAdapter(
-                            child: Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                              child: _FilterRail(
-                                selected: _filter,
-                                onSelected: (f) {
-                                  HapticFeedback.lightImpact();
-                                  setState(() => _filter = f);
-                                },
-                              ),
-                            ),
-                          ),
-                          if (filtered.isEmpty)
-                            SliverToBoxAdapter(
-                              child: _EmptyPicks(
-                                isResults: _section == _PicksSection.results,
-                                onRefresh: _refresh,
-                              ),
-                            )
-                          else
-                            SliverPadding(
-                              padding:
-                                  const EdgeInsets.fromLTRB(16, 0, 16, 120),
-                              sliver: SliverList.separated(
-                                itemCount: filtered.length,
-                                separatorBuilder: (_, _) =>
-                                    const SizedBox(height: 12),
-                                itemBuilder: (context, i) => RevealIn(
-                                  delay: Duration(
-                                    milliseconds: (35 * i).clamp(0, 280),
-                                  ),
-                                  child: _section == _PicksSection.results
-                                      ? _SettledPickCard(pick: filtered[i])
-                                      : PickCard(
-                                          pick: filtered[i],
-                                          onAskAi: () =>
-                                              _askAiAboutPick(filtered[i]),
-                                          onWatch: () {
-                                            final id = filtered[i].streamId;
-                                            if (id == null) {
-                                              _toast('No stream linked yet');
-                                              return;
-                                            }
-                                            if (widget.onWatchMatch == null) {
-                                              _toast(
-                                                'Open this pick from the Live tab',
-                                              );
-                                              return;
-                                            }
-                                            widget.onWatchMatch!.call(id);
-                                          },
-                                          onCopy: () async {
-                                            final code = filtered[i].slipCode;
-                                            if (code == null) {
-                                              _toast(
-                                                'No slip code for this pick',
-                                              );
-                                              return;
-                                            }
-                                            await Clipboard.setData(
-                                              ClipboardData(text: code),
-                                            );
-                                            _toast('Slip code $code copied');
-                                          },
-                                        ),
-                                ),
-                              ),
-                            ),
-                          const SliverToBoxAdapter(child: _Disclaimer()),
-                        ],
-                      ],
-                    ),
-                  );
-                },
+                        ),
+                      const SliverToBoxAdapter(child: _Disclaimer()),
+                    ],
+                  ],
+                ),
               ),
-            ),
-          ],
-        ),
       ),
     );
   }
 }
 
 class _Header extends StatelessWidget {
-  const _Header();
+  const _Header({required this.subtitle});
+
+  final String subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -275,7 +357,7 @@ class _Header extends StatelessWidget {
         ),
         const SizedBox(height: 1),
         Text(
-          'Hermes Sports AI · Football & NBA',
+          subtitle,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
@@ -285,6 +367,57 @@ class _Header extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _CacheStatusBanner extends StatelessWidget {
+  const _CacheStatusBanner({required this.message, required this.onRetry});
+
+  final String message;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: dark ? NoellyneColors.innerDark : NoellyneColors.innerLight,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: NoellyneColors.glowDeep.withValues(alpha: .35),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.cloud_off_rounded,
+            size: 16,
+            color: NoellyneColors.glowDeep,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: scheme.onSurface,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: onRetry,
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+            ),
+            child: const Text('Retry'),
+          ),
+        ],
+      ),
     );
   }
 }

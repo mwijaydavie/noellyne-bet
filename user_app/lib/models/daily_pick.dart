@@ -103,6 +103,31 @@ class DailyPick {
         if (result != null) 'result': result,
       };
 
+  /// Full lossless JSON representation for offline disk caching.
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'match': match,
+        'league': league,
+        'pick': pick,
+        'odds': odds,
+        'confidence': confidence,
+        'reasoning': reasoning,
+        'stream_id': streamId,
+        'kickoff_time': kickoffTime?.toUtc().toIso8601String(),
+        'tags': tags,
+        'slip_code': slipCode,
+        'sport': sport,
+        'tier': tier,
+        'units': units,
+        'edge_pct': edgePct,
+        'injury_note': injuryNote,
+        'status': status,
+        'result': result,
+        'score': score,
+        'profit_units': profitUnits,
+        'settled_at': settledAt?.toUtc().toIso8601String(),
+      };
+
   factory DailyPick.fromJson(Map<String, dynamic> json) {
     final rawTags = json['tags'];
     final rawKickoff = json['kickoff_time'] ?? json['kickoffTime'];

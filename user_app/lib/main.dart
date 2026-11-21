@@ -14,6 +14,8 @@ import 'screens/daily_picks_page.dart';
 import 'screens/home_page.dart';
 import 'screens/splash_screen.dart';
 import 'screens/welcome_page.dart';
+import 'services/daily_picks_repository.dart';
+import 'services/noellyne_auth_service.dart';
 import 'widgets/root_back_guard.dart';
 import 'theme_controller.dart';
 
@@ -32,6 +34,8 @@ Future<void> main() async {
 
   // Render the app before optional network/storage setup finishes.
   unawaited(_loadTheme());
+  unawaited(NoellyneAuthService.instance.initialize());
+  unawaited(const DailyPicksRepository().loadCachedBoard());
   unawaited(AnalyticsService.initialize());
 }
 

@@ -8,7 +8,9 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val channelName = "football_stream/native_player"
-
+    private val authLinkChannelName = "noellyne/auth_links"
+    private var authLinkChannel: MethodChannel? = null
+    private var pendingAuthLink: String? = null
 
     companion object {
         const val PLAYER_REQUEST = 4711
@@ -30,6 +32,23 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        captureAuthUri(intent)
+
+        val linkChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            authLinkChannelName
+        )
+        authLinkChannel = linkChannel
+        linkChannel.setMethodCallHandler { call, result ->
+            if (call.method == "getInitialAuthLink") {
+                val link = pendingAuthLink
+                pendingAuthLink = null
+                result.success(link)
+            } else {
+                result.notImplemented()
+            }
+        }
 
         val channel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -83,6 +102,27 @@ class MainActivity : FlutterActivity() {
 
             result.success(null)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val uri = extractAuthUri(intent) ?: return
+        if (authLinkChannel != null) {
+            authLinkChannel?.invokeMethod("onAuthCallback", uri)
+        } else {
+            pendingAuthLink = uri
+        }
+    }
+
+    private fun extractAuthUri(intent: Intent?): String? {
+        val data = intent?.data ?: return null
+        return if (data.scheme == "noellyne") data.toString() else null
+    }
+
+    private fun captureAuthUri(intent: Intent?) {
+        val uri = extractAuthUri(intent)
+        if (uri != null) pendingAuthLink = uri
     }
 
     /**
