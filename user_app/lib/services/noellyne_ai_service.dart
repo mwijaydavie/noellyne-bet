@@ -28,7 +28,10 @@ class NoellyneAiService {
 
   bool get isConfigured => NoellyneConfig.aiChatWebhook.trim().isNotEmpty;
 
-  Future<String> send(List<AiMessage> history) async {
+  Future<String> send(
+    List<AiMessage> history, {
+    Map<String, dynamic>? matchContext,
+  }) async {
     final lastUser = history.lastWhere(
       (m) => m.fromUser,
       orElse: () => AiMessage('', fromUser: true),
@@ -39,22 +42,27 @@ class NoellyneAiService {
     if (!isConfigured) return _offline(question);
 
     try {
+      final payload = <String, dynamic>{
+        'message': question,
+        'chatId': 'app',
+        'source': 'noellyne-app',
+        'history': history
+            .where((m) => !m.pending)
+            .map((m) => {
+                  'role': m.fromUser ? 'user' : 'assistant',
+                  'content': m.text,
+                })
+            .toList(),
+      };
+      if (matchContext != null && matchContext.isNotEmpty) {
+        payload['matchContext'] = matchContext;
+      }
+
       final response = await http
           .post(
             Uri.parse(NoellyneConfig.aiChatWebhook),
             headers: const {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'message': question,
-              'chatId': 'app',
-              'source': 'noellyne-app',
-              'history': history
-                  .where((m) => !m.pending)
-                  .map((m) => {
-                        'role': m.fromUser ? 'user' : 'assistant',
-                        'content': m.text,
-                      })
-                  .toList(),
-            }),
+            body: jsonEncode(payload),
           )
           .timeout(_timeout);
 
@@ -187,8 +195,8 @@ class NoellyneAiService {
   /// Suggested first questions shown as chips.
   static const quickPrompts = <String>[
     'Picks za leo',
+    'Matokeo ya jana vipi?',
     'Nina 20,000 leo',
     'NBA injury guard',
-    'Jinsi ya kuweka',
   ];
 }

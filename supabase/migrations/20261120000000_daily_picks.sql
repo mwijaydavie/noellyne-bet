@@ -38,13 +38,19 @@ create table if not exists public.daily_picks (
   sport text not null default 'football'
     check (sport in ('football', 'basketball')),
   tier text,
-  units numeric(4, 2),
-  edge_pct numeric(5, 1),
-  injury_note text,
+  units numeric(4, 2) default 0,
+  edge_pct numeric(5, 1) default 0,
+  injury_note text default '',
+  event_id text,
+  home_form text default '',
+  away_form text default '',
+  score text default '',
+  profit_units numeric(6, 2) default 0,
+  settled_at timestamptz,
   status text not null default 'published'
     check (status in ('draft', 'published', 'settled', 'void')),
   result text check (result in ('won', 'lost', 'void')),
-  source text not null default 'n8n',
+  source text not null default 'hermes-n8n',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

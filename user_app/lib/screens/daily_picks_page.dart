@@ -7,8 +7,10 @@ import '../models/daily_pick.dart';
 import '../services/daily_picks_repository.dart';
 import '../widgets/noellyne_dock_bar.dart';
 
-/// Daily Bets feed — n8n picks rendered as structured, tappable cards.
-/// See DESIGN_SYSTEM.md § "Daily Bets Feed (n8n)".
+enum _PicksSection { picks, results }
+
+/// Daily Bets feed — n8n Hermes picks & settled ROI rendered as interactive
+/// cards (zero emojis in structural UI, vector icons + design tokens only).
 class DailyPicksPage extends StatefulWidget {
   const DailyPicksPage({
     super.key,
@@ -25,17 +27,18 @@ class DailyPicksPage extends StatefulWidget {
 }
 
 class _DailyPicksPageState extends State<DailyPicksPage> {
-  late Future<List<DailyPick>> _future;
+  late Future<DailyPicksBoard> _future;
+  _PicksSection _section = _PicksSection.picks;
   PickFilter _filter = PickFilter.all;
 
   @override
   void initState() {
     super.initState();
-    _future = widget.repository.fetch();
+    _future = widget.repository.fetchBoard();
   }
 
   Future<void> _refresh() async {
-    final next = widget.repository.fetch();
+    final next = widget.repository.fetchBoard();
     setState(() => _future = next);
     await next;
   }
@@ -47,11 +50,26 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
+  void _askAiAboutPick(DailyPick pick) {
+    HapticFeedback.lightImpact();
+    final prompt =
+        'Chambua mechi hii ya ${pick.match} (${pick.league}): '
+        'pick ya ${pick.pick} @ ${pick.odds.toStringAsFixed(2)} '
+        '(${pick.confidence}% conf). Je ni salama kuweka pesa leo?';
+    openAiChat(
+      context,
+      initialPrompt: prompt,
+      matchContext: pick.toAiContext(),
+    );
+  }
+
+  void _openStakeSplit() {
+    HapticFeedback.lightImpact();
+    openAiChat(context, initialPrompt: 'Nina 10,000 leo');
+  }
+
   @override
   Widget build(BuildContext context) {
-    // A Scaffold is mandatory here: without it the route has no Material
-    // ancestor, so ThemeData is dropped and every Text falls back to the
-    // yellow double-underlined debug style.
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
@@ -59,6 +77,11 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
         titleSpacing: 0,
         title: const _Header(),
         actions: [
+          IconButton(
+            onPressed: _openStakeSplit,
+            icon: const Icon(Icons.account_balance_wallet_outlined),
+            tooltip: 'BetPawa stake split',
+          ),
           IconButton(
             onPressed: _refresh,
             icon: const Icon(Icons.refresh_rounded),
@@ -70,7 +93,9 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
           preferredSize: const Size.fromHeight(1),
           child: Divider(
             height: 1,
-            color: Theme.of(context).colorScheme.outlineVariant
+            color: Theme.of(context)
+                .colorScheme
+                .outlineVariant
                 .withValues(alpha: .35),
           ),
         ),
@@ -81,15 +106,20 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
         child: Column(
           children: [
             Expanded(
-              child: FutureBuilder<List<DailyPick>>(
+              child: FutureBuilder<DailyPicksBoard>(
                 future: _future,
                 builder: (context, snapshot) {
                   if (snapshot.connectionState == ConnectionState.waiting) {
                     return const _PicksSkeleton();
                   }
-                  final all = snapshot.data ?? const <DailyPick>[];
-                  final picks =
-                      all.where((p) => _filter.matches(p)).toList(growable: false);
+                  final board = snapshot.data ??
+                      const DailyPicksBoard(published: [], settled: []);
+                  final activeList = _section == _PicksSection.picks
+                      ? board.published
+                      : board.settled;
+                  final filtered = activeList
+                      .where((p) => _filter.matches(p))
+                      .toList(growable: false);
 
                   return RefreshIndicator(
                     color: NoellyneColors.glowDeep,
@@ -99,66 +129,118 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                         parent: BouncingScrollPhysics(),
                       ),
                       slivers: [
-                        if (DailyPicksRepository.showsSampleData &&
-                            all.isNotEmpty)
-                          const SliverToBoxAdapter(
-                            child: Padding(
-                              padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
-                              child: _SampleBanner(),
-                            ),
-                          ),
-                        SliverToBoxAdapter(
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                            child: _FilterRail(
-                              selected: _filter,
-                              onSelected: (f) => setState(() => _filter = f),
-                            ),
-                          ),
-                        ),
-                        if (picks.isEmpty)
+                        if (board.errorMessage != null &&
+                            board.published.isEmpty &&
+                            board.settled.isEmpty)
                           SliverToBoxAdapter(
-                            child: _EmptyPicks(onRefresh: _refresh),
+                            child: _ErrorState(
+                              message: board.errorMessage!,
+                              onRetry: _refresh,
+                            ),
                           )
-                        else
-                          SliverPadding(
-                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
-                            sliver: SliverList.separated(
-                              itemCount: picks.length,
-                              separatorBuilder: (_, _) =>
-                                  const SizedBox(height: 12),
-                              itemBuilder: (context, i) => RevealIn(
-                                delay: Duration(milliseconds: 40 * i),
-                                child: PickCard(
-                                  pick: picks[i],
-                                  onWatch: () {
-                                    final id = picks[i].streamId;
-                                    if (id == null) {
-                                      _toast('No stream linked yet');
-                                      return;
-                                    }
-                                    if (widget.onWatchMatch == null) {
-                                      _toast('Open this pick from the Live tab');
-                                      return;
-                                    }
-                                    widget.onWatchMatch!.call(id);
-                                  },
-                                  onCopy: () async {
-                                    final code = picks[i].slipCode;
-                                    if (code == null) {
-                                      _toast('No slip code for this pick');
-                                      return;
-                                    }
-                                    await Clipboard.setData(
-                                      ClipboardData(text: code),
-                                    );
-                                    _toast('Slip code $code copied');
-                                  },
-                                ),
+                        else ...[
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                              child: _SectionSwitch(
+                                selected: _section,
+                                picksCount: board.published.length,
+                                resultsCount: board.settled.length,
+                                onChanged: (s) {
+                                  HapticFeedback.lightImpact();
+                                  setState(() => _section = s);
+                                },
                               ),
                             ),
                           ),
-                        const SliverToBoxAdapter(child: _Disclaimer()),
+                          if (DailyPicksRepository.showsSampleData &&
+                              board.published.isNotEmpty &&
+                              _section == _PicksSection.picks)
+                            const SliverToBoxAdapter(
+                              child: Padding(
+                                padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+                                child: _SampleBanner(),
+                              ),
+                            ),
+                          if (_section == _PicksSection.results &&
+                              board.settled.isNotEmpty)
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                                child: _RoiSummaryCard(settled: board.settled),
+                              ),
+                            ),
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                              child: _FilterRail(
+                                selected: _filter,
+                                onSelected: (f) {
+                                  HapticFeedback.lightImpact();
+                                  setState(() => _filter = f);
+                                },
+                              ),
+                            ),
+                          ),
+                          if (filtered.isEmpty)
+                            SliverToBoxAdapter(
+                              child: _EmptyPicks(
+                                isResults: _section == _PicksSection.results,
+                                onRefresh: _refresh,
+                              ),
+                            )
+                          else
+                            SliverPadding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(16, 0, 16, 120),
+                              sliver: SliverList.separated(
+                                itemCount: filtered.length,
+                                separatorBuilder: (_, _) =>
+                                    const SizedBox(height: 12),
+                                itemBuilder: (context, i) => RevealIn(
+                                  delay: Duration(
+                                    milliseconds: (35 * i).clamp(0, 280),
+                                  ),
+                                  child: _section == _PicksSection.results
+                                      ? _SettledPickCard(pick: filtered[i])
+                                      : PickCard(
+                                          pick: filtered[i],
+                                          onAskAi: () =>
+                                              _askAiAboutPick(filtered[i]),
+                                          onWatch: () {
+                                            final id = filtered[i].streamId;
+                                            if (id == null) {
+                                              _toast('No stream linked yet');
+                                              return;
+                                            }
+                                            if (widget.onWatchMatch == null) {
+                                              _toast(
+                                                'Open this pick from the Live tab',
+                                              );
+                                              return;
+                                            }
+                                            widget.onWatchMatch!.call(id);
+                                          },
+                                          onCopy: () async {
+                                            final code = filtered[i].slipCode;
+                                            if (code == null) {
+                                              _toast(
+                                                'No slip code for this pick',
+                                              );
+                                              return;
+                                            }
+                                            await Clipboard.setData(
+                                              ClipboardData(text: code),
+                                            );
+                                            _toast('Slip code $code copied');
+                                          },
+                                        ),
+                                ),
+                              ),
+                            ),
+                          const SliverToBoxAdapter(child: _Disclaimer()),
+                        ],
                       ],
                     ),
                   );
@@ -193,7 +275,7 @@ class _Header extends StatelessWidget {
         ),
         const SizedBox(height: 1),
         Text(
-          'Curated by Noellyne AI · updated every morning',
+          'Hermes Sports AI · Football & NBA',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
@@ -203,6 +285,459 @@ class _Header extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _SectionSwitch extends StatelessWidget {
+  const _SectionSwitch({
+    required this.selected,
+    required this.picksCount,
+    required this.resultsCount,
+    required this.onChanged,
+  });
+
+  final _PicksSection selected;
+  final int picksCount;
+  final int resultsCount;
+  final ValueChanged<_PicksSection> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: dark ? NoellyneColors.innerDark : NoellyneColors.innerLight,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: dark
+              ? NoellyneColors.glassBorderDark
+              : NoellyneColors.glassBorderLight,
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _SegmentItem(
+              icon: Icons.bolt_rounded,
+              label: 'Today ($picksCount)',
+              selected: selected == _PicksSection.picks,
+              onTap: () => onChanged(_PicksSection.picks),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: _SegmentItem(
+              icon: Icons.analytics_outlined,
+              label: 'Results ($resultsCount)',
+              selected: selected == _PicksSection.results,
+              onTap: () => onChanged(_PicksSection.results),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SegmentItem extends StatelessWidget {
+  const _SegmentItem({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    final fg = selected
+        ? (dark ? NoellyneColors.ink : Colors.white)
+        : scheme.onSurfaceVariant;
+    return PressableScale(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: NoellyneMotion.tap,
+        height: 44,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(999),
+          color: selected
+              ? (dark ? NoellyneColors.glowDark : NoellyneColors.ink)
+              : Colors.transparent,
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 16, color: fg),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w800,
+                color: fg,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RoiSummaryCard extends StatelessWidget {
+  const _RoiSummaryCard({required this.settled});
+
+  final List<DailyPick> settled;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+
+    final graded = settled.where((p) => p.isWon || p.isLost).toList();
+    final wins = graded.where((p) => p.isWon).length;
+    final losses = graded.length - wins;
+    final wr = graded.isEmpty ? 0.0 : (wins / graded.length) * 100;
+    final netUnits = graded.fold<double>(0, (a, p) => a + p.profitUnits);
+    final netTzs = (netUnits * 1000).round();
+
+    final fb = graded.where((p) => !p.isBasketball).toList();
+    final fbW = fb.where((p) => p.isWon).length;
+    final bb = graded.where((p) => p.isBasketball).toList();
+    final bbW = bb.where((p) => p.isWon).length;
+
+    final positive = netUnits >= 0;
+    final profitColor = positive
+        ? (dark ? NoellyneColors.winDark : NoellyneColors.winInk)
+        : NoellyneColors.lossInk;
+
+    return GlassCard(
+      glowCorner: true,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.verified_rounded, size: 18, color: profitColor),
+              const SizedBox(width: 8),
+              Text(
+                'Verified Performance',
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w800,
+                  color: scheme.onSurface,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: positive
+                      ? (dark
+                          ? NoellyneColors.winDark.withValues(alpha: .16)
+                          : NoellyneColors.winBg)
+                      : (dark
+                          ? NoellyneColors.lossInk.withValues(alpha: .18)
+                          : NoellyneColors.lossBg),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: TabularText(
+                  '${positive ? '+' : ''}${netUnits.toStringAsFixed(2)}u',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w800,
+                    color: profitColor,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _StatTile(
+                  label: 'Win Rate',
+                  value: '${wr.toStringAsFixed(1)}%',
+                  sub: '${wins}W / ${losses}L',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _StatTile(
+                  label: 'Est. P&L (1u=1k)',
+                  value:
+                      '${netTzs >= 0 ? '+' : '-'}TZS ${_fmtTzs(netTzs.abs())}',
+                  sub: 'Net bankroll',
+                  valueColor: profitColor,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _MiniSplit(
+                  icon: Icons.sports_soccer_rounded,
+                  label: 'Football: ${fbW}W / ${fb.length - fbW}L',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _MiniSplit(
+                  icon: Icons.sports_basketball_rounded,
+                  label: 'NBA: ${bbW}W / ${bb.length - bbW}L',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _fmtTzs(int n) {
+    final s = n.toString();
+    final b = StringBuffer();
+    for (var i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 == 0) b.write(',');
+      b.write(s[i]);
+    }
+    return b.toString();
+  }
+}
+
+class _StatTile extends StatelessWidget {
+  const _StatTile({
+    required this.label,
+    required this.value,
+    required this.sub,
+    this.valueColor,
+  });
+
+  final String label;
+  final String value;
+  final String sub;
+  final Color? valueColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: dark ? NoellyneColors.innerDark : NoellyneColors.innerLight,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 4),
+          TabularText(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              color: valueColor ?? scheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            sub,
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniSplit extends StatelessWidget {
+  const _MiniSplit({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Icon(icon, size: 14, color: scheme.onSurfaceVariant),
+        const SizedBox(width: 6),
+        Flexible(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SettledPickCard extends StatelessWidget {
+  const _SettledPickCard({required this.pick});
+
+  final DailyPick pick;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    final won = pick.isWon;
+    final badgeBg = won
+        ? (dark
+            ? NoellyneColors.winDark.withValues(alpha: .18)
+            : NoellyneColors.winBg)
+        : (dark
+            ? NoellyneColors.lossInk.withValues(alpha: .18)
+            : NoellyneColors.lossBg);
+    final badgeFg = won
+        ? (dark ? NoellyneColors.winDark : NoellyneColors.winInk)
+        : NoellyneColors.lossInk;
+
+    return GlassCard(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                pick.isBasketball
+                    ? Icons.sports_basketball_rounded
+                    : Icons.sports_soccer_rounded,
+                size: 16,
+                color: scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  pick.match,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w800,
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: badgeBg,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      won ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                      size: 13,
+                      color: badgeFg,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      won ? 'WON' : 'LOST',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: badgeFg,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${pick.league} · ${pick.pick} @ ${pick.odds.toStringAsFixed(2)}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              if (pick.score.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                TabularText(
+                  pick.score,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              if (pick.units > 0)
+                Text(
+                  'Stake: ${pick.units.toStringAsFixed(2)}u',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              const Spacer(),
+              TabularText(
+                '${pick.profitUnits >= 0 ? '+' : ''}${pick.profitUnits.toStringAsFixed(2)}u',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: badgeFg,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -235,17 +770,19 @@ class _FilterRail extends StatelessWidget {
 }
 
 /// Structured diagnostic card: reasoning header, nested white stat rows,
-/// obsidian CTA.
+/// Watch / Ask AI / Copy actions.
 class PickCard extends StatelessWidget {
   const PickCard({
     super.key,
     required this.pick,
     this.onWatch,
+    this.onAskAi,
     this.onCopy,
   });
 
   final DailyPick pick;
   final VoidCallback? onWatch;
+  final VoidCallback? onAskAi;
   final VoidCallback? onCopy;
 
   @override
@@ -278,7 +815,7 @@ class PickCard extends StatelessWidget {
               _ConfidenceChip(confidence: pick.confidence),
             ],
           ),
-          const SizedBox(height: 3),
+          const SizedBox(height: 4),
           Text(
             pick.league,
             style: TextStyle(
@@ -349,7 +886,8 @@ class PickCard extends StatelessWidget {
               ],
             ),
           ),
-          if (pick.units > 0 ||
+          if (pick.tier.isNotEmpty ||
+              pick.units > 0 ||
               pick.edgePct > 0 ||
               pick.injuryNote.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -358,7 +896,10 @@ class PickCard extends StatelessWidget {
               runSpacing: 6,
               children: [
                 if (pick.tier.isNotEmpty)
-                  _MetaChip(icon: Icons.workspace_premium_rounded, label: pick.tier),
+                  _MetaChip(
+                    icon: Icons.workspace_premium_rounded,
+                    label: pick.tier,
+                  ),
                 if (pick.units > 0)
                   _MetaChip(
                     icon: Icons.savings_rounded,
@@ -383,11 +924,20 @@ class PickCard extends StatelessWidget {
             children: [
               Expanded(
                 child: PillButton(
-                  label: pick.isBasketball ? 'Watch Game' : 'Watch Live',
+                  label: pick.isBasketball ? 'Watch' : 'Watch Live',
                   icon: Icons.play_arrow_rounded,
                   onPressed: onWatch,
                   height: 44,
                 ),
+              ),
+              const SizedBox(width: 8),
+              PillButton(
+                label: 'Ask AI',
+                icon: Icons.auto_awesome_rounded,
+                expand: false,
+                height: 44,
+                tone: PillTone.glow,
+                onPressed: onAskAi,
               ),
               const SizedBox(width: 8),
               PillButton(
@@ -431,7 +981,7 @@ class _InnerRow extends StatelessWidget {
         border: Border.all(
           color: dark
               ? NoellyneColors.glassBorderDark
-              : const Color(0x99FFFFFF),
+              : NoellyneColors.glassBorderLight,
         ),
       ),
       child: Row(
@@ -511,13 +1061,13 @@ class _MetaChip extends StatelessWidget {
         border: Border.all(
           color: dark
               ? NoellyneColors.glassBorderDark
-              : const Color(0x66FFFFFF),
+              : NoellyneColors.glassBorderLight,
         ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 11.5, color: accent),
+          Icon(icon, size: 12, color: accent),
           const SizedBox(width: 4),
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 190),
@@ -594,7 +1144,9 @@ class _PicksSkeleton extends StatelessWidget {
       itemBuilder: (_, _) => Container(
         height: 190,
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest
+          color: Theme.of(context)
+              .colorScheme
+              .surfaceContainerHighest
               .withValues(alpha: .5),
           borderRadius: BorderRadius.circular(26),
         ),
@@ -603,7 +1155,42 @@ class _PicksSkeleton extends StatelessWidget {
   }
 }
 
-/// Shown only when `DAILY_PICKS_DEMO=true`: never let sample odds look real.
+class _ErrorState extends StatelessWidget {
+  const _ErrorState({required this.message, required this.onRetry});
+
+  final String message;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 56, 24, 24),
+      child: Column(
+        children: [
+          Icon(Icons.cloud_off_rounded, size: 42, color: scheme.error),
+          const SizedBox(height: 12),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 13.5,
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh_rounded, size: 18),
+            label: const Text('Jaribu Tena'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _SampleBanner extends StatelessWidget {
   const _SampleBanner();
 
@@ -613,7 +1200,7 @@ class _SampleBanner extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: dark ? const Color(0xFF2A211C) : const Color(0xFFFFF3E6),
+        color: dark ? NoellyneColors.innerDark : NoellyneColors.liveBg,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: NoellyneColors.glowDeep.withValues(alpha: .45),
@@ -621,18 +1208,19 @@ class _SampleBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(Icons.science_rounded,
-              size: 16, color: NoellyneColors.glowDeep),
+          const Icon(
+            Icons.science_rounded,
+            size: 16,
+            color: NoellyneColors.glowDeep,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'SAMPLE DATA — these are design fixtures, not live picks. '
-              'Connect the n8n pipeline for real slips.',
+              'SAMPLE DATA — design fixtures, not live picks.',
               style: TextStyle(
-                fontSize: 10.5,
+                fontSize: 11,
                 fontWeight: FontWeight.w700,
-                height: 1.35,
-                color: dark ? const Color(0xFFF5EFEA) : NoellyneColors.ink,
+                color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
           ),
@@ -643,8 +1231,9 @@ class _SampleBanner extends StatelessWidget {
 }
 
 class _EmptyPicks extends StatelessWidget {
-  const _EmptyPicks({this.onRefresh});
+  const _EmptyPicks({this.isResults = false, this.onRefresh});
 
+  final bool isResults;
   final Future<void> Function()? onRefresh;
 
   @override
@@ -654,22 +1243,29 @@ class _EmptyPicks extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
       child: Column(
         children: [
-          Icon(Icons.auto_awesome_rounded,
-              size: 40, color: NoellyneColors.glowDeep.withValues(alpha: .8)),
+          Icon(
+            isResults
+                ? Icons.analytics_outlined
+                : Icons.auto_awesome_rounded,
+            size: 40,
+            color: NoellyneColors.glowDeep.withValues(alpha: .8),
+          ),
           const SizedBox(height: 12),
           Text(
-            'No picks published yet',
+            isResults ? 'No settled results yet' : 'No picks for this filter',
             style: TextStyle(
               fontSize: 15,
               fontWeight: FontWeight.w800,
               color: scheme.onSurface,
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           Text(
-            'Nothing is invented here. The Hermes pipeline publishes today\'s '
-            'slips at 09:00, 14:00 and 19:00 EAT — they appear automatically '
-            'as soon as n8n writes them.',
+            isResults
+                ? 'Hermes Settlement grades finished Football and NBA picks '
+                    'automatically at 01:30 and 08:45 EAT.'
+                : 'The Hermes pipeline publishes fresh Football and NBA picks '
+                    'at 09:00, 14:00 and 19:00 EAT.',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 12.5,

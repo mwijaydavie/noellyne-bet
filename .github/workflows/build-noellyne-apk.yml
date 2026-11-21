@@ -251,10 +251,13 @@ jobs:
       - name: Build release APK
         working-directory: user_app
         env:
-          # Set these as repository Variables to repoint the build at the new
-          # Noellyne Supabase project / API without touching code.
+          # Set these as repository Variables to repoint the build at a new
+          # Supabase project / API / n8n webhook without touching code.
           CFG_SUPABASE_URL: ${{ vars.NOELLYNE_SUPABASE_URL }}
           CFG_SUPABASE_KEY: ${{ vars.NOELLYNE_SUPABASE_ANON_KEY }}
+          CFG_PICKS_SUPABASE_URL: ${{ vars.NOELLYNE_PICKS_SUPABASE_URL }}
+          CFG_PICKS_SUPABASE_KEY: ${{ vars.NOELLYNE_PICKS_SUPABASE_ANON_KEY }}
+          CFG_AI_WEBHOOK: ${{ vars.NOELLYNE_AI_CHAT_WEBHOOK }}
           CFG_API_BASE: ${{ vars.NOELLYNE_PUBLIC_API_BASE }}
         run: |
           DEFINES=()
@@ -263,6 +266,15 @@ jobs:
           fi
           if [ -n "$CFG_SUPABASE_KEY" ]; then
             DEFINES+=("--dart-define=SUPABASE_ANON_KEY=$CFG_SUPABASE_KEY")
+          fi
+          if [ -n "$CFG_PICKS_SUPABASE_URL" ]; then
+            DEFINES+=("--dart-define=PICKS_SUPABASE_URL=$CFG_PICKS_SUPABASE_URL")
+          fi
+          if [ -n "$CFG_PICKS_SUPABASE_KEY" ]; then
+            DEFINES+=("--dart-define=PICKS_SUPABASE_ANON_KEY=$CFG_PICKS_SUPABASE_KEY")
+          fi
+          if [ -n "$CFG_AI_WEBHOOK" ]; then
+            DEFINES+=("--dart-define=AI_CHAT_WEBHOOK=$CFG_AI_WEBHOOK")
           fi
           if [ -n "$CFG_API_BASE" ]; then
             DEFINES+=("--dart-define=PUBLIC_API_BASE=$CFG_API_BASE")

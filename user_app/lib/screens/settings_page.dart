@@ -323,8 +323,14 @@ class _SettingsPageState extends State<SettingsPage> {
                       children: [
                         ListTile(
                           leading: const _TileIcon(Icons.dns_rounded),
-                          title: const _TileTitle('Backend'),
+                          title: const _TileTitle('Stream backend'),
                           subtitle: _TileSub(NoellyneConfig.supabaseLabel),
+                        ),
+                        const Divider(height: 1, indent: 16, endIndent: 16),
+                        ListTile(
+                          leading: const _TileIcon(Icons.receipt_long_rounded),
+                          title: const _TileTitle('Picks & ROI database'),
+                          subtitle: _TileSub(NoellyneConfig.picksSupabaseLabel),
                         ),
                         const Divider(height: 1, indent: 16, endIndent: 16),
                         ListTile(
@@ -333,7 +339,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           subtitle: _TileSub(
                             NoellyneConfig.aiChatWebhook.trim().isEmpty
                                 ? 'Offline brain (add AI_CHAT_WEBHOOK)'
-                                : 'n8n webhook connected',
+                                : 'Noellyne AI live · n8n webhook',
                           ),
                         ),
                         const Divider(height: 1, indent: 16, endIndent: 16),

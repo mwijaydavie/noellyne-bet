@@ -20,6 +20,11 @@ class DailyPick {
     this.units = 0,
     this.edgePct = 0,
     this.injuryNote = '',
+    this.status = 'published',
+    this.result,
+    this.score = '',
+    this.profitUnits = 0,
+    this.settledAt,
   });
 
   final String id;
@@ -38,7 +43,7 @@ class DailyPick {
   final String? streamId;
   final DateTime? kickoffTime;
 
-  /// Free-form tags: `sure2+`, `btts`, `high-odds`, `over2.5`.
+  /// Free-form tags: `sure2+`, `strong`, `btts`, `high-odds`, `over2.5`.
   final List<String> tags;
 
   /// Shareable bet-slip code shown in Match Theatre.
@@ -47,7 +52,7 @@ class DailyPick {
   /// `football` | `basketball` (Hermes dual-sport pipeline).
   final String sport;
 
-  /// Quant tier from the model, e.g. "🟢 STRONG".
+  /// Quant tier from the model, e.g. "STRONG" or "MODERATE".
   final String tier;
 
   /// Recommended stake in units (1u = 1% of bankroll).
@@ -59,12 +64,49 @@ class DailyPick {
   /// NBA Injury Guard note (who is OUT).
   final String injuryNote;
 
+  /// `published` | `settled` | `void`.
+  final String status;
+
+  /// `won` | `lost` | `void` when settled.
+  final String? result;
+
+  /// Final score string populated by Hermes Settlement, e.g. "101 - 111".
+  final String score;
+
+  /// Settled net profit/loss in units (e.g. +1.68 or -1.50).
+  final double profitUnits;
+  final DateTime? settledAt;
+
   bool get isHighConfidence => confidence >= 80;
   bool get isBasketball => sport == 'basketball';
+  bool get isStrong =>
+      tier.toUpperCase().contains('STRONG') || tags.contains('strong');
+  bool get isSettled => status == 'settled' && result != null;
+  bool get isWon => result == 'won';
+  bool get isLost => result == 'lost';
+
+  /// Structured match context passed to the n8n AI Chat webhook when the user
+  /// taps "Ask AI" on this pick.
+  Map<String, dynamic> toAiContext() => {
+        'match': match,
+        'league': league,
+        'sport': sport,
+        'pick': pick,
+        'odds': odds,
+        'confidence': confidence,
+        'edge_pct': edgePct,
+        'tier': tier,
+        'units': units,
+        if (injuryNote.isNotEmpty) 'injury_note': injuryNote,
+        if (reasoning.isNotEmpty) 'reasoning': reasoning,
+        if (score.isNotEmpty) 'score': score,
+        if (result != null) 'result': result,
+      };
 
   factory DailyPick.fromJson(Map<String, dynamic> json) {
     final rawTags = json['tags'];
     final rawKickoff = json['kickoff_time'] ?? json['kickoffTime'];
+    final rawSettled = json['settled_at'] ?? json['settledAt'];
     return DailyPick(
       id: '${json['id'] ?? ''}',
       match: '${json['match'] ?? json['fixture'] ?? 'Match'}'.trim(),
@@ -86,6 +128,13 @@ class DailyPick {
       units: _asDouble(json['units']),
       edgePct: _asDouble(json['edge_pct'] ?? json['edgePct']),
       injuryNote: '${json['injury_note'] ?? json['injuryNote'] ?? ''}'.trim(),
+      status: _asNullableString(json['status'])?.toLowerCase() ?? 'published',
+      result: _asNullableString(json['result'])?.toLowerCase(),
+      score: '${json['score'] ?? ''}'.trim(),
+      profitUnits: _asDouble(json['profit_units'] ?? json['profitUnits']),
+      settledAt: rawSettled == null
+          ? null
+          : DateTime.tryParse('$rawSettled')?.toLocal(),
     );
   }
 
@@ -105,11 +154,13 @@ class DailyPick {
   }
 }
 
-/// Feed filters shown as pills above the picks.
+/// Feed filters shown as pills above the picks (vector-clean labels).
 enum PickFilter {
-  all('All Picks'),
+  all('All'),
+  football('Football'),
+  basketball('NBA'),
+  strong('Strong'),
   sure('Sure 2+'),
-  btts('BTTS'),
   highOdds('High Odds');
 
   const PickFilter(this.label);
@@ -117,10 +168,10 @@ enum PickFilter {
 
   bool matches(DailyPick p) => switch (this) {
         PickFilter.all => true,
+        PickFilter.football => !p.isBasketball,
+        PickFilter.basketball => p.isBasketball,
+        PickFilter.strong => p.isStrong,
         PickFilter.sure => p.confidence >= 80 || p.tags.contains('sure2+'),
-        PickFilter.btts => p.tags.contains('btts') ||
-            p.pick.toLowerCase().contains('btts') ||
-            p.pick.toLowerCase().contains('both teams'),
-        PickFilter.highOdds => p.odds >= 2.0 || p.tags.contains('high-odds'),
+        PickFilter.highOdds => p.odds >= 1.9 || p.tags.contains('high-odds'),
       };
 }

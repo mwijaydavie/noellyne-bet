@@ -125,10 +125,16 @@ class NoellyneDockBar extends StatelessWidget {
 }
 
 /// Opens the AI chat, with a shortcut to the Daily Picks feed.
-Future<void> openAiChat(BuildContext context) async {
+Future<void> openAiChat(
+  BuildContext context, {
+  String? initialPrompt,
+  Map<String, dynamic>? matchContext,
+}) async {
   await Navigator.of(context).push(
     MaterialPageRoute<void>(
       builder: (_) => AiChatPage(
+        initialPrompt: initialPrompt,
+        matchContext: matchContext,
         onOpenPicks: () {
           Navigator.of(context).push(
             MaterialPageRoute<void>(builder: (_) => const DailyPicksPage()),

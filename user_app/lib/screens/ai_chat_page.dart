@@ -11,9 +11,16 @@ import '../services/noellyne_ai_service.dart';
 /// Noellyne AI — a real chat view over the n8n betting brain, with an offline
 /// fallback so it never looks broken when the webhook isn't wired yet.
 class AiChatPage extends StatefulWidget {
-  const AiChatPage({super.key, this.onOpenPicks});
+  const AiChatPage({
+    super.key,
+    this.onOpenPicks,
+    this.initialPrompt,
+    this.matchContext,
+  });
 
   final VoidCallback? onOpenPicks;
+  final String? initialPrompt;
+  final Map<String, dynamic>? matchContext;
 
   @override
   State<AiChatPage> createState() => _AiChatPageState();
@@ -36,14 +43,20 @@ class _AiChatPageState extends State<AiChatPage> {
     super.initState();
     _messages.add(
       AiMessage(
-        'Karibu 👋 Mimi ni Noellyne AI.\n'
-        'Niulize kuhusu football, NBA, au mgao wa mtaji — '
+        'Karibu! Mimi ni Noellyne AI.\n'
+        'Niulize kuhusu picks za football, NBA, matokeo, au mgao wa mtaji — '
         'mfano "Nina 20,000 leo".',
         fromUser: false,
       ),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _startTyping(_messages.length - 1);
+      if (!mounted) return;
+      final preset = widget.initialPrompt?.trim() ?? '';
+      if (preset.isNotEmpty) {
+        _send(preset);
+      } else {
+        _startTyping(_messages.length - 1);
+      }
     });
   }
 
@@ -122,7 +135,10 @@ class _AiChatPageState extends State<AiChatPage> {
     });
     _scrollToEnd();
 
-    final reply = await _service.send(_messages);
+    final reply = await _service.send(
+      _messages,
+      matchContext: widget.matchContext,
+    );
 
     if (!mounted) return;
     setState(() {
@@ -186,14 +202,14 @@ class _AiChatPageState extends State<AiChatPage> {
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         color: _service.isConfigured
-                            ? const Color(0xFF2FBF71)
+                            ? NoellyneColors.winDark
                             : NoellyneColors.glowDeep,
                       ),
                     ),
                     const SizedBox(width: 5),
                     Text(
                       _service.isConfigured
-                          ? 'n8n connected'
+                          ? 'Noellyne AI live · n8n'
                           : 'offline brain · add webhook',
                       style: TextStyle(
                         fontSize: 10,

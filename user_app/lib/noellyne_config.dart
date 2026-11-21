@@ -43,12 +43,36 @@ class NoellyneConfig {
     return uri?.host ?? supabaseUrl;
   }
 
-  /// n8n webhook that powers the in-app Noellyne AI chat. Point this at a
-  /// `Webhook` node wired to your Hermes prompt + provider fallback chain.
-  /// Empty → the app uses its built-in offline betting assistant.
+  /// Dedicated Supabase project for Noellyne Bet Daily Picks & Settled Results
+  /// written by the n8n Hermes pipeline (kept separate from the live stream DB
+  /// so stream feeds stay independent). Only the public read-only publishable
+  /// key lives in the app — all write keys stay on the n8n server.
+  static const picksSupabaseUrl = String.fromEnvironment(
+    'PICKS_SUPABASE_URL',
+    defaultValue: 'https://tahigoqhuyxedhmeqhnp.supabase.co',
+  );
+
+  static const picksSupabaseAnonKey = String.fromEnvironment(
+    'PICKS_SUPABASE_ANON_KEY',
+    defaultValue: 'sb_publishable_o2i64llO0OwnaUMD5NUEAQ_ARb4R7T5',
+  );
+
+  static bool get picksSupabaseEnabled =>
+      picksSupabaseUrl.trim().isNotEmpty &&
+      picksSupabaseAnonKey.trim().isNotEmpty;
+
+  static String get picksSupabaseLabel {
+    if (!picksSupabaseEnabled) return 'disabled';
+    final uri = Uri.tryParse(picksSupabaseUrl);
+    return uri?.host ?? picksSupabaseUrl;
+  }
+
+  /// n8n webhook that powers the in-app Noellyne AI chat. All LLM API keys
+  /// (Groq, Gemini, OpenRouter) stay strictly server-side on n8n — zero API
+  /// secrets are bundled into the app.
   static const aiChatWebhook = String.fromEnvironment(
     'AI_CHAT_WEBHOOK',
-    defaultValue: '',
+    defaultValue: 'https://mwijay.duckdns.org/webhook/noellyne-ai-chat',
   );
 
   /// Cloudflare / Vercel match feed.

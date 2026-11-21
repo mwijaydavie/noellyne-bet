@@ -37,6 +37,13 @@ class NoellyneColors {
   static const liveInk = Color(0xFFC85A3F);
   static const live = Color(0xFFE5484D);
 
+  // Settlement outcome tokens (light & dark accessible).
+  static const winBg = Color(0xFFE6F6EE);
+  static const winInk = Color(0xFF177A48);
+  static const winDark = Color(0xFF2FBF71);
+  static const lossBg = Color(0xFFFDECEC);
+  static const lossInk = Color(0xFFC23B3B);
+
   static const _seed = glowDeep;
 }
 
