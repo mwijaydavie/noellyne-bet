@@ -1,0 +1,615 @@
+{
+  "name": "Hermes Settlement v5.0 — Supabase-First Autonomous Grader",
+  "description": "Autonomous Supabase-first grader for Football & Basketball picks (01:30 & 08:45 EAT). Reads published picks from Supabase (primary) + Google Sheet (non-blocking backup), grades via ESPN, syncs settled results to Supabase & Sheet, sends Telegram cards.",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "5c41e85c-a8a3-4883-8664-2a701a51994e",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        96,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "expression": "30 1 * * *",
+              "field": "cronExpression"
+            },
+            {
+              "expression": "45 8 * * *",
+              "field": "cronExpression"
+            }
+          ]
+        }
+      },
+      "id": "7851a1d5-9ba9-49f4-a3eb-c3fdcabae72c",
+      "name": "Daily 08:00 EAT",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        96,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1v5MGr9ry4KlZ-brdcrrwnpUxXld-xV0Z3TbouxGjsbg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "HermesPicks",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "29a7fc08-47f8-4b87-8b72-45b8bbea128f",
+      "name": "Read All Picks from Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        450,
+        288
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// Hermes Settlement v5.0 — SUPABASE-FIRST AUTONOMOUS LOADER\n// Primary source of truth: Supabase tahigoqhuyxedhmeqhnp/daily_picks\n// Secondary non-blocking backup: HermesPicks Google Sheet (optional)\n// =============================================================\nconst now = new Date();\nconst nowMs = now.getTime();\n\nfunction normKey(s) {\n  return String(s || '')\n    .replace(/[\\u{1F000}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{FE0F}\\u{2B00}-\\u{2BFF}]/gu, '')\n    .toLowerCase()\n    .replace(/[^a-z0-9+.\\-\\s]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction toEatDate(isoStr) {\n  const d = isoStr ? new Date(isoStr) : now;\n  const valid = !isNaN(d.getTime()) ? d : now;\n  return valid.toLocaleDateString('en-CA', { timeZone: 'Africa/Dar_es_Salaam' });\n}\n\nfunction formatEatKickoff(isoStr) {\n  if (!isoStr) return '';\n  const d = new Date(isoStr);\n  if (isNaN(d.getTime())) return String(isoStr);\n  const dt = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Africa/Dar_es_Salaam' });\n  const tm = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Dar_es_Salaam' });\n  return `${dt} ${tm} EAT`;\n}\n\n// 1. Read PRIMARY picks from Supabase (Read Supabase Picks node)\nconst sbRows = [];\ntry {\n  for (const it of $('Read Supabase Picks').all()) {\n    const j = it.json;\n    if (Array.isArray(j)) {\n      for (const row of j) {\n        if (row && row.match && row.pick) sbRows.push(row);\n      }\n    } else if (j && j.match && j.pick && !j.error) {\n      sbRows.push(j);\n    }\n  }\n} catch (e) {}\n\n// 2. Read OPTIONAL BACKUP rows from Google Sheet ($input)\nconst sheetInputs = $input.all();\nlet sheetOnline = false;\nconst sheetRows = [];\nfor (const r of sheetInputs) {\n  const row = r.json || {};\n  if (row.error) continue;\n  if (row.Match && row.Market) {\n    sheetOnline = true;\n    sheetRows.push(row);\n  }\n}\n\nconst marketRepairMap = {\n  'netherlands win (2)': 'Germany vs Netherlands',\n  'slovakia win (2)': 'Kazakhstan vs Slovakia',\n  'sweden win (2)': 'Poland vs Sweden',\n  'austria win (2)': 'Israel vs Austria'\n};\n\n// Index Sheet rows by (normMatch::normMarket) so Supabase picks inherit row_number for dual-sync\nconst sheetPendingLookup = new Map();\nconst sheetParsed = [];\n\nfor (const row of sheetRows) {\n  const rowNum = Number(row.row_number) || null;\n  const result = String(row.Result || '').trim().toUpperCase();\n  const kickoffISO = String(row.KickoffISO || '').trim();\n  const timestampISO = String(row.Timestamp || '').trim();\n  const baseDateEat = toEatDate(kickoffISO || timestampISO);\n\n  const leagueStr = String(row.League || '').trim();\n  const marketStr = String(row.Market || '').trim();\n  let matchStr = String(row.Match || '').trim();\n  let needsRepair = false;\n\n  const repairTarget = marketRepairMap[marketStr.toLowerCase()];\n  if (repairTarget && matchStr !== repairTarget) {\n    matchStr = repairTarget;\n    needsRepair = true;\n  }\n\n  const isBasketball = /nba|ncaa|basket|🏀|euroleague|wnba/i.test(leagueStr) || /pts|spread|\\sml\\s/i.test(marketStr);\n  const odds = parseFloat(row.Odds) || 0;\n  const units = parseFloat(row.StakeUnits) || 0;\n\n  const itemObj = {\n    row_number: rowNum,\n    timestamp: timestampISO,\n    eventId: String(row.EventId || '').trim(),\n    sport: isBasketball ? 'basketball' : 'soccer',\n    league: leagueStr,\n    match: matchStr,\n    kickoff: String(row.Kickoff || '').trim(),\n    kickoffISO,\n    kickoffDate: baseDateEat,\n    market: marketStr,\n    odds,\n    probPct: parseFloat(row.ModelProb) || 0,\n    edgePct: parseFloat(row.EdgePct) || 0,\n    confidence: String(row.Confidence || '').trim(),\n    units,\n    sheetResult: result,\n    needsRepair,\n    fromSupabase: false\n  };\n  sheetParsed.push(itemObj);\n\n  const mk = `${normKey(matchStr)}::${normKey(marketStr)}`;\n  if (!sheetPendingLookup.has(mk) || (result !== 'WIN' && result !== 'LOSS')) {\n    sheetPendingLookup.set(mk, itemObj);\n  }\n}\n\nconst pendingMap = {};\nconst settledMap = {};\nconst supabaseSeenMM = new Set();\n\n// 3. Process SUPABASE rows FIRST (Source of Truth)\nfor (const r of sbRows) {\n  const matchStr = String(r.match || '').trim();\n  const marketStr = String(r.pick || r.market || '').trim();\n  if (!matchStr || !marketStr) continue;\n\n  const kickoffISO = String(r.kickoff_time || r.created_at || '').trim();\n  const baseDateEat = toEatDate(kickoffISO);\n  const sportRaw = String(r.sport || '').toLowerCase();\n  const leagueStr = String(r.league || '').trim();\n  const isBasketball = sportRaw.includes('basket') || /nba|ncaa|basket|euroleague|wnba/i.test(leagueStr);\n\n  const tierStr = String(r.tier || '').trim().toUpperCase();\n  let confLabel = tierStr;\n  if (tierStr.includes('STRONG')) confLabel = '🟢 STRONG';\n  else if (tierStr.includes('MODERATE')) confLabel = '🟡 MODERATE';\n  else if (tierStr.includes('RISKY')) confLabel = '🔴 RISKY';\n  else confLabel = tierStr || '🟢 STRONG';\n\n  const odds = parseFloat(r.odds) || 0;\n  const units = parseFloat(r.units) || 1;\n  const probPct = parseFloat(r.confidence) || 70;\n  const edgePct = parseFloat(r.edge_pct) || 0;\n\n  const mmKey = `${normKey(matchStr)}::${normKey(marketStr)}`;\n  supabaseSeenMM.add(mmKey);\n  const sheetMatch = sheetPendingLookup.get(mmKey) || null;\n\n  const itemObj = {\n    supabaseId: r.id || null,\n    fromSupabase: true,\n    row_number: sheetMatch ? sheetMatch.row_number : null,\n    timestamp: (sheetMatch && sheetMatch.timestamp) || r.created_at || kickoffISO,\n    eventId: String(r.event_id || (sheetMatch && sheetMatch.eventId) || '').trim(),\n    sport: isBasketball ? 'basketball' : 'soccer',\n    league: leagueStr || (isBasketball ? 'NBA' : 'Football'),\n    match: matchStr,\n    origMatch: matchStr,\n    origPick: String(r.pick || marketStr),\n    origKickoffTime: r.kickoff_time || null,\n    origReasoning: r.reasoning || null,\n    origStreamId: r.stream_id || null,\n    origSlipCode: r.slip_code || null,\n    origHomeForm: r.home_form || null,\n    origAwayForm: r.away_form || null,\n    origInjuryNote: r.injury_note || null,\n    origTier: r.tier || null,\n    origConfidenceNum: r.confidence ?? null,\n    kickoff: (sheetMatch && sheetMatch.kickoff) || formatEatKickoff(kickoffISO),\n    kickoffISO,\n    kickoffDate: baseDateEat,\n    market: marketStr,\n    odds,\n    probPct,\n    edgePct,\n    confidence: confLabel,\n    units\n  };\n\n  const status = String(r.status || 'published').trim().toLowerCase();\n  const res = String(r.result || '').trim().toLowerCase();\n  const dedupKey = `${baseDateEat}::${mmKey}`;\n\n  if (status === 'settled' && (res === 'won' || res === 'win' || res === 'lost' || res === 'loss')) {\n    const isWin = res === 'won' || res === 'win';\n    const payout = isWin ? +(units * odds).toFixed(2) : 0;\n    const profit = (r.profit_units !== null && r.profit_units !== undefined && r.profit_units !== '')\n      ? +Number(r.profit_units).toFixed(2)\n      : +(payout - units).toFixed(2);\n    const roi = units > 0 ? +((profit / units) * 100).toFixed(1) : 0;\n    settledMap[dedupKey] = {\n      ...itemObj,\n      result: isWin ? 'WIN' : 'LOSS',\n      payout,\n      profit,\n      roi,\n      scoreText: String(r.score || 'FT').trim() || 'FT'\n    };\n  } else if (status === 'published' || !res || res === 'pending') {\n    pendingMap[dedupKey] = itemObj;\n  }\n}\n\n// 4. Merge any Google Sheet rows not already covered by Supabase (e.g. historical settled or Sheet-only picks)\nfor (const itemObj of sheetParsed) {\n  const mmKey = `${normKey(itemObj.match)}::${normKey(itemObj.market)}`;\n  const dedupKey = `${itemObj.kickoffDate}::${mmKey}`;\n  const res = itemObj.sheetResult;\n\n  if (!itemObj.needsRepair && (res === 'WIN' || res === 'LOSS')) {\n    if (!settledMap[dedupKey] && !supabaseSeenMM.has(mmKey)) {\n      const payout = res === 'WIN' ? +(itemObj.units * itemObj.odds).toFixed(2) : 0;\n      const profit = +(payout - itemObj.units).toFixed(2);\n      const roi = itemObj.units > 0 ? +((profit / itemObj.units) * 100).toFixed(1) : 0;\n      settledMap[dedupKey] = { ...itemObj, result: res, payout, profit, roi, scoreText: 'FT' };\n    }\n  } else {\n    // Only add Sheet-only pending row if Supabase doesn't already track this match+market\n    if (!supabaseSeenMM.has(mmKey) && !pendingMap[dedupKey]) {\n      pendingMap[dedupKey] = itemObj;\n    }\n  }\n}\n\nconst pending = Object.values(pendingMap);\nconst existingSettled = Object.values(settledMap);\n\n// 5. Build lean ESPN scoreboard fetch plan for pending picks\nconst soccerDates = new Set();\nconst basketDates = new Set();\n\nfunction addDateWindow(setObj, isoStr) {\n  const d = new Date(isoStr);\n  if (isNaN(d.getTime())) return;\n  for (const offsetDays of [-1, 0, 1]) {\n    const dt = new Date(d.getTime() + offsetDays * 86400000);\n    const ymd = dt.toLocaleDateString('en-CA', { timeZone: 'Africa/Dar_es_Salaam' }).replace(/-/g, '');\n    setObj.add(ymd);\n  }\n}\n\nfor (const p of pending) {\n  const ref = p.kickoffISO || p.timestamp;\n  if (p.sport === 'basketball') addDateWindow(basketDates, ref);\n  else addDateWindow(soccerDates, ref);\n}\n\nconst yest = new Date(nowMs - 86400000).toLocaleDateString('en-CA', { timeZone: 'Africa/Dar_es_Salaam' }).replace(/-/g, '');\nconst SOCCER_LEAGUES = [\n  'uefa.nations','bra.1','usa.1','eng.1','esp.1','ita.1','ger.1','fra.1',\n  'uefa.champions','uefa.europa','fifa.worldq.uefa','ned.1','por.1','tur.1'\n];\nconst BASKET_LEAGUES = ['nba', 'mens-college-basketball'];\n\nconst fetches = [];\nfor (const dateKey of soccerDates) {\n  for (const slug of SOCCER_LEAGUES) {\n    fetches.push({ skip: false, sport: 'soccer', slug, dateKey });\n  }\n}\nfor (const dateKey of basketDates) {\n  for (const slug of BASKET_LEAGUES) {\n    fetches.push({ skip: false, sport: 'basketball', slug, dateKey });\n  }\n}\n\n// Keep 1 fast lightweight fetch if 0 pending so manual Ledger Status still builds cleanly without Telegram spam on cron\nif (fetches.length === 0) {\n  fetches.push({ skip: false, sport: 'basketball', slug: 'nba', dateKey: yest });\n}\n\nreturn fetches.map((f, idx) => ({\n  json: {\n    ...f,\n    allPending: idx === 0 ? pending : [],\n    existingSettled: idx === 0 ? existingSettled : [],\n    sheetOnline: idx === 0 ? sheetOnline : false,\n    supabaseCount: idx === 0 ? sbRows.length : 0\n  }\n}));",
+        "language": "javaScript",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "769633d6-f13e-4fa1-a403-a6e1df336eac",
+      "name": "Filter Pending & Build Fetch Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "skip-check",
+              "leftValue": "={{ Boolean($json.skip) }}",
+              "operator": {
+                "operation": "false",
+                "type": "boolean"
+              },
+              "rightValue": false
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          }
+        },
+        "options": {}
+      },
+      "id": "cc7f10d3-b401-43ef-8c0d-109ffcf4c214",
+      "name": "Has Pending?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        816,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "url": "=https://site.api.espn.com/apis/site/v2/sports/{{ $json.sport }}/{{ $json.slug }}/scoreboard?dates={{ $json.dateKey }}"
+      },
+      "id": "134aa6e1-6e26-460c-a201-499b915b71a1",
+      "name": "Fetch ESPN Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1056,
+        208
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// Grade PENDING picks against ESPN results + enrich existing settled picks with FT scores\n// Deduplicates per (date + match + market) for accurate P&L reporting\n// =============================================================\nconst items = $input.all();\nconst planItems = $('Filter Pending & Build Fetch Plan').all();\nconst allPending = (planItems[0] && planItems[0].json && planItems[0].json.allPending) || [];\nconst existingSettled = (planItems[0] && planItems[0].json && planItems[0].json.existingSettled) || [];\n\nconst scoreMap = {};\nconst nameMap = {};\n\nfunction normName(s) {\n  return String(s || '')\n    .toLowerCase()\n    .replace(/[^\\w\\s]/g, ' ')\n    .replace(/\\b(fc|sc|cf|ac|afc|united|city|club|de|da|do)\\b/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfor (const item of items) {\n  const events = (item.json && item.json.events) || [];\n  for (const ev of events) {\n    const comp = (ev.competitions && ev.competitions[0]) || {};\n    const cs = comp.competitors || [];\n    const h = cs.find(c => c.homeAway === 'home') || {};\n    const a = cs.find(c => c.homeAway === 'away') || {};\n    const home = (h.team && h.team.displayName) || 'Home';\n    const away = (a.team && a.team.displayName) || 'Away';\n    const hShort = (h.team && (h.team.shortDisplayName || h.team.name || h.team.abbreviation)) || home;\n    const aShort = (a.team && (a.team.shortDisplayName || a.team.name || a.team.abbreviation)) || away;\n    const hScore = parseInt(h.score || '0', 10);\n    const aScore = parseInt(a.score || '0', 10);\n    const completed = !!(ev.status && ev.status.type && ev.status.type.completed);\n    const detail = (ev.status && ev.status.type && ev.status.type.detail) || '';\n\n    const result = {\n      home, away, hShort, aShort,\n      homeScore: hScore, awayScore: aScore,\n      totalGoals: hScore + aScore,\n      completed, detail\n    };\n    if (ev.id) scoreMap[String(ev.id)] = result;\n    const key = `${home} vs ${away}`.toLowerCase();\n    if (!nameMap[key] || completed) nameMap[key] = result;\n  }\n}\n\nfunction teamMatches(target, teamFull, teamShort) {\n  const t = normName(target);\n  const f = normName(teamFull);\n  const sh = normName(teamShort);\n  if (!t) return false;\n  return f.includes(t) || t.includes(f) || (sh.length >= 3 && (t.includes(sh) || sh.includes(t)));\n}\n\nfunction findScore(p) {\n  if (p.eventId && scoreMap[p.eventId]) return scoreMap[p.eventId];\n  const key = String(p.match || '').toLowerCase();\n  if (nameMap[key]) return nameMap[key];\n  const parts = key.split(/\\s+vs\\s+|\\s+@\\s+/);\n  if (parts.length === 2) {\n    for (const k of Object.keys(nameMap)) {\n      const cand = nameMap[k];\n      if (\n        (teamMatches(parts[0], cand.home, cand.hShort) && teamMatches(parts[1], cand.away, cand.aShort)) ||\n        (teamMatches(parts[0], cand.away, cand.aShort) && teamMatches(parts[1], cand.home, cand.hShort))\n      ) {\n        return cand;\n      }\n    }\n  }\n  return null;\n}\n\nfunction evaluateMarket(marketStr, s) {\n  const m = String(marketStr || '').toUpperCase().trim();\n\n  const ouMatch = m.match(/(OVER|UNDER)\\s*(\\d+(?:\\.\\d+)?)/);\n  if (ouMatch) {\n    const side = ouMatch[1];\n    const line = parseFloat(ouMatch[2]);\n    if (side === 'OVER') return s.totalGoals > line;\n    if (side === 'UNDER') return s.totalGoals < line;\n  }\n\n  const spMatch = m.match(/^(?:SPREAD\\s+|HANDICAP\\s+)?(.+?)\\s+([+-]\\d+(?:\\.\\d+)?)(?:\\s*PTS)?$/);\n  if (spMatch && !m.includes('WIN (')) {\n    const teamPart = spMatch[1].replace(/^SPREAD\\s+/i, '').trim();\n    const hcap = parseFloat(spMatch[2]);\n    if (teamMatches(teamPart, s.home, s.hShort)) return (s.homeScore + hcap) > s.awayScore;\n    if (teamMatches(teamPart, s.away, s.aShort)) return (s.awayScore + hcap) > s.homeScore;\n  }\n\n  if (m.includes('DC 1X') || m.includes('DOUBLE CHANCE 1X') || m === '1X') return s.homeScore >= s.awayScore;\n  if (m.includes('DC X2') || m.includes('DOUBLE CHANCE X2') || m === 'X2') return s.awayScore >= s.homeScore;\n  if (m.includes('DC 12') || m === '12') return s.homeScore !== s.awayScore;\n\n  if (m.includes('WIN (1)') || m.endsWith(' (1)') || m.includes('HOME ML')) return s.homeScore > s.awayScore;\n  if (m.includes('WIN (2)') || m.endsWith(' (2)') || m.includes('AWAY ML')) return s.awayScore > s.homeScore;\n  if (m.includes(' ML') || m.includes(' WIN')) {\n    const cleanTeam = m.replace(/\\b(ML|WIN|\\(WIN\\)|MONEYLINE)\\b/g, '').trim();\n    if (teamMatches(cleanTeam, s.home, s.hShort)) return s.homeScore > s.awayScore;\n    if (teamMatches(cleanTeam, s.away, s.aShort)) return s.awayScore > s.homeScore;\n  }\n  if (m === 'DRAW' || m === 'X') return s.homeScore === s.awayScore;\n  if (m.includes('BTTS YES') || m.includes('GG')) return s.homeScore > 0 && s.awayScore > 0;\n  if (m.includes('BTTS NO') || m.includes('NG')) return s.homeScore === 0 || s.awayScore === 0;\n\n  return null;\n}\n\nconst newlyGraded = [];\nconst stillPending = [];\nconst pendingDedup = new Set();\n\nfor (const p of allPending) {\n  const s = findScore(p);\n  if (!s || !s.completed) {\n    const pk = `${p.match}::${p.market}`;\n    if (!pendingDedup.has(pk)) {\n      pendingDedup.add(pk);\n      stillPending.push(p);\n    }\n    continue;\n  }\n\n  const hit = evaluateMarket(p.market, s);\n  if (hit === null) {\n    stillPending.push({ ...p, note: 'unrecognized market: ' + p.market });\n    continue;\n  }\n\n  const payout = hit ? +(p.units * p.odds).toFixed(2) : 0;\n  const profit = +(payout - p.units).toFixed(2);\n  const roi = p.units > 0 ? +((profit / p.units) * 100).toFixed(1) : 0;\n\n  newlyGraded.push({\n    ...p,\n    scoreHome: s.homeScore,\n    scoreAway: s.awayScore,\n    scoreText: `${s.home} ${s.homeScore} - ${s.awayScore} ${s.away}`,\n    result: hit ? 'WIN' : 'LOSS',\n    payout,\n    profit,\n    roi\n  });\n}\n\n// Combine existingSettled + newlyGraded (deduplicated per date + match + market) for full reporting\nconst masterSettledMap = {};\nfor (const item of [...existingSettled, ...newlyGraded]) {\n  const s = findScore(item);\n  const scoreText = (s && s.completed) ? `${s.home} ${s.homeScore} - ${s.awayScore} ${s.away}` : (item.scoreText || 'FT');\n  const dk = `${item.kickoffDate}::${item.match.toLowerCase()}::${item.market.toLowerCase()}`;\n  masterSettledMap[dk] = { ...item, scoreText };\n}\n\nconst allSettledUnique = Object.values(masterSettledMap);\nconst byDate = {};\nfor (const g of allSettledUnique) {\n  byDate[g.kickoffDate] = byDate[g.kickoffDate] || { wins: 0, losses: 0, staked: 0, returned: 0, picks: [] };\n  const b = byDate[g.kickoffDate];\n  if (g.result === 'WIN') b.wins++;\n  else b.losses++;\n  b.staked += g.units;\n  b.returned += g.payout;\n  b.picks.push(g);\n}\n\nreturn [{\n  json: {\n    graded: newlyGraded, // Only newly graded rows need Sheet update\n    allSettledUnique,\n    stillPending,\n    byDate,\n    totalNewlyGraded: newlyGraded.length,\n    totalSettledUnique: allSettledUnique.length,\n    totalPending: stillPending.length\n  }\n}];",
+        "language": "javaScript",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "65749f67-9555-4565-9bd7-367d446858b8",
+      "name": "Grade vs Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Only update Google Sheet for rows that actually have a valid numeric row_number (> 1)\nconst input = $input.first().json || {};\nconst graded = input.graded || [];\nreturn graded\n  .filter(g => Number.isFinite(Number(g.row_number)) && Number(g.row_number) > 1)\n  .map(g => ({\n    json: {\n      row_number: Number(g.row_number),\n      Timestamp: g.timestamp,\n      Match: g.match,\n      Result: g.result,\n      Payout: g.payout,\n      ROI: g.roi\n    }\n  }));",
+        "language": "javaScript",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "1cb29d2f-af37-44f9-adc4-dacc00da5d35",
+      "name": "Prepare Update Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1536,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "canBeUsedToMatch": true,
+              "display": true,
+              "displayName": "row_number",
+              "id": "row_number",
+              "readOnly": true,
+              "removed": false,
+              "required": false,
+              "type": "number"
+            },
+            {
+              "canBeUsedToMatch": true,
+              "display": true,
+              "displayName": "Match",
+              "id": "Match",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "Result",
+              "id": "Result",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "Payout",
+              "id": "Payout",
+              "required": false,
+              "type": "number"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "ROI",
+              "id": "ROI",
+              "required": false,
+              "type": "number"
+            }
+          ],
+          "value": {
+            "Match": "={{ $json.Match }}",
+            "Payout": "={{ $json.Payout }}",
+            "ROI": "={{ $json.ROI }}",
+            "Result": "={{ $json.Result }}",
+            "row_number": "={{ $json.row_number }}"
+          }
+        },
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1v5MGr9ry4KlZ-brdcrrwnpUxXld-xV0Z3TbouxGjsbg"
+        },
+        "operation": "update",
+        "options": {},
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "HermesPicks"
+        }
+      },
+      "id": "067ddbc0-a453-4032-b102-c52884c96b5c",
+      "name": "Update Sheet Results",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1776,
+        96
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// Build SEPARATE, Systematic Telegram Settlement Messages (v5.0 — Supabase-First):\n// - Message 1 (ONLY if Football matches settled): ⚽ FOOTBALL RESULTS\n// - Message 2 (ONLY if Basketball matches settled): 🏀 BASKETBALL RESULTS\n// - Never spams on scheduled runs when 0 new games finished!\n// =============================================================\nconst input = $('Grade vs Results').first().json || {};\nconst planMeta = ($('Filter Pending & Build Fetch Plan').first() || {}).json || {};\nconst sheetOnline = !!planMeta.sheetOnline;\nconst newlyGraded = input.graded || [];\nconst allSettled = input.allSettledUnique || [];\nconst stillPending = input.stillPending || [];\n\nfunction esc(t) {\n  return String(t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nlet isManual = false;\ntry {\n  const m = $('Manual Trigger').all();\n  if (m && m.length > 0) isManual = true;\n} catch (e) {}\n\nif (newlyGraded.length === 0 && !isManual) {\n  return [];\n}\n\nconst now = new Date();\nconst ds = now.toLocaleDateString('sw-TZ', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Africa/Dar_es_Salaam' });\nconst ts = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Dar_es_Salaam' });\nconst BANKROLL_TZS = parseInt($env.HERMES_BANKROLL_TZS || '100000', 10);\nconst UNIT_TZS = Math.round(BANKROLL_TZS / 100);\nconst syncFooter = sheetOnline\n  ? '🤖 mwijay.duckdns.org · Supabase + Sheet Synced'\n  : '🤖 mwijay.duckdns.org · Supabase Autonomous (⚠️ Sheet backup offline)';\n\nconst newMap = {};\nfor (const g of newlyGraded) {\n  const k = `${g.match.toLowerCase()}::${g.market.toLowerCase()}`;\n  newMap[k] = g;\n}\nconst newUnique = Object.values(newMap);\n\nfunction buildSportMessage(sportKey, list, allSportSafe, sportPending) {\n  const isBasket = sportKey === 'basketball';\n  const icon = isBasket ? '🏀' : '⚽';\n  const title = isBasket ? 'HERMES NBA BASKETBALL RESULTS' : 'HERMES FOOTBALL RESULTS';\n\n  const wins = list.filter(p => p.result === 'WIN');\n  const losses = list.filter(p => p.result === 'LOSS');\n  const staked = list.reduce((a, b) => a + b.units, 0);\n  const returned = list.reduce((a, b) => a + b.payout, 0);\n  const profit = returned - staked;\n  const roi = staked > 0 ? (profit / staked) * 100 : 0;\n  const wr = list.length > 0 ? (wins.length / list.length) * 100 : 0;\n  const tzsProfit = Math.round(profit * UNIT_TZS);\n\n  let msg = `${icon} ${title}\\n📅 ${ds} | ⏰ ${ts} EAT\\n━━━━━━━━━━━━━━━━━━━━━━\\n`;\n  msg += `🎯 Matokeo Mapya: ${wins.length}W / ${losses.length}L (${wr.toFixed(1)}% WR)\\n`;\n  msg += `💰 Faida: ${profit >= 0 ? '+' : ''}${profit.toFixed(2)}u (${roi >= 0 ? '+' : ''}${roi.toFixed(1)}% ROI) | ${tzsProfit >= 0 ? '+TZS ' : '-TZS '}${Math.abs(tzsProfit).toLocaleString()} ${profit >= 0 ? '🟢' : '🔴'}\\n`;\n\n  if (wins.length > 0) {\n    const best = [...wins].sort((x, y) => y.profit - x.profit)[0];\n    msg += `🏆 BEST WIN: ${esc(best.match)} → ${esc(best.market)} @ ${best.odds.toFixed(2)} (+${best.profit.toFixed(2)}u) 🔥\\n`;\n  }\n  if (losses.length > 0) {\n    const worst = [...losses].sort((x, y) => x.profit - y.profit)[0];\n    msg += `⚠️ LOSS: ${esc(worst.match)} → ${esc(worst.market)} (${esc(worst.scoreText)})\\n`;\n  } else if (list.length > 0) {\n    msg += `🔥 CLEAN SWEEP — 100% USHINDI!\\n`;\n  }\n\n  msg += `\\n`;\n  list.slice(0, 6).forEach((p, i) => {\n    const em = p.result === 'WIN' ? '✅ WON' : '❌ LOST';\n    const sign = p.profit >= 0 ? '+' : '';\n    const tr = String(p.confidence || '').includes('STRONG') ? '🟢' : (String(p.confidence || '').includes('MODERATE') ? '🟡' : '🔴');\n    msg += `${i + 1}. ${em} ${esc(p.match)} (${esc(p.scoreText)})\\n` +\n           `   📌 ${tr} ${esc(p.market)} @ ${p.odds.toFixed(2)} | ${p.units}u → ${sign}${p.profit.toFixed(2)}u\\n`;\n  });\n\n  if (allSportSafe.length > 0) {\n    const sw = allSportSafe.filter(p => p.result === 'WIN').length;\n    const sl = allSportSafe.length - sw;\n    const sst = allSportSafe.reduce((a, b) => a + b.units, 0);\n    const sret = allSportSafe.reduce((a, b) => a + b.payout, 0);\n    const spr = sret - sst;\n    const sroi = sst > 0 ? (spr / sst) * 100 : 0;\n    msg += `\\n📈 Jumla ya Rekodi (${icon} 🟢/🟡 Pesa Halisi): ${sw}W/${sl}L (${((sw / allSportSafe.length) * 100).toFixed(1)}% WR) | ${spr >= 0 ? '+' : ''}${spr.toFixed(2)}u (${sroi >= 0 ? '+' : ''}${sroi.toFixed(1)}% ROI)\\n`;\n  }\n\n  if (sportPending.length > 0) {\n    msg += `⏳ Zinasubiri (${icon}): ${sportPending.length} picks\\n`;\n  }\n  msg += syncFooter;\n  if (msg.length > 3950) msg = msg.substring(0, 3947) + '...';\n  return msg;\n}\n\nconst outputs = [];\nconst fbNew = newUnique.filter(p => p.sport !== 'basketball');\nconst bbNew = newUnique.filter(p => p.sport === 'basketball');\n\nconst safeAll = allSettled.filter(g => !String(g.confidence || '').includes('RISKY') && !String(g.confidence || '').includes('🔴'));\nconst fbSafe = safeAll.filter(p => p.sport !== 'basketball');\nconst bbSafe = safeAll.filter(p => p.sport === 'basketball');\nconst fbPend = stillPending.filter(p => p.sport !== 'basketball');\nconst bbPend = stillPending.filter(p => p.sport === 'basketball');\n\nif (fbNew.length > 0) {\n  outputs.push({ json: { sport: 'football', settlementText: buildSportMessage('football', fbNew, fbSafe, fbPend) } });\n}\nif (bbNew.length > 0) {\n  outputs.push({ json: { sport: 'basketball', settlementText: buildSportMessage('basketball', bbNew, bbSafe, bbPend) } });\n}\n\nif (outputs.length === 0 && isManual) {\n  const mkStatus = (icon, name, safeArr, pendArr) => {\n    const sw = safeArr.filter(p => p.result === 'WIN').length;\n    const sl = safeArr.length - sw;\n    const sst = safeArr.reduce((a, b) => a + b.units, 0);\n    const sret = safeArr.reduce((a, b) => a + b.payout, 0);\n    const spr = sret - sst;\n    let s = `${icon} ${name} — LEDGER STATUS\\n📅 ${ds} | ⏰ ${ts} EAT\\n━━━━━━━━━━━━━━━━━━━━━━\\n`;\n    if (safeArr.length > 0) {\n      s += `📈 Pesa Halisi (🟢/🟡): ${sw}W / ${sl}L (${((sw / safeArr.length) * 100).toFixed(1)}% WR) | Net: ${spr >= 0 ? '+' : ''}${spr.toFixed(2)}u\\n`;\n    }\n    s += `⏳ Zinazosubiri kuchezwa: ${pendArr.length} picks\\n`;\n    pendArr.slice(0, 4).forEach((p, i) => {\n      s += `${i + 1}. ${esc(p.match)} → ${esc(p.market)} @ ${p.odds} (${esc(p.kickoff)})\\n`;\n    });\n    s += `\\n${syncFooter}`;\n    return s;\n  };\n  outputs.push({ json: { sport: 'football', settlementText: mkStatus('⚽', 'FOOTBALL', fbSafe, fbPend) } });\n  outputs.push({ json: { sport: 'basketball', settlementText: mkStatus('🏀', 'NBA BASKETBALL', bbSafe, bbPend) } });\n}\n\nreturn outputs;",
+        "language": "javaScript",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "18be5273-c72f-45ac-90c4-dc75ce7d4d87",
+      "name": "Build Settlement Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1536,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ String($env.ALTRAWARE_OWNER_TG_ID || '8051901138').trim() }}",
+        "text": "={{ $json.settlementText }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        },
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "additionalFields": {
+                      "callback_data": "cmd_football"
+                    },
+                    "text": "⚽ Football Leo"
+                  },
+                  {
+                    "additionalFields": {
+                      "callback_data": "cmd_nba"
+                    },
+                    "text": "🏀 NBA Leo"
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "additionalFields": {
+                      "callback_data": "cmd_results"
+                    },
+                    "text": "📊 Matokeo"
+                  },
+                  {
+                    "additionalFields": {
+                      "callback_data": "cmd_bankroll"
+                    },
+                    "text": "💰 Gawa Mtaji"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "replyMarkup": "inlineKeyboard"
+      },
+      "id": "b1e0ab49-a431-4081-9f30-f27ac569d43d",
+      "name": "Send Settlement to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1776,
+        304
+      ],
+      "webhookId": "6b21153b-7f29-4677-96cc-f4072dd002bf",
+      "credentials": {
+        "telegramApi": {
+          "name": "Noellyne BetBot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ String($env.ALTRAWARE_OWNER_TG_ID || '8051901138').trim() }}",
+        "text": "📭 Hermes Settlement: Hakuna picks za PENDING za kugrade sasa hivi. Google Sheet iko sawa.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "d6e9bdaf-c3c1-4a06-848c-1b055fb8804d",
+      "name": "Notify No Pending",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1056,
+        400
+      ],
+      "webhookId": "6b21153b-7f29-4677-96cc-f4072dd002bf",
+      "credentials": {
+        "telegramApi": {
+          "name": "Noellyne BetBot"
+        }
+      }
+    },
+    {
+      "id": "73f76e0d-3033-475b-bca5-280ba3d25dd3",
+      "name": "Prepare Supabase Settlement",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        520
+      ],
+      "parameters": {
+        "jsCode": "// Sync newly settled picks from Hermes Settlement v5.0 to Supabase tahigoqhuyxedhmeqhnp/daily_picks\n// Preserves original stream_id, reasoning, forms, slip_code & exact (match, pick, kickoff_time) unique key!\nconst g = $('Grade vs Results').first().json || {};\nconst graded = g.graded || [];\nif (!graded.length) return [];\n\nconst strip = (v) => String(v ?? '')\n  .replace(/[\\u{1F000}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{FE0F}\\u{2B00}-\\u{2BFF}]/gu, '')\n  .replace(/\\s+/g, ' ')\n  .trim();\n\nfunction slipCode(match, market) {\n  const s = `${match}|${market}`.toLowerCase();\n  let h = 2166136261;\n  for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';\n  let out = '', n = h;\n  for (let i = 0; i < 5; i++) { out += alphabet[n % alphabet.length]; n = Math.floor(n / alphabet.length); }\n  return `NLY-${out}`;\n}\n\nconst nowIso = new Date().toISOString();\nconst seen = new Set();\nconst out = [];\n\nfor (const sp of graded) {\n  const conf = String(sp.confidence || '');\n  if (conf.toUpperCase().includes('RISKY') && !sp.fromSupabase) continue;\n  const res = String(sp.result || '').toUpperCase();\n  if (res !== 'WIN' && res !== 'LOSS') continue;\n\n  const m = sp.origMatch || strip(sp.match);\n  const mk = sp.origPick || strip(sp.market);\n  const kt = sp.origKickoffTime || sp.kickoffISO || sp.timestamp || nowIso;\n  const key = `${m}|${mk}|${kt}`;\n  if (seen.has(key)) continue;\n  seen.add(key);\n\n  const odds = Math.round((Number(sp.odds) || 0) * 100) / 100;\n  const units = Math.round((Number(sp.units) || 1) * 100) / 100;\n  const profit = Math.round((res === 'WIN' ? (units * odds - units) : -units) * 100) / 100;\n  const isBb = /nba|ncaa|basket/i.test(String(sp.league || '') + ' ' + String(sp.sport || ''));\n  const scoreVal = String(sp.scoreText || (Number.isFinite(sp.scoreHome) ? `${sp.scoreHome} - ${sp.scoreAway}` : '')).trim();\n  const baseReason = sp.origReasoning ? String(sp.origReasoning).trim() : `Settled · Final Score: ${scoreVal || 'FT'}`;\n\n  out.push({\n    json: {\n      match: m,\n      league: strip(sp.league) || (isBb ? 'NBA' : 'Football'),\n      pick: mk,\n      market: mk,\n      odds,\n      confidence: Math.max(0, Math.min(100, Math.round(Number(sp.origConfidenceNum ?? sp.probPct ?? 70)))),\n      reasoning: baseReason,\n      kickoff_time: kt,\n      slip_code: sp.origSlipCode || slipCode(m, mk),\n      sport: isBb ? 'basketball' : 'football',\n      tier: sp.origTier || strip(conf) || 'STRONG',\n      units,\n      edge_pct: Math.round((Number(sp.edgePct || 0)) * 10) / 10,\n      event_id: String(sp.eventId || ''),\n      stream_id: sp.origStreamId || null,\n      home_form: sp.origHomeForm || null,\n      away_form: sp.origAwayForm || null,\n      injury_note: sp.origInjuryNote || null,\n      score: scoreVal || 'FT',\n      profit_units: profit,\n      settled_at: nowIso,\n      status: 'settled',\n      result: res === 'WIN' ? 'won' : 'lost',\n      source: 'hermes-n8n'\n    }\n  });\n}\nreturn out;",
+        "language": "javaScript",
+        "mode": "runOnceForAllItems"
+      }
+    },
+    {
+      "id": "267934b2-cf37-4395-b34e-11d812ff8341",
+      "name": "Upsert Supabase Settled Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        520
+      ],
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "method": "POST",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "sendHeaders": true,
+        "specifyBody": "json",
+        "url": "https://tahigoqhuyxedhmeqhnp.supabase.co/rest/v1/daily_picks?on_conflict=match,pick,kickoff_time"
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Noellyne Supabase"
+        }
+      }
+    },
+    {
+      "id": "386d3589-0059-4b3b-b2ce-db2bbcbda4fc",
+      "name": "Read Supabase Picks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        288
+      ],
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "GET",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "url": "https://tahigoqhuyxedhmeqhnp.supabase.co/rest/v1/daily_picks?select=*&order=created_at.desc&limit=300"
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Noellyne Supabase"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Read All Picks from Sheet": {
+      "main": [
+        [
+          {
+            "node": "Filter Pending & Build Fetch Plan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Filter Pending & Build Fetch Plan": {
+      "main": [
+        [
+          {
+            "node": "Has Pending?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Pending?": {
+      "main": [
+        [
+          {
+            "node": "Fetch ESPN Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify No Pending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch ESPN Results": {
+      "main": [
+        [
+          {
+            "node": "Grade vs Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Grade vs Results": {
+      "main": [
+        [
+          {
+            "node": "Prepare Update Rows",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Settlement Report",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Supabase Settlement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Update Rows": {
+      "main": [
+        [
+          {
+            "node": "Update Sheet Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Settlement Report": {
+      "main": [
+        [
+          {
+            "node": "Send Settlement to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Supabase Settlement": {
+      "main": [
+        [
+          {
+            "node": "Upsert Supabase Settled Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Supabase Picks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 08:00 EAT": {
+      "main": [
+        [
+          {
+            "node": "Read Supabase Picks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Supabase Picks": {
+      "main": [
+        [
+          {
+            "node": "Read All Picks from Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "timezone": "Africa/Dar_es_Salaam",
+    "binaryMode": "separate"
+  },
+  "active": false,
+  "meta": {
+    "sourceWorkflowId": "xsQuUV3Vfc6Z1TQJ",
+    "exportedBy": "Altraware Disaster Recovery Exporter",
+    "sanitized": true
+  }
+}

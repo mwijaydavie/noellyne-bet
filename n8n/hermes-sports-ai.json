@@ -1,0 +1,889 @@
+{
+  "name": "Hermes Sports AI v5.0 — Pro Dual Engine & BetPawa Assistant",
+  "description": "Hermes Sports AI v5.0: Football + NBA Sniper Engine, NBA Injury Guard, One-Tap Telegram Buttons, Live Sheet Chat & BetPawa Slip Helper.",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message",
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "id": "457fa50e-0fb7-44ca-b3d8-69ff8980182e",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        608
+      ],
+      "webhookId": "hermes-chat-webhook-v1",
+      "credentials": {
+        "telegramApi": {
+          "name": "Noellyne BetBot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// Interactive Telegram Agent v5.0:\n// - Handles BOTH text messages (/commands, free chat) AND One-Tap Inline Buttons (callback_query)\n// - Built-in ⚡ BetPawa Slip Helper (parses any TZS amount: 10,000, 20k, 50000, etc.)\n// =============================================================\nconst msg = $input.first().json || {};\nconst cb = msg.callback_query || null;\nconst mObj = cb ? (cb.message || {}) : (msg.message || {});\n\nconst rawText = cb\n  ? String(cb.data || '').trim()\n  : String(mObj.text || '').trim();\nconst chatId = String((mObj.chat && mObj.chat.id) || (cb && cb.from && cb.from.id) || '');\nconst fromId = String((cb && cb.from && cb.from.id) || (mObj.from && mObj.from.id) || '');\nconst ownerId = String($env.ALTRAWARE_OWNER_TG_ID || '8051901138').trim();\n\nif (!rawText) return [{ json: { skip: true, reason: 'empty message' } }];\nif (ownerId && fromId !== ownerId) return [{ json: { skip: true, reason: 'not owner' } }];\n\nconst sd = $getWorkflowStaticData('global');\nconst fbPicksText = sd.lastFootballPicks || 'Bado hakuna picks za Football za leo. Subiri saa 09:00 / 14:00 / 19:00 EAT.';\nconst bbPicksText = sd.lastBasketballPicks || 'Bado hakuna picks za NBA Basketball za leo. Subiri saa 09:00 / 14:00 / 19:00 EAT.';\nconst fbAnchor = sd.lastFootballAnchor || null;\nconst bbAnchor = sd.lastBasketballAnchor || null;\nconst lastTime = sd.lastPicksTime || 'Leo';\n\nconst lower = rawText.toLowerCase();\n\n// Detect TZS amount in user message (e.g. \"Nina TZS 10,000 leo\", \"20k\", \"50000\", \"15,000\")\nfunction extractTzsAmount(str) {\n  const s = String(str || '').toLowerCase();\n  const kMatch = s.match(/(\\d+(?:\\.\\d+)?)\\s*k\\b/);\n  if (kMatch) {\n    const val = Math.round(parseFloat(kMatch[1]) * 1000);\n    if (val >= 500 && val <= 50000000) return val;\n  }\n  const numMatches = s.match(/\\b\\d{1,3}(?:,\\d{3})+\\b|\\b\\d{3,8}\\b/g);\n  if (numMatches) {\n    for (const m of numMatches) {\n      const val = parseInt(m.replace(/,/g, ''), 10);\n      if (val >= 500 && val <= 50000000) return val;\n    }\n  }\n  return null;\n}\n\nconst isBankrollReq =\n  lower === 'cmd_bankroll' ||\n  lower === '/bankroll' ||\n  lower === '/mtaji' ||\n  /betpawa|gawa|mtaji|mkeka|slip|nina\\s*(tzs|tsh)?\\s*\\d/i.test(lower);\n\nconst detectedTzs = extractTzsAmount(rawText);\n\nfunction buildBetPawaSlip(amountTzs) {\n  const total = amountTzs || 10000;\n  const stakeFb = Math.round((total * 0.40) / 100) * 100;\n  const stakeBb = Math.round((total * 0.40) / 100) * 100;\n  const stakeCombo = total - stakeFb - stakeBb;\n\n  const fbName = fbAnchor ? `${fbAnchor.match} → ${fbAnchor.market}` : 'Football Safe Anchor #1 ya Leo';\n  const fbOdds = fbAnchor ? Number(fbAnchor.odds) : 1.35;\n  const fbKick = fbAnchor ? fbAnchor.kickoff : 'Leo';\n\n  const bbName = bbAnchor ? `${bbAnchor.match} → ${bbAnchor.market}` : 'NBA Safe Anchor #1 ya Leo';\n  const bbOdds = bbAnchor ? Number(bbAnchor.odds) : 1.35;\n  const bbKick = bbAnchor ? bbAnchor.kickoff : 'Usiku huu';\n\n  const comboOdds = +(fbOdds * bbOdds).toFixed(2);\n  const retFb = Math.round(stakeFb * fbOdds);\n  const retBb = Math.round(stakeBb * bbOdds);\n  const retCombo = Math.round(stakeCombo * comboOdds);\n  const totalRet = retFb + retBb + retCombo;\n  const netProfit = totalRet - total;\n  const roiPct = ((netProfit / total) * 100).toFixed(1);\n\n  return (\n    `⚡ BETPAWA SLIP HELPER — MGAWO WA TZS ${total.toLocaleString()}\\n` +\n    `📅 Kulingana na Anchors Bora za Leo (${lastTime})\\n` +\n    `━━━━━━━━━━━━━━━━━━━━━━\\n` +\n    `🎫 TICKET 1 (40% — Single ⚽ Football Anchor):\\n` +\n    `   📌 ${fbName} @ ${fbOdds.toFixed(2)} (${fbKick})\\n` +\n    `   💰 Weka: TZS ${stakeFb.toLocaleString()} → Malipo: TZS ${retFb.toLocaleString()}\\n\\n` +\n    `🎫 TICKET 2 (40% — Single 🏀 NBA Anchor):\\n` +\n    `   📌 ${bbName} @ ${bbOdds.toFixed(2)} (${bbKick})\\n` +\n    `   💰 Weka: TZS ${stakeBb.toLocaleString()} → Malipo: TZS ${retBb.toLocaleString()}\\n\\n` +\n    `🎫 TICKET 3 (20% — Safe 2-Leg Double ⚽ × 🏀):\\n` +\n    `   📌 Football Anchor × NBA Anchor @ ${comboOdds.toFixed(2)}\\n` +\n    `   💰 Weka: TZS ${stakeCombo.toLocaleString()} → Malipo: TZS ${retCombo.toLocaleString()}\\n\\n` +\n    `━━━━━━━━━━━━━━━━━━━━━━\\n` +\n    `📊 HESABU YA POCHI:\\n` +\n    `• Jumla ya Mtaji: TZS ${total.toLocaleString()}\\n` +\n    `• Zikishinda Zote: TZS ${totalRet.toLocaleString()} (Faida Safi: +TZS ${netProfit.toLocaleString()} | +${roiPct}%)\\n` +\n    `• Ulinzi (Safety Net): Hata moja ikiteleza, single nyingine inakurudishia sehemu kubwa ya mtaji!\\n\\n` +\n    `💡 Unataka mgawo wa kiasi kingine? Andika tu mfano: \"Nina 25,000 leo\" au \"Nina 50k\"!`\n  );\n}\n\nlet action = 'chat';\nlet instantReply = '';\n\nif (lower === 'cmd_football' || lower === '/football') {\n  action = 'football';\n  instantReply =\n    `⚽ HERMES FOOTBALL PICKS ZA LEO\\n` +\n    `📅 Updated: ${lastTime}\\n` +\n    `━━━━━━━━━━━━━━━━━━━━━━\\n` +\n    `${fbPicksText}\\n\\n` +\n    `💬 Ukitaka ufafanuzi wa mechi maalum, andika jina la timu (mfano: \"Chambua mechi ya Lazio\").`;\n} else if (lower === 'cmd_nba' || lower === '/basketball' || lower === '/nba') {\n  action = 'nba';\n  instantReply =\n    `🏀 HERMES NBA BASKETBALL PICKS ZA LEO\\n` +\n    `📅 Updated: ${lastTime}\\n` +\n    `━━━━━━━━━━━━━━━━━━━━━━\\n` +\n    `${bbPicksText}\\n\\n` +\n    `📘 Kumbuka: ML = Timu kushinda (+OT) | SPREAD -5.5 = Ishinde kwa 6+ | +5.5 = Isifungwe 6+.\\n` +\n    `💬 Uliza swali lolote kuhusu NBA hapa chini!`;\n} else if (lower === 'cmd_results' || lower === '/results') {\n  action = 'results';\n} else if (isBankrollReq) {\n  action = 'bankroll';\n  instantReply = buildBetPawaSlip(detectedTzs || 10000);\n} else if (lower === '/' || lower === '/start' || lower === '/help') {\n  action = 'help';\n  instantReply =\n    `🦅 KARIBU NOELLYNE HERMES SPORTS AI v5.0!\\n` +\n    `━━━━━━━━━━━━━━━━━━━━━━\\n` +\n    `Bonyeza kitufe chochote hapa chini kupata taarifa papo hapo:\\n` +\n    `• ⚽ Football Leo — Kadi ya leo ya Sniper Football (Max 4 picks)\\n` +\n    `• 🏀 NBA Leo — Kadi ya NBA + 🏥 Injury Guard\\n` +\n    `• 📊 Matokeo — Rekodi yako halisi ya Google Sheet (Football vs NBA)\\n` +\n    `• 💰 Gawa Mtaji — BetPawa Slip Helper (au andika \"Nina 20,000 leo\")\\n\\n` +\n    `💬 Unaweza pia kuniuliza swali lolote la kawaida kwa Kiswahili!`;\n}\n\nconst prompt = `Wewe ni Noellyne Hermes Sports AI v5.0 — Mshauri Mkuu wa Football & NBA Betting kwa David Erick Mwijage.\nPICKS ZA LEO (${lastTime}):\n=== ⚽ FOOTBALL ===\n${fbPicksText}\n\n=== 🏀 NBA BASKETBALL (na Injury Guard) ===\n${bbPicksText}\n\nUJUMBE WA DAVID:\n\"${rawText}\"\n\nJibu kwa Kiswahili safi, ufupi (mistari 4-8), bila Markdown (* au **) wala HTML tags.`;\n\nreturn [{\n  json: {\n    skip: false,\n    chatId,\n    action,\n    instantReply,\n    detectedTzs: detectedTzs || 0,\n    prompt,\n    userText: rawText\n  }\n}];"
+      },
+      "id": "3525a527-ff69-4ae4-b76b-0e2b702402f3",
+      "name": "Parse & Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "skip-check",
+              "leftValue": "={{ Boolean($json.skip) }}",
+              "operator": {
+                "operation": "false",
+                "type": "boolean"
+              },
+              "rightValue": false
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          }
+        },
+        "options": {}
+      },
+      "id": "da68f449-2e15-4875-85c3-dee4a10e60b9",
+      "name": "Skip Filter",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        464,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// Interactive Chat AI Router v5.1 (Resilient — NEVER goes silent!):\n// - Instant <0.5s replies for One-Tap Buttons (⚽ Football, 🏀 NBA, 💰 BetPawa Slip, 📊 Results)\n// - Gracefully survives expired Google Sheets OAuth instead of crashing silently!\n// =============================================================\nconst sheetRows = $input.all();\nconst ctx = $('Parse & Build Context').first().json || {};\nconst chatId = ctx.chatId;\n\nfunction cleanForTgHtml(t) {\n  let s = String(t || '')\n    .replace(/<think>[\\s\\S]*?<\\/think>/gi, '')\n    .replace(/<[^>]+>/g, '')\n    .replace(/\\*\\*(.*?)\\*\\*/g, '$1')\n    .replace(/^\\s*[\\*\\-]\\s+/gm, '• ')\n    .replace(/[`*_]/g, '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .trim();\n  if (s.length > 3850) s = s.substring(0, 3847) + '...';\n  return s;\n}\n\nconst sheetErrItem = sheetRows.find(r => r.json && (r.json.error || r.json.message && !r.json.Match));\nconst sheetDown = Boolean(sheetErrItem);\nconst sheetErrMsg = sheetDown\n  ? String((sheetErrItem.json.error && (sheetErrItem.json.error.message || sheetErrItem.json.error)) || sheetErrItem.json.message || 'Google Sheets disconnected').slice(0, 180)\n  : '';\n\nconst BANKROLL_TZS = parseInt($env.HERMES_BANKROLL_TZS || '100000', 10);\nconst UNIT_TZS = Math.round(BANKROLL_TZS / 100);\nconst dedup = {};\nlet pendingFb = 0, pendingBb = 0;\n\nif (!sheetDown) {\n  for (const r of sheetRows) {\n    const row = r.json || {};\n    if (!row.Match) continue;\n    const res = String(row.Result || '').trim().toUpperCase();\n    const league = String(row.League || '');\n    const market = String(row.Market || '');\n    const isBasket = /nba|ncaa|basket|🏀/i.test(league) || /pts|spread|\\sml\\s/i.test(market);\n    const conf = String(row.Confidence || '');\n    const isRisky = conf.includes('RISKY') || conf.includes('🔴');\n\n    if (res === 'PENDING' || res === '') {\n      if (isBasket) pendingBb++; else pendingFb++;\n      continue;\n    }\n    if (res !== 'WIN' && res !== 'LOSS') continue;\n\n    const dt = String(row.Timestamp || '').slice(0, 10);\n    const key = `${dt}::${String(row.Match).toLowerCase()}::${market.toLowerCase()}`;\n    const odds = parseFloat(row.Odds) || 0;\n    const units = parseFloat(row.StakeUnits) || 0;\n    const payout = res === 'WIN' ? +(units * odds).toFixed(2) : 0;\n    const profit = +(payout - units).toFixed(2);\n    dedup[key] = { match: row.Match, market, odds, units, payout, profit, result: res, isBasket, isRisky, dt };\n  }\n}\n\nconst settledList = Object.values(dedup);\nconst safeAll = settledList.filter(x => !x.isRisky);\nconst safeFb = safeAll.filter(x => !x.isBasket);\nconst safeBb = safeAll.filter(x => x.isBasket);\n\nfunction summarize(arr) {\n  const w = arr.filter(x => x.result === 'WIN').length;\n  const l = arr.length - w;\n  const st = arr.reduce((a, b) => a + b.units, 0);\n  const ret = arr.reduce((a, b) => a + b.payout, 0);\n  const pr = ret - st;\n  const roi = st > 0 ? (pr / st) * 100 : 0;\n  const wr = arr.length > 0 ? (w / arr.length) * 100 : 0;\n  return { n: arr.length, w, l, st, ret, pr, roi, wr, tzs: Math.round(pr * UNIT_TZS) };\n}\n\nconst sAll = summarize(safeAll);\nconst sFb = summarize(safeFb);\nconst sBb = summarize(safeBb);\n\nconst liveResultsText = sheetDown\n  ? (`⚠️ GOOGLE SHEETS OAUTH IME-EXPIRE!\\n` +\n     `━━━━━━━━━━━━━━━━━━━━━━\\n` +\n     `Sababu: ${sheetErrMsg}\\n\\n` +\n     `🔧 Hatua ya sekunde 10:\\n` +\n     `1. Fungua: https://mwijay.duckdns.org/credentials\\n` +\n     `2. Bonyeza \"Google Sheets account\" → Reconnect.\\n` +\n     `3. Ili isijirudie kila siku 7: Google Cloud Console → OAuth Consent Screen → Publish App (Production).\\n\\n` +\n     `💡 Picks za Football, NBA na BetPawa Slip bado zinafanya kazi hapa chini!`)\n  : (`📊 MATOKEO LIVE KUTOKA GOOGLE SHEET (HermesPicks)\\n` +\n     `━━━━━━━━━━━━━━━━━━━━━━\\n` +\n     `💎 REKODI YA PESA HALISI (🟢 STRONG & 🟡 MODERATE):\\n` +\n     `• Jumla: ${sAll.w}W / ${sAll.l}L (${sAll.wr.toFixed(1)}% Win Rate)\\n` +\n     `• Faida Safi: ${sAll.pr >= 0 ? '+' : ''}${sAll.pr.toFixed(2)}u (${sAll.roi >= 0 ? '+' : ''}${sAll.roi.toFixed(1)}% ROI)\\n` +\n     `• Pochi (TZS): ${sAll.tzs >= 0 ? '+TZS ' : '-TZS '}${Math.abs(sAll.tzs).toLocaleString()} (Mtaji sasa: TZS ${(BANKROLL_TZS + sAll.tzs).toLocaleString()})\\n\\n` +\n     `⚽ FOOTBALL (🟢/🟡): ${sFb.w}W / ${sFb.l}L (${sFb.wr.toFixed(1)}% WR) | ${sFb.pr >= 0 ? '+' : ''}${sFb.pr.toFixed(2)}u (${sFb.tzs >= 0 ? '+TZS ' : '-TZS '}${Math.abs(sFb.tzs).toLocaleString()})\\n` +\n     `🏀 BASKETBALL (🟢/🟡): ${sBb.w}W / ${sBb.l}L (${sBb.wr.toFixed(1)}% WR) | ${sBb.pr >= 0 ? '+' : ''}${sBb.pr.toFixed(2)}u (${sBb.tzs >= 0 ? '+TZS ' : '-TZS '}${Math.abs(sBb.tzs).toLocaleString()})\\n\\n` +\n     `⏳ Mechi Zinasubiri (PENDING): ⚽ ${pendingFb} Football | 🏀 ${pendingBb} Basketball\\n` +\n     `🤖 Live Sync · mwijay.duckdns.org`);\n\n// 1. Instant reply for [📊 Matokeo] / /results OR asking \"matokeo vipi?\"\nconst rawLow = String(ctx.rawText || '').toLowerCase();\nif (ctx.action === 'results' || /\\b(matokeo|results|rekodi|tumeishiaje|tumeshinda)\\b/i.test(rawLow)) {\n  return [{ json: { chatId, reply: cleanForTgHtml(liveResultsText) } }];\n}\n\n// 2. Instant reply for Football / NBA / BetPawa Slip / Help\nif (ctx.instantReply) {\n  return [{ json: { chatId, reply: cleanForTgHtml(ctx.instantReply) } }];\n}\n\n// 3. Free-text AI Chat\nconst prompt = `${ctx.prompt}\\n\\nTAKWINU HALISI ZA GOOGLE SHEET:\\n${liveResultsText}`;\nconst ALLOWED = ['groq', 'gemini', 'openrouter'];\nconst MAX_TOK = 1000;\nconst SYS = 'Wewe ni Noellyne Hermes Sports AI v5.1 — mshauri wa Football na NBA betting kwa David Erick Mwijage. Jibu kwa Kiswahili safi, ufupi (chini ya maneno 240), bila Markdown (* au **) wala HTML tags.';\nconst ENV_MAP = { groq: 'GROQ_KEYS', gemini: 'GEMINI_KEYS', openrouter: 'OPENROUTER_KEYS' };\nconst URLS = { groq: 'https://api.groq.com/openai/v1/chat/completions', openrouter: 'https://openrouter.ai/api/v1/chat/completions' };\nconst MODELS = { groq: ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b'], gemini: ['gemini-2.5-flash'], openrouter: ['nvidia/nemotron-nano-9b-v2:free'] };\nconst sd = $getWorkflowStaticData('global'); sd.rr = sd.rr || {}; sd.cool = sd.cool || {};\nconst now = () => Date.now(); const DL = now() + 30000;\nfunction getK(p) { return String($env[ENV_MAP[p]] || '').split(',').map(s => s.trim()).filter(Boolean); }\nfunction cool(p, i, ms) { sd.cool[`${p}:${i}`] = now() + ms; }\nfunction isC(p, i) { return (sd.cool[`${p}:${i}`] || 0) > now(); }\nfunction nxt(p, l) { const c = Number.isFinite(sd.rr[p]) ? sd.rr[p] : -1; const n = (c + 1) % l; sd.rr[p] = n; return n; }\n\nasync function callOAI(prov, model, key) {\n  const body = { model, messages: [{ role: 'system', content: SYS }, { role: 'user', content: prompt }], temperature: 0.3 };\n  if (/gpt-oss/.test(model)) { body.max_completion_tokens = MAX_TOK; body.reasoning_effort = 'low'; }\n  else { body.max_tokens = MAX_TOK; }\n  const h = { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' };\n  if (prov === 'openrouter') { h['HTTP-Referer'] = 'https://mwijay.duckdns.org'; }\n  const r = await this.helpers.httpRequest({ method: 'POST', url: URLS[prov], headers: h, body, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 20000 });\n  return { s: r.statusCode, t: r.body && r.body.choices && r.body.choices[0] && r.body.choices[0].message && r.body.choices[0].message.content };\n}\nasync function callGem(model, key) {\n  const r = await this.helpers.httpRequest({ method: 'POST', url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, headers: { 'x-goog-api-key': key, 'Content-Type': 'application/json' }, body: { system_instruction: { parts: [{ text: SYS }] }, contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { thinkingConfig: { thinkingBudget: 0 }, maxOutputTokens: MAX_TOK, temperature: 0.3 } }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 20000 });\n  return { s: r.statusCode, t: r.body && r.body.candidates && r.body.candidates[0] && r.body.candidates[0].content && r.body.candidates[0].content.parts && r.body.candidates[0].content.parts.map(p => p.text).join('') };\n}\n\nfor (const prov of ALLOWED) {\n  if (now() > DL) break;\n  const keys = getK(prov); if (!keys.length) continue;\n  for (const model of MODELS[prov]) {\n    if (now() > DL) break;\n    for (let a = 0; a < Math.min(keys.length, 2); a++) {\n      if (now() > DL) break;\n      let idx = nxt(prov, keys.length), tr = 0;\n      while (isC(prov, idx) && tr < keys.length) { idx = nxt(prov, keys.length); tr++; }\n      if (isC(prov, idx)) break;\n      try {\n        const res = prov === 'gemini' ? await callGem.call(this, model, keys[idx]) : await callOAI.call(this, prov, model, keys[idx]);\n        if (res.s >= 200 && res.s < 300 && res.t) {\n          return [{ json: { chatId, reply: cleanForTgHtml(res.t) } }];\n        }\n        cool(prov, idx, res.s === 429 ? 60000 : 25000);\n      } catch (e) { cool(prov, idx, 20000); }\n    }\n  }\n}\nreturn [{ json: { chatId, reply: '⚠️ Samahani David, AI iko busy sasa. Bonyeza vitufe hapa chini kwa majibu ya haraka.' } }];"
+      },
+      "id": "4c9e22b5-68f8-4adf-be96-5fcc2c62ce58",
+      "name": "Chat AI Router",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.reply }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "⚽ Football Leo",
+                    "additionalFields": {
+                      "callback_data": "cmd_football"
+                    }
+                  },
+                  {
+                    "text": "🏀 NBA Leo",
+                    "additionalFields": {
+                      "callback_data": "cmd_nba"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "📊 Matokeo",
+                    "additionalFields": {
+                      "callback_data": "cmd_results"
+                    }
+                  },
+                  {
+                    "text": "💰 Gawa Mtaji",
+                    "additionalFields": {
+                      "callback_data": "cmd_bankroll"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "34961f03-a9eb-46d5-89cc-33116e6d50f0",
+      "name": "Reply to David",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1040,
+        528
+      ],
+      "webhookId": "hermes-chat-reply-v1",
+      "credentials": {
+        "telegramApi": {
+          "name": "Noellyne BetBot"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "54e60ce1-04a9-43a1-a1dd-d07fae52905a",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        48,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9,14,19 * * *"
+            }
+          ]
+        }
+      },
+      "id": "0b8fb58b-ca50-4dcb-9275-88fba5b95f69",
+      "name": "Schedule 09/14/19 EAT",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        48,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// Build Dual-Sport Fetch Plan + Live NBA Injury Report Feed\n// =============================================================\nconst nowEat = $now.setZone('Africa/Dar_es_Salaam');\nconst d0 = nowEat.toFormat('yyyyLLdd');\nconst d1 = nowEat.plus({ days: 1 }).toFormat('yyyyLLdd');\nconst d2 = nowEat.plus({ days: 2 }).toFormat('yyyyLLdd');\n\nconst soccerLeagues = [\n  { sport: 'soccer', slug: 'eng.1', name: 'EPL' },\n  { sport: 'soccer', slug: 'esp.1', name: 'La Liga' },\n  { sport: 'soccer', slug: 'ita.1', name: 'Serie A' },\n  { sport: 'soccer', slug: 'ger.1', name: 'Bundesliga' },\n  { sport: 'soccer', slug: 'fra.1', name: 'Ligue 1' },\n  { sport: 'soccer', slug: 'uefa.champions', name: 'UCL' },\n  { sport: 'soccer', slug: 'uefa.europa', name: 'UEL' },\n  { sport: 'soccer', slug: 'uefa.nations', name: 'UEFA Nations' },\n  { sport: 'soccer', slug: 'fifa.worldq.uefa', name: 'WCQ Europe' },\n  { sport: 'soccer', slug: 'ned.1', name: 'Eredivisie' },\n  { sport: 'soccer', slug: 'por.1', name: 'Liga Portugal' },\n  { sport: 'soccer', slug: 'tur.1', name: 'Super Lig' },\n  { sport: 'soccer', slug: 'bra.1', name: 'Brasileirão' },\n  { sport: 'soccer', slug: 'usa.1', name: 'MLS' },\n  { sport: 'soccer', slug: 'arg.1', name: 'Argentina Primera' },\n  { sport: 'soccer', slug: 'eng.2', name: 'Championship' }\n];\n\nconst basketLeagues = [\n  { sport: 'basketball', slug: 'nba', name: 'NBA' },\n  { sport: 'basketball', slug: 'mens-college-basketball', name: 'NCAAM' }\n];\n\nconst list = [];\nfunction pushLeague(l, dt) {\n  list.push({\n    ...l,\n    dateStr: dt,\n    url: `https://site.api.espn.com/apis/site/v2/sports/${l.sport}/${l.slug}/scoreboard?dates=${dt}`\n  });\n}\n\nfor (const l of soccerLeagues) {\n  pushLeague(l, d0);\n  pushLeague(l, d1);\n}\nfor (const slug of ['eng.1', 'esp.1', 'ita.1', 'ger.1', 'fra.1']) {\n  const found = soccerLeagues.find(x => x.slug === slug);\n  if (found) pushLeague(found, d2);\n}\nfor (const b of basketLeagues) {\n  pushLeague(b, d0);\n  pushLeague(b, d1);\n}\n\n// Live ESPN NBA Injury Report Feed for 🏥 NBA Injury Guard\nlist.push({\n  sport: 'nba_injuries',\n  slug: 'nba-injuries',\n  name: 'NBA Injuries',\n  dateStr: d0,\n  url: 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries'\n});\n\nreturn list.map(item => ({ json: item }));"
+      },
+      "id": "fae791b6-da5b-4461-93e5-8f55dc5d3dca",
+      "name": "Build League List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "327ffd65-d4f6-41b0-9cf7-aaf57f9bdf44",
+      "name": "Fetch ESPN",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        528,
+        240
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// HERMES QUANT MODEL v5.0 — SNIPER DUAL ENGINE + 🏥 NBA INJURY GUARD\n// Max 4 Curated Football Picks + Max 4 Curated NBA Picks\n// Checks live ESPN NBA Injury Report before assigning 🟢 STRONG!\n// =============================================================\nconst items = $input.all();\nconst reqMeta = $('Build League List').all();\nconst nowMs = Date.now();\n\n// Key NBA franchise stars / high-impact starters whose absence heavily shifts win odds\nconst NBA_STARS = [\n  'Stephen Curry', 'Anthony Edwards', 'Joel Embiid', 'Giannis Antetokounmpo', 'Nikola Jokic',\n  'LeBron James', 'Luka Doncic', 'Jayson Tatum', 'Shai Gilgeous-Alexander', 'Kevin Durant',\n  'Devin Booker', 'Victor Wembanyama', 'Jalen Brunson', 'Tyrese Haliburton', 'Donovan Mitchell',\n  'Ja Morant', 'Anthony Davis', 'Jimmy Butler', 'Kawhi Leonard', 'James Harden',\n  'Damian Lillard', 'Paolo Banchero', 'Tyrese Maxey', 'De\\'Aaron Fox', 'Cade Cunningham',\n  'LaMelo Ball', 'Trae Young', 'Domantas Sabonis', 'Alperen Sengun', 'Darius Garland',\n  'Evan Mobley', 'Chet Holmgren', 'Scottie Barnes', 'Zion Williamson', 'Brandon Ingram',\n  'Bradley Beal', 'Kyrie Irving', 'Jaylen Brown', 'Karl-Anthony Towns', 'Rudy Gobert',\n  'Pascal Siakam', 'Cooper Flagg', 'Kristaps Porzingis', 'Paul George', 'Bam Adebayo',\n  'Tyler Herro', 'Franz Wagner', 'Jaren Jackson Jr.', 'Desmond Bane', 'Jalen Williams',\n  'Jamal Murray', 'Donte DiVincenzo', 'Mikal Bridges', 'OG Anunoby', 'Julius Randle'\n].map(s => s.toLowerCase());\n\n// Pass 1: Build NBA Injury Map from live ESPN /nba/injuries payload\nconst nbaInjuryMap = {}; // lowercase team name -> { outNames, starOuts, dtdNames }\nfor (let idx = 0; idx < items.length; idx++) {\n  const meta = (reqMeta[idx] && reqMeta[idx].json) || {};\n  const body = items[idx].json || {};\n  if (meta.sport === 'nba_injuries' || Array.isArray(body.injuries)) {\n    for (const teamBlock of (body.injuries || [])) {\n      const tName = String(teamBlock.displayName || '').toLowerCase().trim();\n      if (!tName) continue;\n      const outNames = [];\n      const starOuts = [];\n      const dtdNames = [];\n      for (const inj of (teamBlock.injuries || [])) {\n        const status = String(inj.status || '').toLowerCase();\n        const player = String((inj.athlete && inj.athlete.displayName) || '').trim();\n        if (!player) continue;\n        if (status === 'out' || status === 'doubtful') {\n          outNames.push(player);\n          if (NBA_STARS.includes(player.toLowerCase())) {\n            starOuts.push(player);\n          }\n        } else if (status.includes('day-to-day') || status.includes('questionable')) {\n          dtdNames.push(player);\n        }\n      }\n      nbaInjuryMap[tName] = { outNames, starOuts, dtdNames };\n    }\n  }\n}\n\nfunction getTeamInjuries(teamDisplayName) {\n  const key = String(teamDisplayName || '').toLowerCase().trim();\n  if (nbaInjuryMap[key]) return nbaInjuryMap[key];\n  for (const k of Object.keys(nbaInjuryMap)) {\n    if (k.includes(key) || key.includes(k)) return nbaInjuryMap[k];\n  }\n  return { outNames: [], starOuts: [], dtdNames: [] };\n}\n\nfunction amToDec(r) {\n  if (r == null || r === '') return null;\n  const n = parseFloat(String(r).replace('+', ''));\n  if (isNaN(n) || n === 0) return null;\n  return n > 0 ? +(1 + n / 100).toFixed(2) : +(1 + 100 / Math.abs(n)).toFixed(2);\n}\n\nfunction formScore(f) {\n  if (!f) return 0.5;\n  let p = 0, len = 0;\n  for (const c of String(f)) {\n    if (c === 'W') { p += 3; len++; }\n    else if (c === 'D') { p += 1; len++; }\n    else if (c === 'L') { len++; }\n  }\n  return len > 0 ? p / (len * 3) : 0.5;\n}\n\nfunction recScore(recStr, isSoccer) {\n  if (!recStr) return 0.5;\n  const parts = String(recStr).split('-').map(x => parseInt(x, 10) || 0);\n  if (isSoccer && parts.length === 3) {\n    const [w, d, l] = parts;\n    const g = w + d + l;\n    return g > 0 ? (w * 3 + d) / (g * 3) : 0.5;\n  }\n  if (parts.length >= 2) {\n    const w = parts[0], l = parts[1];\n    const g = w + l;\n    return g > 0 ? w / g : 0.5;\n  }\n  return 0.5;\n}\n\nfunction fmtEat(evt) {\n  try {\n    const comp = (evt.competitions && evt.competitions[0]) || {};\n    const iso = evt.date || comp.date || evt.startDate || '';\n    if (!iso) return 'TBD EAT';\n    const d = new Date(iso);\n    if (isNaN(d.getTime())) return 'TBD EAT';\n    const dayPart = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Africa/Dar_es_Salaam' });\n    const timePart = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Dar_es_Salaam' });\n    return `${dayPart} ${timePart} EAT`;\n  } catch (e) {\n    return 'TBD EAT';\n  }\n}\n\nfunction getIso(evt) {\n  try {\n    const comp = (evt.competitions && evt.competitions[0]) || {};\n    const iso = evt.date || comp.date || evt.startDate || '';\n    if (!iso) return '';\n    const d = new Date(iso);\n    return isNaN(d.getTime()) ? '' : d.toISOString();\n  } catch (e) {\n    return '';\n  }\n}\n\nconst seenEventIds = new Set();\nconst fbCandidates = [];\nconst nbaCandidates = [];\nconst ncaaMlCandidates = [];\nconst injuryAlerts = [];\nlet totalSoccerEvents = 0;\nlet totalBasketEvents = 0;\n\nfor (let idx = 0; idx < items.length; idx++) {\n  const item = items[idx];\n  const meta = (reqMeta[idx] && reqMeta[idx].json) || {};\n  if (meta.sport === 'nba_injuries') continue;\n\n  const events = (item.json && item.json.events) || [];\n  const lgObj = (item.json && item.json.leagues && item.json.leagues[0]) || {};\n  const uid = String(lgObj.uid || '');\n  const sport = meta.sport || (uid.startsWith('s:40') ? 'basketball' : 'soccer');\n  const leagueName = meta.name || lgObj.abbreviation || lgObj.name || 'League';\n\n  for (const ev of events) {\n    if (!ev || !ev.id) continue;\n    const evId = String(ev.id);\n    if (seenEventIds.has(evId)) continue;\n\n    const completed = !!(ev.status && ev.status.type && ev.status.type.completed);\n    if (completed) continue;\n\n    const kIso = getIso(ev);\n    if (kIso && new Date(kIso).getTime() < nowMs - 15 * 60 * 1000) continue;\n\n    seenEventIds.add(evId);\n\n    const comp = (ev.competitions && ev.competitions[0]) || {};\n    const cs = comp.competitors || [];\n    const h = cs.find(c => c.homeAway === 'home') || {};\n    const a = cs.find(c => c.homeAway === 'away') || {};\n    const home = (h.team && h.team.displayName) || 'Home';\n    const away = (a.team && a.team.displayName) || 'Away';\n    if (home === 'TBD' || away === 'TBD') continue;\n\n    const o = (comp.odds && comp.odds[0]) || {};\n\n    if (sport === 'soccer') {\n      totalSoccerEvents++;\n      const hForm = h.form || '-----', aForm = a.form || '-----';\n      const hRec = (h.records && h.records[0] && h.records[0].summary) || '0-0-0';\n      const aRec = (a.records && a.records[0] && a.records[0].summary) || '0-0-0';\n\n      const hDec = amToDec(o.moneyline && o.moneyline.home && o.moneyline.home.close && o.moneyline.home.close.odds);\n      const aDec = amToDec(o.moneyline && o.moneyline.away && o.moneyline.away.close && o.moneyline.away.close.odds);\n      const dDec = amToDec((o.moneyline && o.moneyline.draw && o.moneyline.draw.close && o.moneyline.draw.close.odds) || (o.drawOdds && o.drawOdds.moneyLine));\n      const ouLine = o.overUnder || 2.5;\n      const overDec = amToDec(o.total && o.total.over && o.total.over.close && o.total.over.close.odds);\n      const underDec = amToDec(o.total && o.total.under && o.total.under.close && o.total.under.close.odds);\n      if (!hDec || !aDec) continue;\n\n      const hs = 0.55 * formScore(h.form) + 0.45 * recScore(hRec, true);\n      const as = 0.55 * formScore(a.form) + 0.45 * recScore(aRec, true);\n      const sDiff = hs - as;\n\n      const impH = 1 / hDec, impA = 1 / aDec, impD = dDec ? 1 / dDec : 0.27;\n      const impSum = impH + impA + impD;\n      const fairH = impH / impSum, fairD = impD / impSum, fairA = impA / impSum;\n\n      const alpha = sDiff * 0.22 + (hs >= 0.55 ? 0.03 : 0);\n      const modH = Math.max(0.12, Math.min(0.86, fairH + alpha));\n      const modA = Math.max(0.10, Math.min(0.84, fairA - sDiff * 0.22 + (as >= 0.58 ? 0.03 : 0)));\n      const modD = Math.max(0.14, Math.min(0.33, fairD + (0.22 - Math.abs(sDiff)) * 0.08));\n\n      const opts = [];\n      if (hDec >= 1.25 && hDec <= 2.40 && modH >= 0.56) {\n        opts.push({ market: `${home} Win (1)`, explain: `${home} kushinda nyumbani`, odds: hDec, prob: modH });\n      }\n      if (aDec >= 1.30 && aDec <= 2.40 && modA >= 0.56) {\n        opts.push({ market: `${away} Win (2)`, explain: `${away} kushinda ugenini`, odds: aDec, prob: modA });\n      }\n      const dc1XProb = Math.min(0.88, modH + modD);\n      const dc1XOdds = +((1 / (fairH + fairD)) * 0.98).toFixed(2);\n      if (dc1XOdds >= 1.25 && dc1XOdds <= 1.88 && dc1XProb >= 0.65 && sDiff >= -0.05) {\n        opts.push({ market: 'DC 1X', explain: `${home} kushinda AU Sare`, odds: dc1XOdds, prob: dc1XProb });\n      }\n      const dcX2Prob = Math.min(0.88, modA + modD);\n      const dcX2Odds = +((1 / (fairA + fairD)) * 0.98).toFixed(2);\n      if (dcX2Odds >= 1.25 && dcX2Odds <= 1.88 && dcX2Prob >= 0.65 && sDiff <= 0.05) {\n        opts.push({ market: 'DC X2', explain: `${away} kushinda AU Sare`, odds: dcX2Odds, prob: dcX2Prob });\n      }\n      if (overDec && underDec) {\n        const impO = 1 / overDec, impU = 1 / underDec;\n        const fairO = impO / (impO + impU), fairU = impU / (impO + impU);\n        const goalPulse = (hs + as - 0.92) * 0.22 + Math.abs(sDiff) * 0.10;\n        const modOver = Math.max(0.25, Math.min(0.80, fairO + goalPulse));\n        const modUnder = Math.max(0.25, Math.min(0.80, fairU - goalPulse));\n        if (overDec >= 1.42 && overDec <= 2.20 && modOver >= 0.58) {\n          opts.push({ market: `OVER ${ouLine}`, explain: `Jumla ya magoli kuzidi ${ouLine}`, odds: overDec, prob: modOver });\n        }\n        if (underDec >= 1.42 && underDec <= 2.20 && modUnder >= 0.58) {\n          opts.push({ market: `UNDER ${ouLine}`, explain: `Jumla ya magoli chini ya ${ouLine}`, odds: underDec, prob: modUnder });\n        }\n      }\n\n      let best = null;\n      for (const op of opts) {\n        const evVal = op.prob * op.odds - 1;\n        if (evVal < 0.015) continue;\n        const sharpScore = (evVal * 100) + (op.prob * 100 - 55) * 0.85;\n        if (!best || sharpScore > best.sharpScore) {\n          const probPct = +(op.prob * 100).toFixed(1);\n          const edgePct = +(evVal * 100).toFixed(1);\n          const tier = (probPct >= 63 && edgePct >= 2.5) || (probPct >= 68 && edgePct >= 1.5)\n            ? '🟢 STRONG'\n            : (probPct >= 56 && edgePct >= 1.5 ? '🟡 MODERATE' : '🔴 RISKY');\n          const kellyF = evVal > 0 ? evVal / (op.odds - 1) : 0.01;\n          const rawUnits = +(0.25 * kellyF * 100).toFixed(2);\n          const units = tier.includes('STRONG')\n            ? Math.min(3.00, Math.max(2.00, rawUnits))\n            : (tier.includes('MODERATE') ? Math.min(1.50, Math.max(1.00, rawUnits)) : 0.50);\n\n          best = {\n            id: evId,\n            sport: 'soccer',\n            league: `⚽ ${leagueName}`,\n            match: `${home} vs ${away}`,\n            kickoff: fmtEat(ev),\n            kickoffISO: kIso,\n            market: op.market,\n            explain: op.explain,\n            odds: op.odds,\n            probPct,\n            edgePct,\n            tier,\n            group: probPct >= 70 ? 'ANCHOR' : 'VALUE',\n            units,\n            hForm,\n            aForm,\n            hRec,\n            aRec,\n            sharpScore\n          };\n        }\n      }\n      if (best && !best.tier.includes('RISKY')) fbCandidates.push(best);\n    } else {\n      // BASKETBALL — NBA Priority + 🏥 LIVE NBA INJURY GUARD\n      totalBasketEvents++;\n      const isNBA = leagueName === 'NBA' || meta.slug === 'nba';\n      const hInj = isNBA ? getTeamInjuries(home) : { outNames: [], starOuts: [], dtdNames: [] };\n      const aInj = isNBA ? getTeamInjuries(away) : { outNames: [], starOuts: [], dtdNames: [] };\n\n      if (isNBA && (hInj.starOuts.length > 0 || aInj.starOuts.length > 0)) {\n        const parts = [];\n        if (hInj.starOuts.length) parts.push(`${home}: ${hInj.starOuts.join(', ')} OUT`);\n        if (aInj.starOuts.length) parts.push(`${away}: ${aInj.starOuts.join(', ')} OUT`);\n        injuryAlerts.push(parts.join(' | '));\n      }\n\n      const hRec = (h.records && h.records[0] && h.records[0].summary) || '0-0';\n      const aRec = (a.records && a.records[0] && a.records[0].summary) || '0-0';\n      const hHomeRec = (h.records && h.records.find(r => r.type === 'home') && h.records.find(r => r.type === 'home').summary) || hRec;\n      const aRoadRec = (a.records && a.records.find(r => r.type === 'road') && a.records.find(r => r.type === 'road').summary) || aRec;\n      const getStat = (cObj, n) => {\n        const s = (cObj.statistics || []).find(x => x.name === n);\n        return s ? parseFloat(s.displayValue) : null;\n      };\n      const defaultPPG = isNBA ? 113.5 : 75.0;\n      const hPPG = getStat(h, 'avgPoints') || defaultPPG;\n      const aPPG = getStat(a, 'avgPoints') || defaultPPG;\n      const hFG = getStat(h, 'fieldGoalPct') || 46.0;\n      const aFG = getStat(a, 'fieldGoalPct') || 46.0;\n\n      const hML = amToDec(o.moneyline && o.moneyline.home && o.moneyline.home.close && o.moneyline.home.close.odds);\n      const aML = amToDec(o.moneyline && o.moneyline.away && o.moneyline.away.close && o.moneyline.away.close.odds);\n      const spRaw = o.pointSpread && o.pointSpread.home && o.pointSpread.home.close && o.pointSpread.home.close.line;\n      const spLine = parseFloat(spRaw !== undefined ? spRaw : (o.spread || 0));\n      const hSpDec = amToDec(o.pointSpread && o.pointSpread.home && o.pointSpread.home.close && o.pointSpread.home.close.odds) || 1.91;\n      const aSpDec = amToDec(o.pointSpread && o.pointSpread.away && o.pointSpread.away.close && o.pointSpread.away.close.odds) || 1.91;\n      const ouLine = parseFloat(o.overUnder || 0);\n      const overDec = amToDec(o.total && o.total.over && o.total.over.close && o.total.over.close.odds) || 1.91;\n      const underDec = amToDec(o.total && o.total.under && o.total.under.close && o.total.under.close.odds) || 1.91;\n\n      if (!hML && !spLine) continue;\n\n      const hWinPct = 0.6 * recScore(hRec, false) + 0.4 * recScore(hHomeRec, false);\n      const aWinPct = 0.6 * recScore(aRec, false) + 0.4 * recScore(aRoadRec, false);\n      const winDiff = hWinPct - aWinPct;\n\n      // Injury delta: superstar OUT = -7.5% penalty on own team, +3% boost when opponent loses star!\n      const hInjPen = (hInj.starOuts.length > 0 ? 0.075 : 0) + (hInj.outNames.length >= 4 ? 0.025 : 0);\n      const aInjPen = (aInj.starOuts.length > 0 ? 0.075 : 0) + (aInj.outNames.length >= 4 ? 0.025 : 0);\n      const netPtsDiff = (hPPG - aPPG) * 0.65 + (hFG - aFG) * 0.55 + 2.5 - (hInjPen - aInjPen) * 45;\n\n      function buildInjuryNote(side) {\n        if (!isNBA) return '';\n        const own = side === 'home' ? hInj : (side === 'away' ? aInj : null);\n        const opp = side === 'home' ? aInj : (side === 'away' ? hInj : null);\n        if (!own) return '';\n        const notes = [];\n        if (own.starOuts.length > 0) notes.push(`⚠️ ${own.starOuts.join(', ')} OUT (Downgraded)`);\n        else if (own.outNames.length >= 4) notes.push(`⚠️ ${own.outNames.length} wachezaji OUT`);\n        if (opp.starOuts.length > 0) notes.push(`Mpinzani: ${opp.starOuts.join(', ')} OUT ✅`);\n        if (!notes.length) return 'Clean ✅ (Hakuna star OUT)';\n        return notes.join(' | ');\n      }\n\n      const opts = [];\n      // 1. Moneyline\n      if (hML && aML) {\n        const impH = 1 / hML, impA = 1 / aML;\n        const fairH = impH / (impH + impA), fairA = impA / (impH + impA);\n        const modH = Math.max(0.15, Math.min(0.88, fairH + winDiff * 0.18 - hInjPen + (aInj.starOuts.length > 0 ? 0.03 : 0)));\n        const modA = Math.max(0.15, Math.min(0.88, fairA - winDiff * 0.18 - aInjPen + (hInj.starOuts.length > 0 ? 0.03 : 0)));\n        if (hML >= 1.24 && hML <= 2.30 && modH >= 0.57) {\n          opts.push({\n            market: `${home} ML (Win)`,\n            explain: `${home} kushinda mechi (pamoja na Overtime)`,\n            odds: hML, prob: modH, bonus: 6,\n            blockStrong: hInj.starOuts.length > 0,\n            injuryNote: buildInjuryNote('home')\n          });\n        }\n        if (aML >= 1.24 && aML <= 2.30 && modA >= 0.57) {\n          opts.push({\n            market: `${away} ML (Win)`,\n            explain: `${away} kushinda mechi (pamoja na Overtime)`,\n            odds: aML, prob: modA, bonus: 6,\n            blockStrong: aInj.starOuts.length > 0,\n            injuryNote: buildInjuryNote('away')\n          });\n        }\n      }\n      // 2. NBA Point Spread\n      if (isNBA && !isNaN(spLine) && spLine !== 0 && Math.abs(spLine) <= 11.5) {\n        const marginEdge = Math.max(-8, Math.min(8, netPtsDiff + spLine));\n        const impHS = 1 / hSpDec, impAS = 1 / aSpDec;\n        const fairHS = impHS / (impHS + impAS), fairAS = impAS / (impHS + impAS);\n        const modHS = Math.max(0.35, Math.min(0.66, fairHS + (marginEdge / 12) * 0.12 - (hInj.starOuts.length > 0 ? 0.04 : 0)));\n        const modAS = Math.max(0.35, Math.min(0.66, fairAS - (marginEdge / 12) * 0.12 - (aInj.starOuts.length > 0 ? 0.04 : 0)));\n        const hLineStr = spLine > 0 ? `+${spLine}` : `${spLine}`;\n        const aLineVal = -spLine;\n        const aLineStr = aLineVal > 0 ? `+${aLineVal}` : `${aLineVal}`;\n        if (modHS >= 0.57) {\n          opts.push({\n            market: `SPREAD ${home} ${hLineStr}`,\n            explain: spLine < 0\n              ? `${home} kushinda kwa tofauti ya pointi ${Math.ceil(Math.abs(spLine))}+`\n              : `${home} kushinda AU kutofungwa zaidi ya pointi ${Math.floor(spLine)}`,\n            odds: hSpDec, prob: modHS, bonus: 2,\n            blockStrong: hInj.starOuts.length > 0,\n            injuryNote: buildInjuryNote('home')\n          });\n        }\n        if (modAS >= 0.57) {\n          opts.push({\n            market: `SPREAD ${away} ${aLineStr}`,\n            explain: aLineVal < 0\n              ? `${away} kushinda kwa tofauti ya pointi ${Math.ceil(Math.abs(aLineVal))}+`\n              : `${away} kushinda AU kutofungwa zaidi ya pointi ${Math.floor(aLineVal)}`,\n            odds: aSpDec, prob: modAS, bonus: 2,\n            blockStrong: aInj.starOuts.length > 0,\n            injuryNote: buildInjuryNote('away')\n          });\n        }\n      }\n      // 3. NBA Totals ONLY (Strict & injury-aware)\n      if (isNBA && ouLine >= 205 && ouLine <= 245) {\n        const starOutPenaltyPts = (hInj.starOuts.length + aInj.starOuts.length) * 4.0;\n        const regressedTotal = 0.55 * (hPPG + aPPG - starOutPenaltyPts) + 0.45 * ouLine + ((hFG + aFG - 93.0) * 0.4);\n        const totalDiff = Math.max(-9, Math.min(9, regressedTotal - ouLine));\n        const impO = 1 / overDec, impU = 1 / underDec;\n        const fairO = impO / (impO + impU), fairU = impU / (impO + impU);\n        const modO = Math.max(0.38, Math.min(0.65, fairO + (totalDiff / 12) * 0.12));\n        const modU = Math.max(0.38, Math.min(0.65, fairU - (totalDiff / 12) * 0.12));\n        const totInjNote = (hInj.starOuts.length + aInj.starOuts.length > 0)\n          ? `Stars OUT: ${[...hInj.starOuts, ...aInj.starOuts].join(', ')}`\n          : 'Clean ✅';\n        if (modO >= 0.60 && (hInj.starOuts.length + aInj.starOuts.length === 0)) {\n          opts.push({ market: `OVER ${ouLine} Pts`, explain: `Jumla ya pointi kuzidi ${ouLine}`, odds: overDec, prob: modO, bonus: 0, blockStrong: false, injuryNote: totInjNote });\n        }\n        if (modU >= 0.60) {\n          opts.push({ market: `UNDER ${ouLine} Pts`, explain: `Jumla ya pointi chini ya ${ouLine}`, odds: underDec, prob: modU, bonus: 0, blockStrong: false, injuryNote: totInjNote });\n        }\n      }\n\n      let best = null;\n      for (const op of opts) {\n        const evVal = op.prob * op.odds - 1;\n        if (evVal < 0.015) continue;\n        const sharpScore = (evVal * 100) + (op.prob * 100 - 55) * 0.8 + (op.bonus || 0) - (op.blockStrong ? 8 : 0);\n        if (!best || sharpScore > best.sharpScore) {\n          const probPct = +(op.prob * 100).toFixed(1);\n          const edgePct = +(evVal * 100).toFixed(1);\n          let tier = (probPct >= 60 && edgePct >= 2.5) || (probPct >= 70 && edgePct >= 1.5)\n            ? '🟢 STRONG'\n            : (probPct >= 56 && edgePct >= 1.5 ? '🟡 MODERATE' : '🔴 RISKY');\n          // 🏥 NBA Injury Guard Rule: NEVER allow 🟢 STRONG when backed team's superstar is OUT!\n          if (op.blockStrong && tier.includes('STRONG')) {\n            tier = '🟡 MODERATE';\n          }\n          const kellyF = evVal > 0 ? evVal / (op.odds - 1) : 0.01;\n          const rawUnits = +(0.25 * kellyF * 100).toFixed(2);\n          const units = tier.includes('STRONG')\n            ? Math.min(3.00, Math.max(2.00, rawUnits))\n            : (tier.includes('MODERATE') ? Math.min(1.50, Math.max(1.00, rawUnits)) : 0.50);\n\n          best = {\n            id: evId,\n            sport: 'basketball',\n            league: `🏀 ${leagueName}`,\n            match: `${home} vs ${away}`,\n            kickoff: fmtEat(ev),\n            kickoffISO: kIso,\n            market: op.market,\n            explain: op.explain,\n            injuryNote: op.injuryNote || '',\n            odds: op.odds,\n            probPct,\n            edgePct,\n            tier,\n            group: (probPct >= 70 && !op.blockStrong) ? 'ANCHOR' : 'VALUE',\n            units,\n            hForm: `${hRec} (${hPPG.toFixed(1)} PPG)`,\n            aForm: `${aRec} (${aPPG.toFixed(1)} PPG)`,\n            hRec,\n            aRec,\n            sharpScore\n          };\n        }\n      }\n      if (best && !best.tier.includes('RISKY')) {\n        if (isNBA) nbaCandidates.push(best);\n        else ncaaMlCandidates.push(best);\n      }\n    }\n  }\n}\n\nfunction curateTop4(list) {\n  const sorted = [...list].sort((x, y) => y.sharpScore - x.sharpScore);\n  const anchors = sorted.filter(p => p.group === 'ANCHOR').slice(0, 2);\n  const values = sorted.filter(p => p.group !== 'ANCHOR').slice(0, 2);\n  const combined = [...anchors, ...values];\n  for (const p of sorted) {\n    if (combined.length >= 4) break;\n    if (!combined.find(x => x.id === p.id)) combined.push(p);\n  }\n  return combined.slice(0, 4);\n}\n\nconst footballPicks = curateTop4(fbCandidates);\nconst basketPool = nbaCandidates.length >= 2 ? nbaCandidates : [...nbaCandidates, ...ncaaMlCandidates];\nconst basketballPicks = curateTop4(basketPool);\n\nfunction buildGroupedBlock(list, isBasket) {\n  if (!list.length) {\n    return isBasket\n      ? '📭 Hakuna mechi za NBA zenye vigezo salama (au zote zimekataliwa na 🏥 Injury Guard). Linda mtaji.'\n      : '📭 Hakuna mechi za Football zenye vigezo vya 🟢 STRONG / 🟡 MODERATE leo. Linda mtaji.';\n  }\n  const anchors = list.filter(p => p.group === 'ANCHOR');\n  const values = list.filter(p => p.group !== 'ANCHOR');\n\n  let txt = '';\n  let num = 1;\n  const renderGroup = (title, arr) => {\n    if (!arr.length) return;\n    txt += `${title}\\n`;\n    for (const p of arr) {\n      const statVal = isBasket ? `${p.hForm} vs ${p.aForm}` : `${p.hForm} (${p.hRec}) vs ${p.aForm} (${p.aRec})`;\n      const injLine = isBasket && p.injuryNote ? `   🏥 Injury Guard: ${p.injuryNote}\\n` : '';\n      txt += `${num}. ${p.tier} [${p.league}] ${p.match}\\n` +\n             `   ⏰ ${p.kickoff} | 📌 ${p.market} @ ${p.odds.toFixed(2)}\\n` +\n             `   💡 ${p.explain}\\n` +\n             injLine +\n             `   📈 Conf ${p.probPct}% | Edge +${p.edgePct}% | 💰 Dau: ${p.units.toFixed(2)}u\\n` +\n             `   📊 ${statVal}\\n\\n`;\n      num++;\n    }\n  };\n\n  renderGroup(isBasket ? '🛡️ NBA SAFE ANCHORS (Uhakika 70%+):' : '🛡️ FOOTBALL SAFE ANCHORS (Uhakika 70%+):', anchors);\n  renderGroup(isBasket ? '🎯 NBA VALUE PLAYS (Odds Nzuri):' : '🎯 FOOTBALL VALUE PLAYS (Odds Nzuri):', values);\n  return txt.trim();\n}\n\nconst fbBlock = buildGroupedBlock(footballPicks, false);\nconst bbBlock = buildGroupedBlock(basketballPicks, true);\n\nconst fbAiLines = footballPicks.map((p, i) => `${i + 1}. ${p.match} (${p.league}) | ${p.market} @ ${p.odds} | Prob ${p.probPct}% | Edge +${p.edgePct}% | ${p.hForm} vs ${p.aForm}`).join('\\n');\nconst bbAiLines = basketballPicks.map((p, i) => `${i + 1}. ${p.match} (${p.league}) | ${p.market} @ ${p.odds} | Prob ${p.probPct}% | Edge +${p.edgePct}% | ${p.hForm} vs ${p.aForm} | Injuries: ${p.injuryNote}`).join('\\n');\n\nconst prompt = `Wewe ni Noellyne Hermes Sports AI v5.0 kwa David Erick Mwijage.\nRudisha JSON HALISI pekee yenye keys mbili: {\"football\": \"...\", \"basketball\": \"...\"}.\n- Kwenye \"football\": mstari 1 mfupi wa Kiswahili kwa kila mechi ya Football + sentensi 1 ya ushauri wa mtaji.\n- Kwenye \"basketball\": mstari 1 mfupi wa Kiswahili kwa kila mechi ya NBA ukigusia 🏥 Injury Guard + sentensi 1 ya ushauri wa NBA.\nUsiweke Markdown (* au **) wala HTML tags.\n\nFOOTBALL:\n${fbAiLines || 'Hakuna'}\n\nNBA BASKETBALL (Live Injury Guard Alerts: ${injuryAlerts.slice(0, 4).join('; ') || 'None'}):\n${bbAiLines || 'Hakuna'}`;\n\nreturn [{\n  json: {\n    hasMatches: (footballPicks.length + basketballPicks.length) > 0,\n    totalSoccerEvents,\n    totalBasketEvents,\n    footballPicks,\n    basketballPicks,\n    injuryAlerts: injuryAlerts.slice(0, 4),\n    topPicks: [...footballPicks, ...basketballPicks],\n    fbBlock,\n    bbBlock,\n    prompt\n  }\n}];"
+      },
+      "id": "787d4ea6-87ee-4c7b-b8f5-3f6ca09a7f3e",
+      "name": "Quant Model v3.1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// SMART AI ROUTER v4.0 — Dual Sport Commentary (Football + Basketball)\n// =============================================================\nconst input=$input.first().json;\nconst prompt=input.prompt||'Hello';\nconst ALLOWED=['groq','gemini','cerebras','openrouter'];\nconst MAX_TOK=1000;\nconst TEMP=0.25;\nconst DEADLINE=Date.now()+50000;\nconst SYS='Wewe ni Noellyne Hermes Sports AI v4.0 — Senior Quant Analyst (Football & Basketball). Jibu kwa Kiswahili safi, ufupi, na weka ===BASKETBALL_SPLIT=== katikati ya Football na Basketball.';\n\nconst PRI={chat:['groq','cerebras','gemini','openrouter']};\nconst order=PRI.chat.filter(p=>ALLOWED.includes(p));\nconst MODELS={\n  groq:['openai/gpt-oss-120b','llama-3.3-70b-versatile','openai/gpt-oss-20b'],\n  gemini:['gemini-2.5-flash','gemini-2.0-flash'],\n  cerebras:['llama3.1-8b'],\n  openrouter:['nvidia/nemotron-nano-9b-v2:free','google/gemma-3-27b-it:free']\n};\nconst ENV_MAP={groq:'GROQ_KEYS',gemini:'GEMINI_KEYS',cerebras:'CEREBRAS_KEYS',openrouter:'OPENROUTER_KEYS'};\nconst URLS={\n  groq:'https://api.groq.com/openai/v1/chat/completions',\n  cerebras:'https://api.cerebras.ai/v1/chat/completions',\n  openrouter:'https://openrouter.ai/api/v1/chat/completions'\n};\n\nconst sd=$getWorkflowStaticData('global');\nsd.rr=sd.rr||{};sd.cool=sd.cool||{};\nconst now=()=>Date.now();\nfunction getKeys(p){return String($env[ENV_MAP[p]]||'').split(',').map(s=>s.trim()).filter(Boolean);}\nfunction cool(p,i,ms){sd.cool[`${p}:${i}`]=now()+ms;}\nfunction isCool(p,i){return(sd.cool[`${p}:${i}`]||0)>now();}\nfunction nxt(p,len){const c=Number.isFinite(sd.rr[p])?sd.rr[p]:-1;const n=(c+1)%len;sd.rr[p]=n;return n;}\nfunction strip(t){return String(t||'').replace(/<think>[\\s\\S]*?<\\/think>/gi,'').replace(/<[^>]+>/g,'').trim();}\n\nasync function callOAI(provider,model,key){\n  const body={model,messages:[{role:'system',content:SYS},{role:'user',content:prompt}],temperature:TEMP};\n  if(/gpt-oss/.test(model)){body.max_completion_tokens=MAX_TOK;body.reasoning_effort='low';}\n  else{body.max_tokens=MAX_TOK;}\n  const hdrs={'Authorization':`Bearer ${key}`,'Content-Type':'application/json'};\n  if(provider==='openrouter'){hdrs['HTTP-Referer']='https://mwijay.duckdns.org';hdrs['X-Title']='Hermes AI';}\n  const r=await this.helpers.httpRequest({method:'POST',url:URLS[provider],headers:hdrs,body,json:true,returnFullResponse:true,ignoreHttpStatusErrors:true,timeout:25000});\n  return{status:r.statusCode,text:r.body&&r.body.choices&&r.body.choices[0]&&r.body.choices[0].message&&r.body.choices[0].message.content};\n}\nasync function callGemini(model,key){\n  const r=await this.helpers.httpRequest({method:'POST',url:`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,headers:{'x-goog-api-key':key,'Content-Type':'application/json'},body:{system_instruction:{parts:[{text:SYS}]},contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{thinkingConfig:{thinkingBudget:0},maxOutputTokens:MAX_TOK,temperature:TEMP}},json:true,returnFullResponse:true,ignoreHttpStatusErrors:true,timeout:25000});\n  const t=r.body&&r.body.candidates&&r.body.candidates[0]&&r.body.candidates[0].content&&r.body.candidates[0].content.parts&&r.body.candidates[0].content.parts.map(p=>p.text).join('');\n  return{status:r.statusCode,text:t};\n}\n\nconst t0=now();\nlet lastErr='none';\nfor(const prov of order){\n  if(now()>DEADLINE)break;\n  const keys=getKeys(prov);if(!keys.length)continue;\n  const models=MODELS[prov];\n  for(const model of models){\n    if(now()>DEADLINE)break;\n    for(let a=0;a<Math.min(keys.length,3);a++){\n      if(now()>DEADLINE)break;\n      let idx=nxt(prov,keys.length),tries=0;\n      while(isCool(prov,idx)&&tries<keys.length){idx=nxt(prov,keys.length);tries++;}\n      if(isCool(prov,idx))break;\n      try{\n        const res=prov==='gemini'?await callGemini.call(this,model,keys[idx]):await callOAI.call(this,prov,model,keys[idx]);\n        if(res.status>=200&&res.status<300&&res.text){\n          return[{json:{replyText:strip(res.text),providerUsed:prov,modelUsed:model,keyIdx:idx,latencyMs:now()-t0}}];\n        }\n        if(res.status===429)cool(prov,idx,60000);\n        else if([401,402,403].includes(res.status))cool(prov,idx,900000);\n        else if(res.status===404)cool(prov,idx,3600000);\n        else cool(prov,idx,25000);\n        lastErr=`${prov}/${model} ${res.status}`;\n      }catch(e){cool(prov,idx,20000);lastErr=`${prov} err`;}\n    }\n  }\n}\nreturn[{json:{replyText:`📊 Picks zimechaguliwa kwa vigezo vya 🟢 STRONG na 🟡 MODERATE pekee.\\n===BASKETBALL_SPLIT===\\n📊 Picks za NBA zimechaguliwa kwa kutumia PPG, FG%, na vig-free odds.`,providerUsed:'none',modelUsed:'none',keyIdx:-1,latencyMs:now()-t0}}];"
+      },
+      "id": "f63b479a-5e71-4b7a-8068-898f2cfaff9d",
+      "name": "Smart AI Router",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// Format Message v5.0:\n// - 2 Clean Grouped Sniper Posts (⚽ Football & 🏀 NBA + 🏥 Injury Guard)\n// - Saves Anchor Picks into Static Data for ⚡ BetPawa Slip Helper!\n// =============================================================\nconst ai = $input.first().json || {};\nconst up = $('Quant Model v3.1').first().json || {};\nfunction cleanText(t) {\n  return String(t || '')\n    .replace(/<think>[\\s\\S]*?<\\/think>/gi, '')\n    .replace(/<[^>]+>/g, '')\n    .replace(/\\*\\*(.*?)\\*\\*/g, '$1')\n    .replace(/^\\s*[\\*\\-]\\s+/gm, '• ')\n    .replace(/[`*]/g, '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .trim();\n}\n\nconst rawAi = String(ai.replyText || '').trim();\nlet fbAiText = '';\nlet bbAiText = '';\ntry {\n  const m = rawAi.match(/\\{[\\s\\S]*\\}/);\n  if (m) {\n    const parsed = JSON.parse(m[0]);\n    if (parsed.football) fbAiText = cleanText(parsed.football);\n    if (parsed.basketball) bbAiText = cleanText(parsed.basketball);\n  }\n} catch (e) {}\n\nif (!fbAiText && !bbAiText) {\n  const paras = rawAi.split(/\\n\\s*\\n/).map(s => s.trim()).filter(Boolean);\n  if (paras.length >= 2) {\n    fbAiText = cleanText(paras[0]);\n    bbAiText = cleanText(paras.slice(1).join('\\n'));\n  } else {\n    fbAiText = cleanText(rawAi);\n    bbAiText = cleanText(rawAi);\n  }\n}\n\nconst prov = ai.providerUsed !== 'none' ? `${ai.providerUsed}/${ai.modelUsed}` : 'quant-v5.0';\nconst now = new Date();\nconst ds = now.toLocaleDateString('sw-TZ', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Africa/Dar_es_Salaam' });\nconst ts = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Dar_es_Salaam' });\n\nconst fbPicks = up.footballPicks || [];\nconst bbPicks = up.basketballPicks || [];\nconst injuryAlerts = up.injuryAlerts || [];\n\nfunction countTiers(arr) {\n  const s = arr.filter(p => p.tier && p.tier.includes('STRONG')).length;\n  const m = arr.filter(p => p.tier && p.tier.includes('MODERATE')).length;\n  return `🟢${s} 🟡${m}`;\n}\n\nconst safeFbBlock = cleanText(up.fbBlock || 'Hakuna mechi.');\nconst safeBbBlock = cleanText(up.bbBlock || 'Hakuna mechi.');\n\nlet safeCombo = '';\nif (fbPicks.length > 0 && bbPicks.length > 0) {\n  const f1 = fbPicks[0], b1 = bbPicks[0];\n  const comboOdds = +(f1.odds * b1.odds).toFixed(2);\n  safeCombo = cleanText(`🔗 BONUS SAFE DOUBLE (⚽ + 🏀): ${f1.match} (${f1.market} @${f1.odds}) × ${b1.market} (@${b1.odds}) = Odds ${comboOdds}`);\n}\n\nconst injBanner = injuryAlerts.length > 0\n  ? `🏥 NBA INJURY WATCH LEO:\\n${injuryAlerts.map(a => `  • ${cleanText(a)}`).join('\\n')}\\n\\n`\n  : '';\n\nconst fbHeader = `⚽ HERMES FOOTBALL SNIPER CARD v5.0 (Post 1/2)\\n📅 ${ds} | ⏰ ${ts} EAT | Picks: ${fbPicks.length} (${countTiers(fbPicks)})\\n━━━━━━━━━━━━━━━━━━━━━━\\n`;\nconst fbBody = `${safeFbBlock}\\n`;\nconst fbAiSec = fbAiText ? `\\n🧠 UCHAMBUZI MFUPI (⚽ Football):\\n${fbAiText}\\n` : '';\nconst fbFooter = `\\n━━━━━━━━━━━━━━━━━━━━━━\\n💰 Dau: 🟢 STRONG (2–3u) | 🟡 MODERATE (1–1.5u)\\n⚡ Bonyeza [💰 Gawa Mtaji] kupata BetPawa Slip papo hapo!\\n🤖 mwijay.duckdns.org · ${cleanText(prov)}`;\n\nlet footballDigest = fbHeader + fbBody + fbAiSec + fbFooter;\nif (footballDigest.length > 3950) footballDigest = footballDigest.substring(0, 3947) + '...';\n\nconst bbHeader = `🏀 HERMES NBA CARD v5.0 + 🏥 INJURY GUARD (Post 2/2)\\n📅 ${ds} | ⏰ ${ts} EAT | Picks: ${bbPicks.length} (${countTiers(bbPicks)})\\n━━━━━━━━━━━━━━━━━━━━━━\\n`;\nconst bbBody = `${injBanner}${safeBbBlock}\\n`;\nconst bbAiSec = bbAiText ? `\\n🧠 UCHAMBUZI MFUPI (🏀 NBA):\\n${bbAiText}\\n` : '';\nconst comboSec = safeCombo ? `\\n${safeCombo}\\n` : '';\nconst bbFooter = `\\n━━━━━━━━━━━━━━━━━━━━━━\\n⚡ Andika \"Nina 10,000 leo\" au bonyeza vitufe hapa chini!\\n🤖 mwijay.duckdns.org · Google Sheet Synced`;\n\nlet basketballDigest = bbHeader + bbBody + bbAiSec + comboSec + bbFooter;\nif (basketballDigest.length > 3950) basketballDigest = basketballDigest.substring(0, 3947) + '...';\n\n// Save full context + Top Anchors into Static Data for One-Tap Buttons & BetPawa Slip Helper!\nconst sd = $getWorkflowStaticData('global');\nif (fbPicks.length > 0) {\n  sd.lastFootballPicks = up.fbBlock;\n  sd.lastFootballAnchor = fbPicks[0];\n}\nif (bbPicks.length > 0) {\n  sd.lastBasketballPicks = (injuryAlerts.length ? `🏥 Injury Watch:\\n${injuryAlerts.map(a => `• ${a}`).join('\\n')}\\n\\n` : '') + up.bbBlock;\n  sd.lastBasketballAnchor = bbPicks[0];\n}\nif (fbPicks.length > 0 || bbPicks.length > 0) {\n  sd.lastPicksText = `⚽ FOOTBALL:\\n${sd.lastFootballPicks || ''}\\n\\n🏀 NBA:\\n${sd.lastBasketballPicks || ''}`.substring(0, 3500);\n  sd.lastPicksTime = `${ds} ${ts} EAT`;\n}\n\nreturn [{\n  json: {\n    digestText: footballDigest,\n    basketballDigestText: basketballDigest,\n    hasMatches: up.hasMatches,\n    topPicks: up.topPicks || [],\n    provider: ai.providerUsed,\n    model: ai.modelUsed,\n    latencyMs: ai.latencyMs\n  }\n}];"
+      },
+      "id": "cfc831c7-67a9-4396-9da1-3f79f9045d01",
+      "name": "Format Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ String($env.ALTRAWARE_OWNER_TG_ID || '8051901138').trim() }}",
+        "text": "={{ $json.digestText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "⚽ Football Leo",
+                    "additionalFields": {
+                      "callback_data": "cmd_football"
+                    }
+                  },
+                  {
+                    "text": "🏀 NBA Leo",
+                    "additionalFields": {
+                      "callback_data": "cmd_nba"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "📊 Matokeo",
+                    "additionalFields": {
+                      "callback_data": "cmd_results"
+                    }
+                  },
+                  {
+                    "text": "💰 Gawa Mtaji",
+                    "additionalFields": {
+                      "callback_data": "cmd_bankroll"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "68db82b2-02c7-4526-8544-cb215daa2bfb",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1488,
+        160
+      ],
+      "webhookId": "a3329fc0-f49d-47a4-8549-027d1533bd67",
+      "credentials": {
+        "telegramApi": {
+          "name": "Noellyne BetBot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================================\n// Prepare deduplicated Football + Basketball rows for HermesPicks Sheet\n// Avoids logging duplicate rows when 09:00 / 14:00 / 19:00 runs see same game\n// =============================================================\nconst up = $('Format Message').first().json || {};\nconst picks = up.topPicks || [];\nif (!picks.length) return [];\n\nconst sd = $getWorkflowStaticData('global');\nconst today = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Dar_es_Salaam' });\nif (sd.sheetDay !== today) {\n  sd.sheetLoggedIds = {};\n  sd.sheetDay = today;\n}\nsd.sheetLoggedIds = sd.sheetLoggedIds || {};\n\nconst ts = new Date().toISOString();\nconst rowsToLog = [];\n\nfor (const p of picks) {\n  const dedupKey = `${p.id || p.match}::${p.market}`;\n  if (sd.sheetLoggedIds[dedupKey]) continue;\n  sd.sheetLoggedIds[dedupKey] = ts;\n\n  rowsToLog.push({\n    json: {\n      Timestamp: p.kickoffISO || ts,\n      EventId: p.id || '',\n      League: p.league,\n      Match: p.match,\n      Kickoff: p.kickoff,\n      KickoffISO: p.kickoffISO || ts,\n      Market: p.market,\n      Odds: p.odds,\n      ModelProb: p.probPct,\n      EdgePct: p.edgePct,\n      Confidence: p.tier || 'N/A',\n      StakeUnits: p.units,\n      HomeForm: p.hForm,\n      AwayForm: p.aForm,\n      Provider: up.provider,\n      Model: up.model,\n      Result: 'PENDING',\n      Payout: '',\n      ROI: ''\n    }\n  });\n}\n\nreturn rowsToLog;"
+      },
+      "id": "17e0a935-935b-4697-802d-1ca8a85aa09b",
+      "name": "Prepare Sheet Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1v5MGr9ry4KlZ-brdcrrwnpUxXld-xV0Z3TbouxGjsbg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "HermesPicks",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "League",
+              "displayName": "League",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Match",
+              "displayName": "Match",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Kickoff",
+              "displayName": "Kickoff",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Market",
+              "displayName": "Market",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Odds",
+              "displayName": "Odds",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ModelProb",
+              "displayName": "ModelProb",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "EdgePct",
+              "displayName": "EdgePct",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Confidence",
+              "displayName": "Confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "StakeUnits",
+              "displayName": "StakeUnits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "HomeForm",
+              "displayName": "HomeForm",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "AwayForm",
+              "displayName": "AwayForm",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Provider",
+              "displayName": "Provider",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Model",
+              "displayName": "Model",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Result",
+              "displayName": "Result",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Payout",
+              "displayName": "Payout",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ROI",
+              "displayName": "ROI",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "6d217985-e02a-4192-a2b7-ab558f2615e8",
+      "name": "Log to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1728,
+        368
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ String($env.ALTRAWARE_OWNER_TG_ID || '8051901138').trim() }}",
+        "text": "={{ $json.basketballDigestText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "⚽ Football Leo",
+                    "additionalFields": {
+                      "callback_data": "cmd_football"
+                    }
+                  },
+                  {
+                    "text": "🏀 NBA Leo",
+                    "additionalFields": {
+                      "callback_data": "cmd_nba"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "📊 Matokeo",
+                    "additionalFields": {
+                      "callback_data": "cmd_results"
+                    }
+                  },
+                  {
+                    "text": "💰 Gawa Mtaji",
+                    "additionalFields": {
+                      "callback_data": "cmd_bankroll"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "de5a6ef3-bbb9-42dc-974c-fd12bb6cddf2",
+      "name": "Send Basketball Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1536,
+        656
+      ],
+      "webhookId": "9b81572b-2396-4712-8e14-1e5a92c9e2ef",
+      "credentials": {
+        "telegramApi": {
+          "name": "Noellyne BetBot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1v5MGr9ry4KlZ-brdcrrwnpUxXld-xV0Z3TbouxGjsbg"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "HermesPicks"
+        },
+        "options": {}
+      },
+      "id": "c941dcb6-55a8-410b-90a7-047e9faa78e4",
+      "name": "Read Sheet for Chat",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        592,
+        448
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "1bb507b3-40e8-4adf-bf6d-5bf507558aab",
+      "name": "Map Hermes → Supabase Picks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        640
+      ],
+      "parameters": {
+        "jsCode": "// Maps Hermes Sports AI v5.0 footballPicks + basketballPicks to Supabase public.daily_picks\n// AND auto-matches live stream_id from the live match feed so \"Watch Live\" opens the stream directly!\nconst up = $('Quant Model v3.1').first().json || {};\nconst picks = [...(up.footballPicks || []), ...(up.basketballPicks || [])];\nif (!picks.length) return [];\n\nconst strip = (v) => String(v ?? '')\n  .replace(/[\\u{1F000}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{FE0F}\\u{2B00}-\\u{2BFF}]/gu, '')\n  .replace(/\\s+/g, ' ')\n  .trim();\n\nfunction slipCode(match, market) {\n  const s = `${match}|${market}`.toLowerCase();\n  let h = 2166136261;\n  for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';\n  let out = '', n = h;\n  for (let i = 0; i < 5; i++) { out += alphabet[n % alphabet.length]; n = Math.floor(n / alphabet.length); }\n  return `NLY-${out}`;\n}\n\nfunction tagsFor(p) {\n  const tags = [];\n  const market = String(p.market || '').toUpperCase();\n  const prob = Number(p.probPct) || 0;\n  const odds = Number(p.odds) || 0;\n  if (prob >= 80) tags.push('sure2+');\n  if (String(p.tier || '').toUpperCase().includes('STRONG')) tags.push('strong');\n  if (market.includes('OVER')) tags.push('over2.5');\n  if (market.includes('UNDER')) tags.push('under2.5');\n  if (market.includes('DC') || market.includes('BTTS') || market.includes('BOTH TEAMS')) tags.push('btts');\n  if (odds >= 2) tags.push('high-odds');\n  return tags;\n}\n\n// Fetch live stream catalog (non-blocking — never breaks picks if unreachable)\nlet streamMatches = [];\ntry {\n  const r = await this.helpers.httpRequest({\n    method: 'GET',\n    url: 'https://woggzixprvyjnfjzsglz.supabase.co/rest/v1/matches?select=id,home_team,away_team,kickoff_at&is_active=eq.true&limit=250',\n    headers: { apikey: 'sb_publishable_ka-rZxHdJUMYng6WJDDQUg_ZcWZJl3O' },\n    json: true,\n    timeout: 8000,\n    ignoreHttpStatusErrors: true\n  });\n  if (Array.isArray(r)) streamMatches = r;\n} catch (e) {}\n\nconst STOP = new Set(['fc','cf','afc','sc','ac','as','ss','us','cd','rc','rcd','real','club','athletic','de','la','le','st','saint','united','city','sporting']);\nconst normTokens = (s) => {\n  const clean = String(s || '')\n    .toLowerCase()\n    .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')\n    .replace(/paris saint[\\s-]germain/g, 'psg paris')\n    .replace(/manchester united/g, 'man utd manchester united')\n    .replace(/manchester city/g, 'man city manchester city')\n    .replace(/nottingham forest/g, 'nottingham forest')\n    .replace(/[^a-z0-9\\s]/g, ' ')\n    .split(/\\s+/)\n    .filter(w => w.length >= 3);\n  const filtered = clean.filter(w => !STOP.has(w));\n  return filtered.length ? filtered : clean;\n};\n\nfunction teamScore(a, b) {\n  const ta = normTokens(a), tb = normTokens(b);\n  if (!ta.length || !tb.length) return 0;\n  let hits = 0;\n  for (const x of ta) {\n    if (tb.some(y => y === x || y.includes(x) || x.includes(y))) hits++;\n  }\n  return hits / Math.max(ta.length, tb.length);\n}\n\nfunction findStreamId(matchName, kickoffIso) {\n  if (!streamMatches.length) return null;\n  const parts = String(matchName || '').split(/\\s+vs\\.?\\s+/i);\n  if (parts.length !== 2) return null;\n  const [h, a] = parts;\n  const targetMs = kickoffIso ? Date.parse(kickoffIso) : 0;\n  let bestId = null, bestScore = 0;\n  for (const sm of streamMatches) {\n    if (!sm.id || !sm.home_team || !sm.away_team) continue;\n    if (targetMs && sm.kickoff_at) {\n      const diffHrs = Math.abs(targetMs - Date.parse(sm.kickoff_at)) / 3600000;\n      if (diffHrs > 36) continue;\n    }\n    const sDirect = (teamScore(h, sm.home_team) + teamScore(a, sm.away_team)) / 2;\n    const sSwap = (teamScore(h, sm.away_team) + teamScore(a, sm.home_team)) / 2;\n    const sc = Math.max(sDirect, sSwap);\n    if (sc >= 0.65 && sc > bestScore) {\n      bestScore = sc;\n      bestId = String(sm.id);\n    }\n  }\n  return bestId;\n}\n\nconst nowIso = new Date().toISOString();\nreturn picks\n  .filter(p => p && p.match && p.market)\n  .map(p => {\n    const m = strip(p.match);\n    const mk = strip(p.market);\n    const kIso = p.kickoffISO || nowIso;\n    const streamId = p.sport === 'basketball' ? null : findStreamId(m, kIso);\n    return {\n      json: {\n        match: m,\n        league: strip(p.league) || (p.sport === 'basketball' ? 'NBA' : 'Football'),\n        pick: mk,\n        market: mk,\n        odds: Math.round((Number(p.odds) || 0) * 100) / 100,\n        confidence: Math.max(0, Math.min(100, Math.round(Number(p.probPct) || 0))),\n        reasoning: strip([p.explain, p.injuryNote ? `Injury Guard: ${p.injuryNote}` : ''].filter(Boolean).join(' — ')).slice(0, 600),\n        stream_id: streamId,\n        kickoff_time: kIso,\n        tags: tagsFor(p),\n        slip_code: slipCode(m, mk),\n        sport: p.sport === 'basketball' ? 'basketball' : 'football',\n        tier: strip(p.tier),\n        units: Math.round((Number(p.units) || 0) * 100) / 100,\n        edge_pct: Math.round((Number(p.edgePct) || 0) * 10) / 10,\n        injury_note: strip(p.injuryNote || ''),\n        event_id: String(p.id || ''),\n        home_form: String(p.homeForm || ''),\n        away_form: String(p.awayForm || ''),\n        status: 'published',\n        source: 'hermes-n8n'\n      }\n    };\n  });",
+        "language": "javaScript",
+        "mode": "runOnceForAllItems"
+      }
+    },
+    {
+      "id": "ee990acf-fe0b-4d0b-bab5-795af91bd288",
+      "name": "POST Supabase daily_picks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        640
+      ],
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "method": "POST",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "sendHeaders": true,
+        "specifyBody": "json",
+        "url": "https://tahigoqhuyxedhmeqhnp.supabase.co/rest/v1/daily_picks?on_conflict=match,pick,kickoff_time"
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Noellyne Supabase"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse & Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Build Context": {
+      "main": [
+        [
+          {
+            "node": "Skip Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat AI Router": {
+      "main": [
+        [
+          {
+            "node": "Reply to David",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build League List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule 09/14/19 EAT": {
+      "main": [
+        [
+          {
+            "node": "Build League List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build League List": {
+      "main": [
+        [
+          {
+            "node": "Fetch ESPN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch ESPN": {
+      "main": [
+        [
+          {
+            "node": "Quant Model v3.1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quant Model v3.1": {
+      "main": [
+        [
+          {
+            "node": "Smart AI Router",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Map Hermes → Supabase Picks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Smart AI Router": {
+      "main": [
+        [
+          {
+            "node": "Format Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Message": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Sheet Rows",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Basketball Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Sheet Rows": {
+      "main": [
+        [
+          {
+            "node": "Log to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Filter": {
+      "main": [
+        [
+          {
+            "node": "Read Sheet for Chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Sheet for Chat": {
+      "main": [
+        [
+          {
+            "node": "Chat AI Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Hermes → Supabase Picks": {
+      "main": [
+        [
+          {
+            "node": "POST Supabase daily_picks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "timezone": "Africa/Dar_es_Salaam",
+    "binaryMode": "separate"
+  },
+  "active": false,
+  "meta": {
+    "sourceWorkflowId": "reZre7G6tPP2aSwj",
+    "exportedBy": "Altraware Disaster Recovery Exporter",
+    "sanitized": true
+  }
+}

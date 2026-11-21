@@ -1,0 +1,204 @@
+{
+  "name": "Hermes Weekly Performance Report — Sunday 19:00 EAT",
+  "description": "Automated Sunday 19:00 EAT Weekly Performance Summary comparing Football vs NBA ROI, TZS Bankroll Growth, and MVP/Lesson of the week from HermesPicks Google Sheet.",
+  "nodes": [
+    {
+      "id": "2d097465-215e-4bc3-b8b5-4f7c87c35111",
+      "name": "Sunday 19:00 EAT",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 19 * * 0"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "068fe7e6-5c1d-4f91-b885-f3262f854a23",
+      "name": "Read HermesPicks Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        224,
+        96
+      ],
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1v5MGr9ry4KlZ-brdcrrwnpUxXld-xV0Z3TbouxGjsbg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "HermesPicks",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "a739652a-a4d9-4491-9089-4a29d22145dd",
+      "name": "Build Weekly Performance Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        96
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// =============================================================\n// HERMES WEEKLY PERFORMANCE SUMMARY (Last 7 Days — Football vs NBA)\n// Reads HermesPicks Google Sheet, deduplicates, computes ROI & Bankroll Growth!\n// =============================================================\nconst rows = $input.all();\nconst now = new Date();\nconst sevenDaysAgoMs = now.getTime() - 7 * 24 * 60 * 60 * 1000;\nconst BANKROLL_TZS = parseInt($env.HERMES_BANKROLL_TZS || '100000', 10);\nconst UNIT_TZS = Math.round(BANKROLL_TZS / 100);\n\nfunction esc(t) {\n  return String(t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nconst weekDedup = {};\nconst allTimeDedup = {};\n\nfor (const r of rows) {\n  const row = r.json || {};\n  if (!row.Match) continue;\n  const res = String(row.Result || '').trim().toUpperCase();\n  if (res !== 'WIN' && res !== 'LOSS') continue;\n\n  const tsStr = String(row.KickoffISO || row.Timestamp || '').trim();\n  const dt = tsStr ? new Date(tsStr) : now;\n  const validMs = !isNaN(dt.getTime()) ? dt.getTime() : now.getTime();\n  const dateKey = new Date(validMs).toLocaleDateString('en-CA', { timeZone: 'Africa/Dar_es_Salaam' });\n\n  const league = String(row.League || '');\n  const market = String(row.Market || '');\n  const isBasket = /nba|ncaa|basket|🏀/i.test(league) || /pts|spread|\\sml\\s/i.test(market);\n  const conf = String(row.Confidence || '');\n  const isRisky = conf.includes('RISKY') || conf.includes('🔴');\n\n  const odds = parseFloat(row.Odds) || 0;\n  const units = parseFloat(row.StakeUnits) || 0;\n  const payout = res === 'WIN' ? +(units * odds).toFixed(2) : 0;\n  const profit = +(payout - units).toFixed(2);\n  const roi = units > 0 ? +((profit / units) * 100).toFixed(1) : 0;\n\n  const dk = dateKey + '::' + String(row.Match).toLowerCase() + '::' + market.toLowerCase();\n  const obj = { dateKey, match: row.Match, league, market, odds, units, payout, profit, roi, result: res, isBasket, isRisky };\n\n  allTimeDedup[dk] = obj;\n  if (validMs >= sevenDaysAgoMs) {\n    weekDedup[dk] = obj;\n  }\n}\n\nconst weekAll = Object.values(weekDedup);\nconst weekSafe = weekAll.filter(x => !x.isRisky);\nconst weekFb = weekSafe.filter(x => !x.isBasket);\nconst weekBb = weekSafe.filter(x => x.isBasket);\nconst allTimeSafe = Object.values(allTimeDedup).filter(x => !x.isRisky);\n\nfunction stats(arr) {\n  const w = arr.filter(x => x.result === 'WIN').length;\n  const l = arr.length - w;\n  const st = arr.reduce((a, b) => a + b.units, 0);\n  const ret = arr.reduce((a, b) => a + b.payout, 0);\n  const pr = ret - st;\n  const roi = st > 0 ? (pr / st) * 100 : 0;\n  const wr = arr.length > 0 ? (w / arr.length) * 100 : 0;\n  const tzs = Math.round(pr * UNIT_TZS);\n  return { n: arr.length, w, l, st, ret, pr, roi, wr, tzs };\n}\n\nconst sWeek = stats(weekSafe);\nconst sFb = stats(weekFb);\nconst sBb = stats(weekBb);\nconst sAllTime = stats(allTimeSafe);\n\nconst ds = now.toLocaleDateString('sw-TZ', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Africa/Dar_es_Salaam' });\nconst startDs = new Date(sevenDaysAgoMs).toLocaleDateString('sw-TZ', { day: 'numeric', month: 'short', timeZone: 'Africa/Dar_es_Salaam' });\n\nfunction bar(wr) {\n  const filled = Math.round(wr / 10);\n  return '🟩'.repeat(Math.max(0, Math.min(10, filled))) + '⬜'.repeat(Math.max(0, 10 - filled));\n}\n\nlet msg = '📈 HERMES WEEKLY PERFORMANCE REPORT (7 DAYS)\\n';\nmsg += '📅 Kipindi: ' + startDs + ' – ' + ds + '\\n';\nmsg += '⚡ Google Sheet Ledger (🟢 STRONG &amp; 🟡 MODERATE Pekee)\\n';\nmsg += '━━━━━━━━━━━━━━━━━━━━━━\\n\\n';\n\nif (sWeek.n === 0) {\n  msg += '📭 Hakuna mechi za 🟢/🟡 zilizosahihishwa wiki hii bado.\\n';\n} else {\n  const curBankroll = BANKROLL_TZS + sAllTime.tzs;\n  const growthPct = ((sAllTime.tzs / BANKROLL_TZS) * 100).toFixed(1);\n\n  msg += '🏆 MATOKEO YA WIKI (PESA HALISI):\\n';\n  msg += '• Jumla: ' + sWeek.w + 'W / ' + sWeek.l + 'L (' + sWeek.wr.toFixed(1) + '% Win Rate)\\n';\n  msg += '  ' + bar(sWeek.wr) + '\\n';\n  msg += '• Units: ' + (sWeek.pr >= 0 ? '+' : '') + sWeek.pr.toFixed(2) + 'u (' + (sWeek.roi >= 0 ? '+' : '') + sWeek.roi.toFixed(1) + '% ROI) ' + (sWeek.pr >= 0 ? '🟢' : '🔴') + '\\n';\n  msg += '• Faida Wiki Hii: ' + (sWeek.tzs >= 0 ? '+TZS ' : '-TZS ') + Math.abs(sWeek.tzs).toLocaleString() + '\\n\\n';\n\n  msg += '⚽ FOOTBALL WIKI HII:\\n';\n  msg += '• ' + sFb.w + 'W / ' + sFb.l + 'L (' + sFb.wr.toFixed(1) + '% WR) | ' + (sFb.pr >= 0 ? '+' : '') + sFb.pr.toFixed(2) + 'u (' + (sFb.roi >= 0 ? '+' : '') + sFb.roi.toFixed(1) + '% ROI)\\n';\n  msg += '• Pochi ya Football: ' + (sFb.tzs >= 0 ? '+TZS ' : '-TZS ') + Math.abs(sFb.tzs).toLocaleString() + '\\n\\n';\n\n  msg += '🏀 NBA BASKETBALL WIKI HII:\\n';\n  msg += '• ' + sBb.w + 'W / ' + sBb.l + 'L (' + sBb.wr.toFixed(1) + '% WR) | ' + (sBb.pr >= 0 ? '+' : '') + sBb.pr.toFixed(2) + 'u (' + (sBb.roi >= 0 ? '+' : '') + sBb.roi.toFixed(1) + '% ROI)\\n';\n  msg += '• Pochi ya Basketball: ' + (sBb.tzs >= 0 ? '+TZS ' : '-TZS ') + Math.abs(sBb.tzs).toLocaleString() + '\\n\\n';\n\n  const winsSorted = weekSafe.filter(x => x.result === 'WIN').sort((a, b) => b.profit - a.profit);\n  const lossSorted = weekSafe.filter(x => x.result === 'LOSS').sort((a, b) => a.profit - b.profit);\n  if (winsSorted.length > 0) {\n    const mvp = winsSorted[0];\n    msg += '🌟 MVP PICK YA WIKI: ' + esc(mvp.match) + ' → ' + esc(mvp.market) + ' @ ' + mvp.odds.toFixed(2) + ' (+' + mvp.profit.toFixed(2) + 'u) 🔥\\n';\n  }\n  if (lossSorted.length > 0) {\n    const worst = lossSorted[0];\n    msg += '⚠️ SOMO LA WIKI: ' + esc(worst.match) + ' → ' + esc(worst.market) + ' (' + worst.profit.toFixed(2) + 'u)\\n';\n  }\n\n  msg += '\\n━━━━━━━━━━━━━━━━━━━━━━\\n';\n  msg += '💰 MWENENDO WA MTAJI (BANKROLL GROWTH):\\n';\n  msg += '• Mtaji wa Kuanzia: TZS ' + BANKROLL_TZS.toLocaleString() + '\\n';\n  msg += '• Mtaji wa Sasa: TZS ' + curBankroll.toLocaleString() + ' (' + (sAllTime.tzs >= 0 ? '+' : '') + growthPct + '%) ' + (sAllTime.tzs >= 0 ? '📈' : '📉') + '\\n';\n\n  const leader = sFb.roi >= sBb.roi ? '⚽ Football' : '🏀 NBA Basketball';\n  msg += '💡 MWELEKEO WA WIKI IJAYO: ' + leader + ' imeongoza kwa ROI wiki hii — endelea kuweka 40/40/20 kupitia BetPawa Slip Helper!\\n';\n}\n\nmsg += '\\n🤖 mwijay.duckdns.org · Weekly Performance Engine';\nreturn [{ json: { weeklyText: msg } }];"
+      }
+    },
+    {
+      "id": "dbb27342-d9b7-49cc-a956-dde3b60b1dcc",
+      "name": "Send Weekly Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        672,
+        96
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ String($env.ALTRAWARE_OWNER_TG_ID || '8051901138').trim() }}",
+        "text": "={{ $json.weeklyText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "⚽ Football Leo",
+                    "additionalFields": {
+                      "callback_data": "cmd_football"
+                    }
+                  },
+                  {
+                    "text": "🏀 NBA Leo",
+                    "additionalFields": {
+                      "callback_data": "cmd_nba"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "📊 Matokeo",
+                    "additionalFields": {
+                      "callback_data": "cmd_results"
+                    }
+                  },
+                  {
+                    "text": "💰 Gawa Mtaji",
+                    "additionalFields": {
+                      "callback_data": "cmd_bankroll"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "webhookId": "74e4884b-ae56-4930-bbef-7e632e47bd05",
+      "credentials": {
+        "telegramApi": {
+          "name": "Noellyne BetBot"
+        }
+      }
+    },
+    {
+      "id": "d738ab31-e9bb-4093-b8af-98350d8def5f",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        192
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Sunday 19:00 EAT": {
+      "main": [
+        [
+          {
+            "node": "Read HermesPicks Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read HermesPicks Sheet": {
+      "main": [
+        [
+          {
+            "node": "Build Weekly Performance Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Weekly Performance Report": {
+      "main": [
+        [
+          {
+            "node": "Send Weekly Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read HermesPicks Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "timezone": "Africa/Dar_es_Salaam"
+  },
+  "active": false,
+  "meta": {
+    "sourceWorkflowId": "WNiHHMe0MfaTeIOT",
+    "exportedBy": "Altraware Disaster Recovery Exporter",
+    "sanitized": true
+  }
+}

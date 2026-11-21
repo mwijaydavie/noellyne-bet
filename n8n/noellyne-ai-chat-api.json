@@ -1,0 +1,156 @@
+{
+  "name": "Noellyne Bet — AI Chat & Intelligence API (App Webhook)",
+  "description": "Live AI Chat backend for Noellyne Bet Flutter app (POST /webhook/noellyne-ai-chat). Reads live picks & settled results from Supabase tahigoqhuyxedhmeqhnp and calls Groq/Gemini/OpenRouter via server-side $env keys — zero API keys in the app.",
+  "nodes": [
+    {
+      "id": "c5c912d4-a5d2-41ba-a33f-9057913827bf",
+      "name": "App Chat Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "noellyne-ai-chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "89faf7d7-9f45-4c13-93f8-e76496df1bd6"
+    },
+    {
+      "id": "865cd3f3-9b8a-4fda-94e6-5363ba756dfc",
+      "name": "Fetch Live Supabase Picks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        224,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://tahigoqhuyxedhmeqhnp.supabase.co/rest/v1/daily_picks?select=id,match,league,pick,odds,confidence,reasoning,kickoff_time,tags,slip_code,sport,tier,units,edge_pct,injury_note,score,profit_units,status,result,created_at&order=kickoff_time.asc&limit=80",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "sb_publishable_o2i64llO0OwnaUMD5NUEAQ_ARb4R7T5"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer sb_publishable_o2i64llO0OwnaUMD5NUEAQ_ARb4R7T5"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "300caa80-bb5e-4f39-b772-84a5da0d9c8b",
+      "name": "Noellyne AI Chat Brain",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// =============================================================\n// Noellyne Bet — Live In-App AI Brain v2.0 (Rate-Limited + Verified VIP Owner Bypass!)\n// - Zero API keys in Flutter App (GROQ/GEMINI/OPENROUTER stay on EC2 $env)\n// - Cryptographically verifies Supabase Auth JWT via /auth/v1/user (unforgeable email!)\n// - VIP Owners (David's 4 emails): UNLIMITED (0 rate limit)\n// - Signed-in Google users: 25 AI messages/hour\n// - Guest/anonymous users: 12 AI messages/hour (BetPawa calculator is always FREE/unlimited!)\n// =============================================================\nconst wh = $('App Chat Webhook').first().json || {};\nconst headers = wh.headers || {};\nconst body = wh.body && typeof wh.body === 'object' ? wh.body : wh;\nconst question = String(body.message || body.text || '').trim();\nconst history = Array.isArray(body.history) ? body.history.slice(-8) : [];\nconst matchCtx = body.matchContext ? JSON.stringify(body.matchContext).slice(0, 600) : '';\n\nif (!question) {\n  return [{ json: { reply: 'Karibu Noellyne AI! Niulize kuhusu picks za Football, NBA, matokeo, au andika \"Nina 20,000 leo\" nikugawie mkeka.', provider: 'instant', model: 'router' } }];\n}\n\n// ── 1. VERIFY USER IDENTITY VIA SUPABASE AUTH JWT ─────────────\nconst VIP_EMAILS = new Set([\n  'davidbyanmwijage@gmail.com',\n  'mwijaydavie@gmail.com',\n  'faidahq.tz@gmail.com',\n  'altrawaretechnology@gmail.com'\n]);\n\nconst authHdr = String(headers.authorization || headers.Authorization || '').trim();\nconst bearer = /^Bearer\\s+(.+)$/i.test(authHdr) ? authHdr.replace(/^Bearer\\s+/i, '').trim() : '';\n\nlet verifiedEmail = '';\nlet verifiedUserId = '';\nlet userTier = 'guest';\n\nif (bearer && bearer.length > 30) {\n  try {\n    const uRes = await this.helpers.httpRequest({\n      method: 'GET',\n      url: 'https://tahigoqhuyxedhmeqhnp.supabase.co/auth/v1/user',\n      headers: {\n        apikey: 'sb_publishable_o2i64llO0OwnaUMD5NUEAQ_ARb4R7T5',\n        Authorization: 'Bearer ' + bearer\n      },\n      json: true,\n      returnFullResponse: true,\n      ignoreHttpStatusErrors: true,\n      timeout: 5000\n    });\n    if (uRes.statusCode === 200 && uRes.body && uRes.body.email) {\n      verifiedEmail = String(uRes.body.email).toLowerCase().trim();\n      verifiedUserId = String(uRes.body.id || '');\n      userTier = VIP_EMAILS.has(verifiedEmail) ? 'vip' : 'member';\n    }\n  } catch (e) {}\n}\n\n// ── 2. LOAD LIVE SUPABASE PICKS & SETTLED ROI ─────────────────\nconst rows = $input.all().map(i => i.json).filter(r => r && r.match && r.pick);\nconst published = rows.filter(r => r.status === 'published');\nconst settled = rows.filter(r => r.status === 'settled' && (r.result === 'won' || r.result === 'lost'));\nconst fbPub = published.filter(r => r.sport !== 'basketball');\nconst bbPub = published.filter(r => r.sport === 'basketball');\n\nconst wins = settled.filter(r => r.result === 'won').length;\nconst losses = settled.filter(r => r.result === 'lost').length;\nconst wr = settled.length ? ((wins / settled.length) * 100).toFixed(1) : '0.0';\nconst netUnits = settled.reduce((acc, r) => acc + (Number(r.profit_units) || 0), 0);\nconst UNIT_TZS = 1000;\nconst netTzs = Math.round(netUnits * UNIT_TZS);\nconst tzs = n => Math.round(n).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');\n\n// ── 3. INSTANT EXACT-ODDS BETPAWA SLIP HELPER (0 LLM COST!) ───\nconst qLow = question.toLowerCase();\nlet stakeTzs = null;\nconst kMatch = qLow.match(/(\\d+(?:\\.\\d+)?)\\s*k\\b/);\nif (kMatch) {\n  const v = Math.round(parseFloat(kMatch[1]) * 1000);\n  if (v >= 500 && v <= 50000000) stakeTzs = v;\n} else {\n  const nums = qLow.match(/\\b\\d{1,3}(?:,\\d{3})+\\b|\\b\\d{4,8}\\b/g) || [];\n  for (const s of nums) {\n    const v = parseInt(s.replace(/,/g, ''), 10);\n    if (v >= 500 && v <= 50000000) { stakeTzs = v; break; }\n  }\n}\n\nconst wantsSlip = stakeTzs !== null && /(nina|mtaji|gawa|slip|betpawa|weka|tzs|shilingi|tsh|bankroll|leo|mkeka)/i.test(qLow);\nif (wantsSlip || (/^(gawa mtaji|betpawa slip|slip)$/i.test(qLow))) {\n  const total = stakeTzs || 10000;\n  const s1 = Math.round(total * 0.40);\n  const s2 = Math.round(total * 0.40);\n  const s3 = total - s1 - s2;\n  const topFb = fbPub.slice().sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];\n  const topBb = bbPub.slice().sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];\n  const fbOdds = topFb && topFb.odds > 1 ? Number(topFb.odds) : 1.40;\n  const bbOdds = topBb && topBb.odds > 1 ? Number(topBb.odds) : 1.50;\n  const dblOdds = +(fbOdds * bbOdds).toFixed(2);\n  const fbLabel = topFb ? (topFb.match + ' → ' + topFb.pick + ' @ ' + fbOdds.toFixed(2)) : 'Top Football Anchor @ ' + fbOdds.toFixed(2);\n  const bbLabel = topBb ? (topBb.match + ' → ' + topBb.pick + ' @ ' + bbOdds.toFixed(2)) : 'Top NBA Anchor @ ' + bbOdds.toFixed(2);\n  const ret1 = Math.round(s1 * fbOdds);\n  const ret2 = Math.round(s2 * bbOdds);\n  const ret3 = Math.round(s3 * dblOdds);\n  const reply = [\n    '⚡ BETPAWA SLIP HELPER — TZS ' + tzs(total),\n    '━━━━━━━━━━━━━━━━━━━━━━',\n    '🎫 Ticket 1 (40% · Single ⚽ Anchor):',\n    '   ' + fbLabel,\n    '   💰 Weka TZS ' + tzs(s1) + ' → Malipo TZS ' + tzs(ret1),\n    '',\n    '🎫 Ticket 2 (40% · Single 🏀 NBA Anchor):',\n    '   ' + bbLabel,\n    '   💰 Weka TZS ' + tzs(s2) + ' → Malipo TZS ' + tzs(ret2),\n    '',\n    '🎫 Ticket 3 (20% · Safe Double ⚽ × 🏀 @ ' + dblOdds + '):',\n    '   💰 Weka TZS ' + tzs(s3) + ' → Malipo TZS ' + tzs(ret3),\n    '━━━━━━━━━━━━━━━━━━━━━━',\n    '🏆 Zote zikitiki: TZS ' + tzs(ret1 + ret2 + ret3) + ' (Faida +TZS ' + tzs(ret1 + ret2 + ret3 - total) + ')',\n    '🛡️ Ulinzi: Single moja ikiteleza, nyingine inalinda mtaji wako!'\n  ].join('\\n');\n  return [{ json: { reply, provider: 'instant', model: 'betpawa-calculator', tier: userTier, livePicksCount: published.length, settledCount: settled.length } }];\n}\n\n// ── 4. PER-USER / PER-IP HOURLY RATE LIMITER (VIP BYPASSED!) ──\nconst sd = $getWorkflowStaticData('global');\nsd.rl = sd.rl || {};\nconst nowMs = Date.now();\nconst HOUR_MS = 3600000;\n\n// Periodic prune so staticData stays tiny\nconst rlKeys = Object.keys(sd.rl);\nif (rlKeys.length > 400) {\n  for (const k of rlKeys) {\n    if (!sd.rl[k] || nowMs - sd.rl[k].winStart > HOUR_MS) delete sd.rl[k];\n  }\n}\n\nlet rlRemaining = 9999;\nlet rlLimit = 9999;\n\nif (userTier !== 'vip') {\n  const clientIp = String(headers['cf-connecting-ip'] || headers['x-forwarded-for'] || headers['x-real-ip'] || 'unknown').split(',')[0].trim();\n  const deviceId = String(body.deviceId || body.chatId || '').trim().slice(0, 48);\n  const bucketKey = verifiedUserId ? ('u:' + verifiedUserId) : ('g:' + clientIp + ':' + (deviceId || 'anon'));\n  rlLimit = userTier === 'member' ? 25 : 12;\n\n  const rec = sd.rl[bucketKey];\n  if (!rec || (nowMs - rec.winStart > HOUR_MS)) {\n    sd.rl[bucketKey] = { count: 1, winStart: nowMs };\n    rlRemaining = rlLimit - 1;\n  } else if (rec.count >= rlLimit) {\n    const minsLeft = Math.max(1, Math.ceil((HOUR_MS - (nowMs - rec.winStart)) / 60000));\n    const msg = userTier === 'guest'\n      ? `⏳ Umefikia kikomo cha maswali ${rlLimit} kwa saa kwa wageni. Ingia kwa Google kwenye Settings upate maswali 25/saa, au subiri dakika ${minsLeft}. (BetPawa Slip mf. \"Nina 20,000 leo\" bado ni bure bila kikomo!)`\n      : `⏳ Umefikia kikomo cha maswali ${rlLimit} ya AI kwa saa hii. Jaribu tena baada ya dakika ${minsLeft}, au tumia tab ya Picks na BetPawa Slip (\"Nina 20,000 leo\")!`;\n    return [{ json: { reply: msg, provider: 'rate-limit', model: 'guard', tier: userTier, rateLimit: { tier: userTier, limit: rlLimit, remaining: 0, resetMinutes: minsLeft } } }];\n  } else {\n    rec.count += 1;\n    rlRemaining = Math.max(0, rlLimit - rec.count);\n  }\n}\n\n// ── 5. CALL SERVER-SIDE AI ROUTER (GROQ -> GEMINI -> OPENROUTER)\nconst fmtPick = p => {\n  const inj = p.injury_note ? (' | Injury: ' + p.injury_note) : '';\n  return '- [' + (p.sport === 'basketball' ? 'NBA' : p.league) + '] ' + p.match + ' | Pick: ' + p.pick + ' @ ' + p.odds + ' | Conf: ' + p.confidence + '% | Edge: +' + p.edge_pct + '% | Tier: ' + (p.tier || 'STRONG') + ' | Dau: ' + (p.units || 2) + 'u' + inj + (p.reasoning ? (' | Info: ' + p.reasoning.slice(0, 140)) : '');\n};\n\nconst picksContext = [\n  'FOOTBALL PICKS LIVE (' + fbPub.length + '):',\n  fbPub.length ? fbPub.slice(0, 8).map(fmtPick).join('\\n') : 'Hakuna football picks live sasa.',\n  '',\n  'NBA BASKETBALL PICKS LIVE (' + bbPub.length + '):',\n  bbPub.length ? bbPub.slice(0, 8).map(fmtPick).join('\\n') : 'Hakuna NBA picks live sasa.',\n  '',\n  'REKODI YA MATOKEO YALIYOKAMILIKA (Supabase Live):',\n  settled.length\n    ? (wins + 'W / ' + losses + 'L (' + wr + '% Win Rate) | Net: ' + (netUnits >= 0 ? '+' : '') + netUnits.toFixed(2) + 'u (' + (netTzs >= 0 ? '+TZS ' : '-TZS ') + tzs(Math.abs(netTzs)) + ')\\n' +\n       settled.slice(-8).reverse().map(r => '  • ' + (r.result === 'won' ? 'WON' : 'LOST') + ': ' + r.match + ' (' + (r.score || '-') + ') → ' + r.pick + ' @ ' + r.odds).join('\\n'))\n    : 'Bado hakuna matokeo yaliyofungwa.'\n].join('\\n');\n\nconst SYS = [\n  'Wewe ni Noellyne AI — mchambuzi mtaalamu wa Football na NBA betting ndani ya app ya Noellyne Bet.',\n  userTier === 'vip' ? 'Mtumiaji huyu ni David Erick Mwijage (Owner / VIP) — mpe uchambuzi wa kina zaidi na wa haraka.' : '',\n  'Jibu kwa Kiswahili safi, cha kitaalamu na kifupi (mistari 4-10), BILA Markdown (** au *) na BILA HTML tags.',\n  'Tumia TAKWIMU HALISI na PICKS LIVE zilizotolewa hapa chini — usibuni odds wala matokeo yasiyopo.',\n  'Kila unapopendekeza dau, sisitiza nidhamu ya mtaji (🟢 STRONG 2-3u, 🟡 MODERATE 1-1.5u).'\n].filter(Boolean).join('\\n');\n\nconst msgs = [{ role: 'system', content: SYS + '\\n\\n' + picksContext + (matchCtx ? ('\\n\\nMECHI INAYOANGALIWA: ' + matchCtx) : '') }];\nfor (const h of history.slice(0, -1)) {\n  if (h && h.content && (h.role === 'user' || h.role === 'assistant')) {\n    msgs.push({ role: h.role, content: String(h.content).slice(0, 600) });\n  }\n}\nmsgs.push({ role: 'user', content: question });\n\nconst cleanReply = t => String(t || '')\n  .replace(/<think>[\\s\\S]*?<\\/think>/gi, '')\n  .replace(/\\*\\*(.*?)\\*\\*/g, '$1')\n  .replace(/[*\\x60]/g, '')\n  .trim();\n\nconst keysOf = envName => String($env[envName] || '').split(',').map(s => s.trim()).filter(Boolean);\nconst groqKeys = keysOf('GROQ_KEYS');\nconst gemKeys = keysOf('GEMINI_KEYS');\nconst orKeys = keysOf('OPENROUTER_KEYS');\n\nconst metaOut = {\n  tier: userTier,\n  livePicksCount: published.length,\n  settledCount: settled.length,\n  rateLimit: { tier: userTier, limit: rlLimit, remaining: rlRemaining }\n};\n\nfor (const mdl of ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile']) {\n  for (let i = 0; i < Math.min(groqKeys.length, 3); i++) {\n    try {\n      const payload = { model: mdl, messages: msgs, temperature: 0.35 };\n      if (/gpt-oss/.test(mdl)) { payload.max_completion_tokens = 750; payload.reasoning_effort = 'low'; }\n      else { payload.max_tokens = 750; }\n      const r = await this.helpers.httpRequest({\n        method: 'POST',\n        url: 'https://api.groq.com/openai/v1/chat/completions',\n        headers: { Authorization: 'Bearer ' + groqKeys[i], 'Content-Type': 'application/json' },\n        body: payload,\n        json: true,\n        returnFullResponse: true,\n        ignoreHttpStatusErrors: true,\n        timeout: 18000\n      });\n      const txt = cleanReply(r.body?.choices?.[0]?.message?.content);\n      if (r.statusCode >= 200 && r.statusCode < 300 && txt.length > 15) {\n        return [{ json: { reply: txt, provider: 'groq', model: mdl, ...metaOut } }];\n      }\n    } catch (e) {}\n  }\n}\n\nfor (let i = 0; i < Math.min(gemKeys.length, 3); i++) {\n  try {\n    const r = await this.helpers.httpRequest({\n      method: 'POST',\n      url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',\n      headers: { 'x-goog-api-key': gemKeys[i], 'Content-Type': 'application/json' },\n      body: {\n        system_instruction: { parts: [{ text: msgs[0].content }] },\n        contents: [{ role: 'user', parts: [{ text: question }] }],\n        generationConfig: { temperature: 0.35, maxOutputTokens: 750, thinkingConfig: { thinkingBudget: 0 } }\n      },\n      json: true,\n      returnFullResponse: true,\n      ignoreHttpStatusErrors: true,\n      timeout: 20000\n    });\n    const txt = cleanReply(r.body?.candidates?.[0]?.content?.parts?.map(p => p.text).join(''));\n    if (r.statusCode >= 200 && r.statusCode < 300 && txt.length > 15) {\n      return [{ json: { reply: txt, provider: 'gemini', model: 'gemini-2.5-flash', ...metaOut } }];\n    }\n  } catch (e) {}\n}\n\nfor (let i = 0; i < Math.min(orKeys.length, 2); i++) {\n  try {\n    const r = await this.helpers.httpRequest({\n      method: 'POST',\n      url: 'https://openrouter.ai/api/v1/chat/completions',\n      headers: { Authorization: 'Bearer ' + orKeys[i], 'Content-Type': 'application/json', 'HTTP-Referer': 'https://mwijay.duckdns.org' },\n      body: { model: 'nvidia/nemotron-nano-9b-v2:free', messages: msgs, max_tokens: 750, temperature: 0.35 },\n      json: true,\n      returnFullResponse: true,\n      ignoreHttpStatusErrors: true,\n      timeout: 18000\n    });\n    const txt = cleanReply(r.body?.choices?.[0]?.message?.content);\n    if (r.statusCode >= 200 && r.statusCode < 300 && txt.length > 15) {\n      return [{ json: { reply: txt, provider: 'openrouter', model: 'nemotron-nano-9b', ...metaOut } }];\n    }\n  } catch (e) {}\n}\n\nreturn [{ json: { reply: '⚠️ Noellyne AI iko busy kwa sekunde chache. Angalia tab ya Picks au jaribu tena sasa hivi!', provider: 'fallback', model: 'none', ...metaOut } }];"
+      }
+    },
+    {
+      "id": "b0e1532a-d686-4371-85b8-201512d5cf5d",
+      "name": "Respond to App",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        672,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "POST, OPTIONS"
+              },
+              {
+                "name": "Access-Control-Allow-Headers",
+                "value": "Content-Type, Authorization"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "App Chat Webhook": {
+      "main": [
+        [
+          {
+            "node": "Fetch Live Supabase Picks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Live Supabase Picks": {
+      "main": [
+        [
+          {
+            "node": "Noellyne AI Chat Brain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Noellyne AI Chat Brain": {
+      "main": [
+        [
+          {
+            "node": "Respond to App",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "active": false,
+  "meta": {
+    "sourceWorkflowId": "mKAODz9f6rZyLCT7",
+    "exportedBy": "Altraware Disaster Recovery Exporter",
+    "sanitized": true
+  }
+}
