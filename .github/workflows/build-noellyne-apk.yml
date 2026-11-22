@@ -53,6 +53,41 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Configure Maven Central GCS mirror
+        run: |
+          mkdir -p ~/.gradle/init.d
+          cat > ~/.gradle/init.d/maven-mirror.gradle <<'GRADLE'
+          def mirrorUrl = "https://maven-central.storage-download.googleapis.com/maven2"
+          def rewriteRepo = { repo ->
+              if (repo instanceof org.gradle.api.artifacts.repositories.MavenArtifactRepository) {
+                  def u = repo.url.toString()
+                  if (u.startsWith("https://repo.maven.apache.org/maven2") || u.startsWith("https://repo1.maven.org/maven2")) {
+                      repo.setUrl(mirrorUrl)
+                  }
+              }
+          }
+          beforeSettings { settings ->
+              settings.pluginManagement.repositories.all(rewriteRepo)
+              settings.dependencyResolutionManagement.repositories.all(rewriteRepo)
+          }
+          allprojects {
+              buildscript {
+                  repositories.all(rewriteRepo)
+              }
+              repositories.all(rewriteRepo)
+          }
+          GRADLE
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-noellyne-${{ runner.os }}-${{ hashFiles('user_app/pubspec.yaml', '.github/workflows/build-noellyne-apk.yml') }}
+          restore-keys: |
+            gradle-noellyne-${{ runner.os }}-
+
       - name: Create Android platform
         working-directory: user_app
         run: |
