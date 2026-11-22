@@ -10,6 +10,7 @@ import '../design/noellyne_ui.dart';
 import '../noellyne_config.dart';
 import '../services/daily_picks_repository.dart';
 import '../services/noellyne_auth_service.dart';
+import '../services/noellyne_push_service.dart';
 import '../widgets/theme_mode_button.dart';
 import 'reminders_page.dart';
 
@@ -29,6 +30,8 @@ class _SettingsPageState extends State<SettingsPage> {
   static const _kLead = 'noellyne.alerts.lead';
   static const _kGoals = 'noellyne.alerts.goals';
   static const _kPinnedOnly = 'noellyne.alerts.pinnedOnly';
+  static const _kPushPicks = NoellynePushService.prefPicksKey;
+  static const _kPushResults = NoellynePushService.prefResultsKey;
 
   final _prefs = <String, Object>{};
   bool _loading = true;
@@ -49,6 +52,8 @@ class _SettingsPageState extends State<SettingsPage> {
       _prefs[_kLead] = prefs.getInt(_kLead) ?? 30;
       _prefs[_kGoals] = prefs.getBool(_kGoals) ?? true;
       _prefs[_kPinnedOnly] = prefs.getBool(_kPinnedOnly) ?? false;
+      _prefs[_kPushPicks] = prefs.getBool(_kPushPicks) ?? true;
+      _prefs[_kPushResults] = prefs.getBool(_kPushResults) ?? true;
       _loading = false;
     });
   }
@@ -68,6 +73,8 @@ class _SettingsPageState extends State<SettingsPage> {
   int get _lead => _prefs[_kLead] as int? ?? 30;
   bool get _goals => _prefs[_kGoals] as bool? ?? true;
   bool get _pinnedOnly => _prefs[_kPinnedOnly] as bool? ?? false;
+  bool get _pushPicks => _prefs[_kPushPicks] as bool? ?? true;
+  bool get _pushResults => _prefs[_kPushResults] as bool? ?? true;
 
   Future<void> _editName() async {
     final controller = TextEditingController(text: _name);
@@ -246,6 +253,32 @@ class _SettingsPageState extends State<SettingsPage> {
                           secondary: const _TileIcon(
                             Icons.sports_soccer_rounded,
                           ),
+                        ),
+                        const Divider(height: 1, indent: 16, endIndent: 16),
+                        SwitchListTile.adaptive(
+                          value: _pushPicks,
+                          onChanged: (v) async {
+                            setState(() => _prefs[_kPushPicks] = v);
+                            await NoellynePushService.instance.setPicksAlerts(v);
+                          },
+                          title: const _TileTitle('Daily Picks push alerts'),
+                          subtitle: const _TileSub(
+                            'Instant phone alert when Football & NBA picks drop',
+                          ),
+                          secondary: const _TileIcon(Icons.campaign_rounded),
+                        ),
+                        const Divider(height: 1, indent: 16, endIndent: 16),
+                        SwitchListTile.adaptive(
+                          value: _pushResults,
+                          onChanged: (v) async {
+                            setState(() => _prefs[_kPushResults] = v);
+                            await NoellynePushService.instance.setResultsAlerts(v);
+                          },
+                          title: const _TileTitle('Winning results alerts'),
+                          subtitle: const _TileSub(
+                            'Celebrate instantly when settled picks win',
+                          ),
+                          secondary: const _TileIcon(Icons.emoji_events_rounded),
                         ),
                         const Divider(height: 1, indent: 16, endIndent: 16),
                         SwitchListTile.adaptive(

@@ -834,22 +834,159 @@ class _HomePageState extends State<HomePage> {
     return rows;
   }
 
+  Future<List<Map<String, dynamic>>> _loadNoellyneFixtures() async {
+    if (!NoellyneConfig.picksSupabaseEnabled) {
+      return const <Map<String, dynamic>>[];
+    }
+    try {
+      final base = NoellyneConfig.picksSupabaseUrl.replaceAll(RegExp(r'/+$'), '');
+      final uri = Uri.parse(
+        '$base/rest/v1/fixtures'
+        '?is_active=eq.true'
+        '&order=kickoff_at.asc'
+        '&limit=60',
+      );
+      final resp = await http
+          .get(
+            uri,
+            headers: const {
+              'apikey': NoellyneConfig.picksSupabaseAnonKey,
+              'Authorization': 'Bearer ${NoellyneConfig.picksSupabaseAnonKey}',
+              'Accept': 'application/json',
+            },
+          )
+          .timeout(const Duration(seconds: 6));
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        return const <Map<String, dynamic>>[];
+      }
+      final decoded =
+          jsonDecode(utf8.decode(resp.bodyBytes, allowMalformed: true));
+      if (decoded is! List) return const <Map<String, dynamic>>[];
+      return decoded
+          .whereType<Map>()
+          .map((row) {
+            final m = Map<String, dynamic>.from(row);
+            return <String, dynamic>{
+              'id': m['id']?.toString() ?? '',
+              'league': (m['league'] ?? 'Football').toString(),
+              'sport': (m['sport'] ?? 'football').toString(),
+              'home_team': (m['home_team'] ?? '').toString(),
+              'away_team': (m['away_team'] ?? '').toString(),
+              'home_logo_url': (m['home_logo_url'] ?? '').toString(),
+              'away_logo_url': (m['away_logo_url'] ?? '').toString(),
+              'kickoff_at': (m['kickoff_at'] ?? '').toString(),
+              'is_live': m['is_live'] == true,
+              'home_score': m['home_score'],
+              'away_score': m['away_score'],
+              'clock': (m['clock'] ?? '').toString(),
+              'odds_summary': (m['odds_summary'] ?? '').toString(),
+              'stream_count': 0,
+              'stream_links': const <Map<String, dynamic>>[],
+              'noellyne_fixture': true,
+            };
+          })
+          .where((m) =>
+              (m['home_team'] as String).isNotEmpty &&
+              (m['away_team'] as String).isNotEmpty)
+          .toList(growable: false);
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
+  String _normTeamForFixtureMerge(String raw) => raw
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+      .replaceAll(
+        RegExp(r'\b(fc|sc|cf|ac|afc|united|city|club|de|da|do|sv|vfl|rb|cd|ud|rcd|as|ss|ssc|us|fk|sk|nk|if|bk|ik)\b'),
+        ' ',
+      )
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  bool _sameTeamForFixtureMerge(String a, String b) {
+    final na = _normTeamForFixtureMerge(a);
+    final nb = _normTeamForFixtureMerge(b);
+    if (na.isEmpty || nb.isEmpty) return false;
+    if (na == nb || na.contains(nb) || nb.contains(na)) return true;
+    final ta = na.split(' ').where((t) => t.length >= 3).toList();
+    final tb = nb.split(' ').where((t) => t.length >= 3).toSet();
+    return ta.isNotEmpty && ta.any(tb.contains);
+  }
+
+  List<Map<String, dynamic>> _mergeNoellyneFixtures(
+    List<Map<String, dynamic>> streamRows,
+    List<Map<String, dynamic>> fixtures,
+  ) {
+    if (fixtures.isEmpty) return streamRows;
+    final merged = streamRows.map((r) => Map<String, dynamic>.from(r)).toList();
+
+    for (final fx in fixtures) {
+      final fh = (fx['home_team'] ?? '').toString();
+      final fa = (fx['away_team'] ?? '').toString();
+      Map<String, dynamic>? existing;
+      for (final row in merged) {
+        final rh = (row['home_team'] ?? '').toString();
+        final ra = (row['away_team'] ?? '').toString();
+        if ((_sameTeamForFixtureMerge(rh, fh) &&
+                _sameTeamForFixtureMerge(ra, fa)) ||
+            (_sameTeamForFixtureMerge(rh, fa) &&
+                _sameTeamForFixtureMerge(ra, fh))) {
+          existing = row;
+          break;
+        }
+      }
+      if (existing != null) {
+        // Enrich existing stream match with live score/logos/odds if missing.
+        if ((existing['home_logo_url'] ?? '').toString().trim().isEmpty &&
+            (fx['home_logo_url'] ?? '').toString().trim().isNotEmpty) {
+          existing['home_logo_url'] = fx['home_logo_url'];
+        }
+        if ((existing['away_logo_url'] ?? '').toString().trim().isEmpty &&
+            (fx['away_logo_url'] ?? '').toString().trim().isNotEmpty) {
+          existing['away_logo_url'] = fx['away_logo_url'];
+        }
+        if ((existing['odds_summary'] ?? '').toString().trim().isEmpty &&
+            (fx['odds_summary'] ?? '').toString().trim().isNotEmpty) {
+          existing['odds_summary'] = fx['odds_summary'];
+        }
+        if (fx['is_live'] == true) {
+          existing['is_live'] = true;
+        }
+      } else {
+        merged.add(fx);
+      }
+    }
+    return _sortMatchesChronologically(merged);
+  }
+
   Future<List<Map<String, dynamic>>> loadMatches() async {
     final started = DateTime.now();
+    final fixturesFuture = _loadNoellyneFixtures();
 
     if (!_enableNoVpnFallback) {
-      final rows = await _loadPublicApi();
+      List<Map<String, dynamic>> streamRows;
+      try {
+        streamRows = await _loadPublicApi();
+      } catch (_) {
+        streamRows = const <Map<String, dynamic>>[];
+      }
+      final fixtures = await fixturesFuture;
+      final rows = _mergeNoellyneFixtures(streamRows, fixtures);
+      if (rows.isEmpty && streamRows.isEmpty) {
+        throw StateError('No match sources reachable.');
+      }
       unawaited(
         AnalyticsService.capture(
           'match feed loaded',
           properties: {
-            'source': 'VPN live API',
+            'source': 'Multi-source live + Noellyne fixtures',
             'match_count': rows.length,
             'latency_ms': DateTime.now().difference(started).inMilliseconds,
           },
         ),
       );
-      unawaited(_saveAuthoritativeCache(rows)); // Empty [] is authoritative.
+      unawaited(_saveAuthoritativeCache(rows));
       return rows;
     }
 
@@ -925,18 +1062,23 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
+    final mergedFallback = _mergeNoellyneFixtures(
+      result.rows,
+      await fixturesFuture,
+    );
+
     unawaited(
       AnalyticsService.capture(
         'match feed loaded',
         properties: {
           'source': result.label ?? 'unknown',
-          'match_count': result.rows.length,
+          'match_count': mergedFallback.length,
           'latency_ms': DateTime.now().difference(started).inMilliseconds,
         },
       ),
     );
 
-    return result.rows;
+    return mergedFallback;
   }
 
   Future<void> refresh({bool silent = false}) async {
@@ -1200,16 +1342,42 @@ class _HomePageState extends State<HomePage> {
       );
       if (!mounted) return;
       final advertised = (match['stream_count'] as num?)?.toInt() ?? 0;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            advertised > 0
-                ? 'Could not load the $advertised configured line(s). '
+      final isScheduleFixture = match['noellyne_fixture'] == true;
+      final title = _matchTitle(match);
+      final league = (match['league'] ?? '').toString();
+      final odds = (match['odds_summary'] ?? '').toString();
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 5),
+            content: Text(
+              advertised > 0
+                  ? 'Could not load the $advertised configured line(s). '
                       'Please tap WATCH again in a moment.'
-                : 'Stream is not available yet.',
+                  : isScheduleFixture
+                      ? 'Stream links open near kickoff${odds.isNotEmpty ? ' · $odds' : ''}. Ask AI for preview?'
+                      : 'Stream is not available yet.',
+            ),
+            action: SnackBarAction(
+              label: 'Ask AI',
+              onPressed: () {
+                openAiChat(
+                  context,
+                  initialPrompt:
+                      'Chambua mechi ya $title ($league) leo${odds.isNotEmpty ? ' (Odds: $odds)' : ''}. '
+                      'Nani ana nafasi kubwa ya kushinda na soko gani ni salama?',
+                  matchContext: {
+                    'match': title,
+                    'league': league,
+                    'sport': (match['sport'] ?? 'football').toString(),
+                    if (odds.isNotEmpty) 'odds_summary': odds,
+                  },
+                );
+              },
+            ),
           ),
-        ),
-      );
+        );
       return;
     }
 

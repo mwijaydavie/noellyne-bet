@@ -165,8 +165,12 @@
         "rule": {
           "interval": [
             {
-              "field": "cronExpression",
-              "expression": "0 9,14,19 * * *"
+              "expression": "30 7 * * *",
+              "field": "cronExpression"
+            },
+            {
+              "expression": "0 9,14,19 * * *",
+              "field": "cronExpression"
             }
           ]
         }
@@ -701,6 +705,54 @@
           "name": "Noellyne Supabase"
         }
       }
+    },
+    {
+      "id": "dde399c5-832d-4427-a12b-51d1c293dbbb",
+      "name": "Prepare FCM Picks Push",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        820
+      ],
+      "parameters": {
+        "jsCode": "// Build a single FCM HTTP v1 topic notification for `noellyne_picks`\nconst items = $input.all().map(i => i.json).filter(p => p && p.match && p.pick);\nif (!items.length) return [];\n\nconst fb = items.filter(p => p.sport !== 'basketball');\nconst bb = items.filter(p => p.sport === 'basketball');\nconst strong = items.filter(p => String(p.tier || '').toUpperCase().includes('STRONG'));\n\nconst parts = [];\nif (fb.length > 0) parts.push(`${fb.length} Football`);\nif (bb.length > 0) parts.push(`${bb.length} NBA`);\nconst headline = strong[0] || items[0];\n\nconst title = `Noellyne Bet · ${items.length} Picks Mpya Ziko Tayari`;\nconst body = `${parts.join(' + ')} (${strong.length} STRONG) · Top: ${headline.match} (${headline.pick} @ ${Number(headline.odds || 0).toFixed(2)})`;\n\nreturn [{\n  json: {\n    message: {\n      topic: 'noellyne_picks',\n      notification: { title, body },\n      data: {\n        route: 'picks',\n        count: String(items.length),\n        sport: headline.sport || 'football'\n      },\n      android: {\n        priority: 'high',\n        notification: {\n          channel_id: 'noellyne_picks',\n          sound: 'default'\n        }\n      }\n    }\n  }\n}];",
+        "language": "javaScript",
+        "mode": "runOnceForAllItems"
+      }
+    },
+    {
+      "id": "3b06b553-e7d5-40d3-aced-357edde2cffe",
+      "name": "Send FCM Picks Push",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        820
+      ],
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "method": "POST",
+        "nodeCredentialType": "googleApi",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "url": "https://fcm.googleapis.com/v1/projects/altraware-automations/messages:send"
+      },
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      }
     }
   ],
   "connections": {
@@ -869,6 +921,22 @@
             "node": "POST Supabase daily_picks",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Prepare FCM Picks Push",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare FCM Picks Push": {
+      "main": [
+        [
+          {
+            "node": "Send FCM Picks Push",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -883,7 +951,6 @@
   "active": false,
   "meta": {
     "sourceWorkflowId": "reZre7G6tPP2aSwj",
-    "exportedBy": "Altraware Disaster Recovery Exporter",
     "sanitized": true
   }
 }

@@ -457,6 +457,54 @@
           "name": "Noellyne Supabase"
         }
       }
+    },
+    {
+      "id": "2d08e83a-059c-4232-911f-67895b432fd1",
+      "name": "Prepare FCM Won Push",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        700
+      ],
+      "parameters": {
+        "jsCode": "// Build a single FCM HTTP v1 topic notification for `noellyne_results` when picks settle with wins\nconst g = $('Grade vs Results').first().json || {};\nconst graded = (g.graded || []).filter(p => !String(p.confidence || '').toUpperCase().includes('RISKY'));\nif (!graded.length) return [];\n\nconst wins = graded.filter(p => String(p.result || '').toUpperCase() === 'WIN');\nif (!wins.length) return [];\n\nconst best = [...wins].sort((a, b) => (Number(b.profit) || 0) - (Number(a.profit) || 0))[0];\nconst total = graded.length;\nconst title = wins.length === total\n  ? `CLEAN SWEEP! ${wins.length}/${total} Picks Zimetiki`\n  : `WON! ${wins.length}/${total} Picks Zimetiki`;\nconst body = `${best.match}: ${best.market} @ ${Number(best.odds || 0).toFixed(2)} (+${Number(best.profit || 0).toFixed(2)}u) — Gusa kuona ROI!`;\n\nreturn [{\n  json: {\n    message: {\n      topic: 'noellyne_results',\n      notification: { title, body },\n      data: {\n        route: 'results',\n        wins: String(wins.length),\n        total: String(total)\n      },\n      android: {\n        priority: 'high',\n        notification: {\n          channel_id: 'noellyne_results',\n          sound: 'default'\n        }\n      }\n    }\n  }\n}];",
+        "language": "javaScript",
+        "mode": "runOnceForAllItems"
+      }
+    },
+    {
+      "id": "7b417e37-f117-4088-acdb-a6458a25468c",
+      "name": "Send FCM Won Push",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        700
+      ],
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "method": "POST",
+        "nodeCredentialType": "googleApi",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "url": "https://fcm.googleapis.com/v1/projects/altraware-automations/messages:send"
+      },
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      }
     }
   ],
   "connections": {
@@ -529,6 +577,11 @@
             "node": "Prepare Supabase Settlement",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Prepare FCM Won Push",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -598,6 +651,17 @@
           }
         ]
       ]
+    },
+    "Prepare FCM Won Push": {
+      "main": [
+        [
+          {
+            "node": "Send FCM Won Push",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
@@ -609,7 +673,6 @@
   "active": false,
   "meta": {
     "sourceWorkflowId": "xsQuUV3Vfc6Z1TQJ",
-    "exportedBy": "Altraware Disaster Recovery Exporter",
     "sanitized": true
   }
 }

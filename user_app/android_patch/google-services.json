@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "473209965436",
+    "project_id": "altraware-automations",
+    "storage_bucket": "altraware-automations.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:473209965436:android:68fe2d1cbcf8dcd50372f9",
+        "android_client_info": {
+          "package_name": "noellyne.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "473209965436-r2aee3r6n7gclkvpkvtme52h1n2tactc.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBrcFqNG5EI6by8A0Ysgz4ghr6RhpM-cJc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "473209965436-r2aee3r6n7gclkvpkvtme52h1n2tactc.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

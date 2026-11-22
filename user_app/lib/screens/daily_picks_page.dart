@@ -308,17 +308,28 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                                         widget.onWatchMatch!.call(id);
                                       },
                                       onCopy: () async {
-                                        final code = filtered[i].slipCode;
-                                        if (code == null) {
-                                          _toast(
-                                            'No slip code for this pick',
+                                        final p = filtered[i];
+                                        final buf = StringBuffer()
+                                          ..writeln('Noellyne Bet · ${p.league}')
+                                          ..writeln(p.match)
+                                          ..writeln(
+                                            'Pick: ${p.pick} @ ${p.odds.toStringAsFixed(2)} '
+                                            '(${p.confidence}% conf'
+                                            '${p.tier.isNotEmpty ? ' · ${p.tier}' : ''})',
                                           );
-                                          return;
+                                        if (p.units > 0) {
+                                          buf.writeln(
+                                            'Stake: ${p.units.toStringAsFixed(2)}u',
+                                          );
                                         }
                                         await Clipboard.setData(
-                                          ClipboardData(text: code),
+                                          ClipboardData(
+                                            text: buf.toString().trim(),
+                                          ),
                                         );
-                                        _toast('Slip code $code copied');
+                                        _toast(
+                                          'Pick copied — ready to share or bet',
+                                        );
                                       },
                                     ),
                             ),
@@ -1074,8 +1085,8 @@ class PickCard extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               PillButton(
-                label: 'Copy',
-                icon: Icons.copy_rounded,
+                label: 'Share',
+                icon: Icons.copy_all_rounded,
                 expand: false,
                 height: 44,
                 tone: PillTone.ghost,

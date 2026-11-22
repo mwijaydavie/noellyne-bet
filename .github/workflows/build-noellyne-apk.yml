@@ -145,6 +145,10 @@ jobs:
           posthog = (
               '        <meta-data android:name="com.posthog.posthog.AUTO_INIT" '
               'android:value="false" />\n'
+              '        <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" '
+              'android:value="noellyne_picks" />\n'
+              '        <meta-data android:name="com.google.firebase.messaging.default_notification_icon" '
+              'android:resource="@drawable/ic_bet_picks" />\n'
           )
           if 'com.posthog.posthog.AUTO_INIT' not in s:
               s = s.replace('    </application>', posthog + '    </application>')
@@ -186,9 +190,48 @@ jobs:
           icon.parent.mkdir(parents=True, exist_ok=True)
           shutil.copy2('assets/noellyne_icon.webp', icon)
 
+          # Copy Firebase client config (`noellyne.app`) and register Google Services plugin.
+          gs_src = Path('android_patch/google-services.json')
+          if gs_src.exists():
+              shutil.copy2(gs_src, Path('android/app/google-services.json'))
+
+          settings_kts = Path('android/settings.gradle.kts')
+          if settings_kts.exists():
+              sk = settings_kts.read_text()
+              if 'com.google.gms.google-services' not in sk:
+                  sk = sk.replace(
+                      'plugins {',
+                      'plugins {\n    id("com.google.gms.google-services") version "4.4.2" apply false',
+                      1,
+                  )
+                  settings_kts.write_text(sk)
+          else:
+              settings_groovy = Path('android/settings.gradle')
+              if settings_groovy.exists():
+                  sg = settings_groovy.read_text()
+                  if 'com.google.gms.google-services' not in sg:
+                      sg = sg.replace(
+                          'plugins {',
+                          'plugins {\n    id "com.google.gms.google-services" version "4.4.2" apply false',
+                          1,
+                      )
+                      settings_groovy.write_text(sg)
+
           gradle_kts = Path('android/app/build.gradle.kts')
           if gradle_kts.exists():
               g = gradle_kts.read_text().replace('minSdk = flutter.minSdkVersion', 'minSdk = 24')
+              g = re.sub(
+                  r'applicationId\s*=\s*"[^"]+"',
+                  'applicationId = "noellyne.app"',
+                  g,
+                  count=1,
+              )
+              if 'com.google.gms.google-services' not in g:
+                  g = g.replace(
+                      'plugins {',
+                      'plugins {\n    id("com.google.gms.google-services")',
+                      1,
+                  )
               if 'androidx.media3:media3-exoplayer:' not in g:
                   g += ('\n\ndependencies {\n'
                         '    implementation("androidx.media3:media3-exoplayer:1.4.1")\n'
@@ -200,6 +243,18 @@ jobs:
           else:
               gradle = Path('android/app/build.gradle')
               g = gradle.read_text().replace('minSdkVersion flutter.minSdkVersion', 'minSdkVersion 24')
+              g = re.sub(
+                  r'applicationId\s+"[^"]+"',
+                  'applicationId "noellyne.app"',
+                  g,
+                  count=1,
+              )
+              if 'com.google.gms.google-services' not in g:
+                  g = g.replace(
+                      'plugins {',
+                      'plugins {\n    id "com.google.gms.google-services"',
+                      1,
+                  )
               if 'androidx.media3:media3-exoplayer:' not in g:
                   g += ('\n\ndependencies {\n'
                         '    implementation "androidx.media3:media3-exoplayer:1.4.1"\n'
