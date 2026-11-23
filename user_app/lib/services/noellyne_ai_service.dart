@@ -34,6 +34,14 @@ class AiAction {
         text: json['text']?.toString(),
         streamId: json['streamId']?.toString().trim(),
       );
+
+  Map<String, dynamic> toJson() => {
+        'type': type,
+        'label': label,
+        if (url != null) 'url': url,
+        if (text != null) 'text': text,
+        if (streamId != null) 'streamId': streamId,
+      };
 }
 
 /// Server-enforced daily quota metadata returned by the AI Chat API.
@@ -98,6 +106,28 @@ class AiMessage {
   final bool fromUser;
   bool pending;
   final List<AiAction> actions;
+
+  Map<String, dynamic> toJson() => {
+        'text': text,
+        'fromUser': fromUser,
+        'actions': actions.map((a) => a.toJson()).toList(growable: false),
+      };
+
+  factory AiMessage.fromJson(Map<String, dynamic> json) {
+    final rawActs = json['actions'];
+    final acts = rawActs is List
+        ? rawActs
+            .whereType<Map>()
+            .map((a) => AiAction.fromJson(Map<String, dynamic>.from(a)))
+            .where((a) => a.type.isNotEmpty && a.label.isNotEmpty)
+            .toList(growable: false)
+        : const <AiAction>[];
+    return AiMessage(
+      '${json['text'] ?? ''}',
+      fromUser: json['fromUser'] == true,
+      actions: acts,
+    );
+  }
 }
 
 /// Talks to the Noellyne n8n brain (`ai_chat_webhook`).
@@ -116,6 +146,8 @@ class NoellyneAiService {
   static const _timeout = Duration(seconds: 30);
   static const _configTimeout = Duration(seconds: 5);
   static const _deviceIdPrefKey = 'noellyne_ai_device_id';
+  static const _chatHistoryPrefKey = 'noellyne_ai_chat_history_v1';
+  static const _maxPersistedTurns = 40;
   static const _webhookCachePrefKey = 'noellyne_ai_webhook_url_v1';
   static const _webhookCacheTsKey = 'noellyne_ai_webhook_ts_v1';
   static const _webhookCacheTtl = Duration(hours: 6);
@@ -244,6 +276,61 @@ class NoellyneAiService {
     }
   }
 
+  /// Loads persisted local chat history from device storage.
+  Future<List<AiMessage>> loadHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_chatHistoryPrefKey);
+      if (raw == null || raw.trim().isEmpty) return const [];
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const [];
+      return decoded
+          .whereType<Map>()
+          .map((m) => AiMessage.fromJson(Map<String, dynamic>.from(m)))
+          .where((m) => m.text.trim().isNotEmpty)
+          .toList(growable: false);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Persists the most recent chat turns locally so conversations survive navigation & restarts.
+  Future<void> saveHistory(List<AiMessage> messages) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final clean = messages.where((m) => !m.pending && m.text.trim().isNotEmpty).toList();
+      final trimmed = clean.length > _maxPersistedTurns
+          ? clean.sublist(clean.length - _maxPersistedTurns)
+          : clean;
+      await prefs.setString(
+        _chatHistoryPrefKey,
+        jsonEncode(trimmed.map((m) => m.toJson()).toList(growable: false)),
+      );
+    } catch (_) {}
+  }
+
+  /// Clears saved chat history for starting a fresh thread.
+  Future<void> clearHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_chatHistoryPrefKey);
+    } catch (_) {}
+  }
+
+  Future<Map<String, dynamic>> _loadUserProfile() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final name = prefs.getString('noellyne.profile.name')?.trim() ?? '';
+      final pinned = prefs.getStringList('noellyne.profile.pinned') ?? const <String>[];
+      return <String, dynamic>{
+        if (name.isNotEmpty) 'name': name,
+        if (pinned.isNotEmpty) 'pinnedTeams': pinned,
+      };
+    } catch (_) {
+      return const <String, dynamic>{};
+    }
+  }
+
   /// Backward-compatible text-only helper.
   Future<String> send(
     List<AiMessage> history, {
@@ -281,6 +368,7 @@ class NoellyneAiService {
       ]);
       final hwId = results[0];
       final deviceId = results[1];
+      final userProfile = await _loadUserProfile();
       final resolvedToken = (authToken?.trim().isNotEmpty ?? false)
           ? authToken!.trim()
           : (await NoellyneAuthService.instance.getValidAccessToken() ?? '');
@@ -290,6 +378,7 @@ class NoellyneAiService {
         'chatId': hwId.isNotEmpty ? hwId : deviceId,
         'deviceId': deviceId,
         if (hwId.isNotEmpty) 'hwId': hwId,
+        if (userProfile.isNotEmpty) 'userProfile': userProfile,
         'source': 'noellyne-app',
         'history': history
             .where((m) => !m.pending)
@@ -453,7 +542,7 @@ class NoellyneAiService {
     if (q.contains('altraware') || q.contains('mwijay')) {
       return 'Altraware Technology Ltd\n'
           '━━━━━━━━━━━━━━━━━━\n'
-          'Noellyne Bet imeundwa na Altraware Technology Ltd (Dar es Salaam, Tanzania) — '
+          'Noellyne imeundwa na Altraware Technology Ltd (Dar es Salaam, Tanzania) — '
           'ikiongozwa na David Erick Mwijage (Mwijay Davie) na Clemence W. N\'gunda.\n\n'
           'Bidhaa nyingine: Faida POS, CareTrack, TanzaniaReach, Quickopia na Altraware Motion Lab.\n'
           'Tovuti: https://altra.tanzaniareach.com/';
@@ -488,7 +577,7 @@ class NoellyneAiService {
         q.contains('rekodi')) {
       return 'Matokeo & ROI\n'
           '━━━━━━━━━━━━━━━━━━\n'
-          'Rekodi halisi huletwa moja kwa moja kutoka Supabase ya Noellyne Bet. '
+          'Rekodi halisi huletwa moja kwa moja kutoka Supabase ya Noellyne. '
           'Fungua tab ya Picks kisha bonyeza Results kuona W/L na faida.';
     }
 

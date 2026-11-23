@@ -118,7 +118,7 @@ class FootballViewerApp extends StatelessWidget {
         return MaterialApp(
           navigatorKey: appNavigatorKey,
           debugShowCheckedModeBanner: false,
-          title: 'Noellyne Bet',
+          title: 'Noellyne',
           theme: AppTheme.light(),
           darkTheme: AppTheme.dark(),
           themeMode: AppThemeController.instance.mode,

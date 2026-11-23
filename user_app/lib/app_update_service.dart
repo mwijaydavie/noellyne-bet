@@ -5,14 +5,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'analytics_service.dart';
 import 'app_update_installer.dart';
 import 'noellyne_config.dart';
 
 /// Refuse unrelated or corrupted manifests before comparing version codes.
-/// Noellyne Bet manifests are served from OUR GitHub releases, not the
-/// upstream NCA feed.
+/// Noellyne manifests are served from OUR GitHub releases only.
 @visibleForTesting
 bool isNoellyneRelease(Map<String, dynamic> release) {
   final uri = Uri.tryParse(release['apk_url']?.toString() ?? '');
@@ -39,15 +39,25 @@ bool isNoellyneRelease(Map<String, dynamic> release) {
 bool validViewerRelease(Map<String, dynamic> release) =>
     isNoellyneRelease(release);
 
+class _RemoteUpdatePolicy {
+  const _RemoteUpdatePolicy({
+    this.minSupportedBuild = 0,
+    this.customNotice = '',
+  });
+
+  final int minSupportedBuild;
+  final String customNotice;
+}
+
 class AppUpdateService {
   AppUpdateService._();
 
   static bool _checked = false;
   static bool _downloading = false;
+  static const _dismissedBuildKey = 'noellyne_update_dismissed_build_v1';
+  static const _dismissedAtKey = 'noellyne_update_dismissed_at_v1';
+  static const _snoozeDuration = Duration(hours: 12);
 
-  /// ONLY our own rolling manifest. The upstream MIT project's feeds used to
-  /// be fallbacks here, which let its releases (and its build hashes) show up
-  /// in our update dialog — that leak is now gone.
   static const _manifestUrls = <String>[
     NoellyneConfig.updateManifestUrl,
   ];
@@ -55,11 +65,56 @@ class AppUpdateService {
   @visibleForTesting
   static List<String> get manifestUrls => _manifestUrls;
 
+  /// Reads optional remote update policy (`min_supported_build`, `update_notice`)
+  /// from Supabase `public.app_config` so the founder can enforce a polite
+  /// mandatory upgrade remotely (e.g. when launching payments or security fixes).
+  static Future<_RemoteUpdatePolicy> _fetchRemotePolicy() async {
+    if (!NoellyneConfig.picksSupabaseEnabled) {
+      return const _RemoteUpdatePolicy();
+    }
+    try {
+      final base = NoellyneConfig.picksSupabaseUrl.replaceAll(RegExp(r'/+$'), '');
+      final uri = Uri.parse(
+        '$base/rest/v1/app_config?key=in.(min_supported_build,update_notice)&select=key,value',
+      );
+      final resp = await http
+          .get(
+            uri,
+            headers: const {
+              'apikey': NoellyneConfig.picksSupabaseAnonKey,
+              'Authorization': 'Bearer ${NoellyneConfig.picksSupabaseAnonKey}',
+              'Accept': 'application/json',
+            },
+          )
+          .timeout(const Duration(seconds: 5));
+      if (resp.statusCode != 200) return const _RemoteUpdatePolicy();
+      final decoded = jsonDecode(utf8.decode(resp.bodyBytes, allowMalformed: true));
+      if (decoded is! List) return const _RemoteUpdatePolicy();
+      var minBuild = 0;
+      var notice = '';
+      for (final row in decoded.whereType<Map>()) {
+        final k = '${row['key'] ?? ''}'.trim();
+        final v = '${row['value'] ?? ''}'.trim();
+        if (k == 'min_supported_build') {
+          minBuild = int.tryParse(v) ?? 0;
+        } else if (k == 'update_notice') {
+          notice = v;
+        }
+      }
+      return _RemoteUpdatePolicy(
+        minSupportedBuild: minBuild,
+        customNotice: notice,
+      );
+    } catch (_) {
+      return const _RemoteUpdatePolicy();
+    }
+  }
+
   static Future<String> versionSummary() async {
     try {
       final info = await PackageInfo.fromPlatform();
       final currentVersion = info.version.trim().isEmpty
-          ? '9.8.0'
+          ? '10.0.0'
           : info.version.trim();
       final currentBuild = info.buildNumber.trim();
       final installed = currentBuild.isEmpty
@@ -113,6 +168,32 @@ class AppUpdateService {
     }
   }
 
+  static Future<bool> _isSnoozed(int latestBuild) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final dismissedBuild = prefs.getInt(_dismissedBuildKey) ?? 0;
+      final dismissedAtMs = prefs.getInt(_dismissedAtKey) ?? 0;
+      if (dismissedBuild != latestBuild || dismissedAtMs <= 0) return false;
+      final elapsed = DateTime.now().difference(
+        DateTime.fromMillisecondsSinceEpoch(dismissedAtMs),
+      );
+      return elapsed >= Duration.zero && elapsed < _snoozeDuration;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> _snooze(int latestBuild) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_dismissedBuildKey, latestBuild);
+      await prefs.setInt(
+        _dismissedAtKey,
+        DateTime.now().millisecondsSinceEpoch,
+      );
+    } catch (_) {}
+  }
+
   static Future<void> check(BuildContext context, {bool force = false}) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
       return;
@@ -129,6 +210,7 @@ class AppUpdateService {
       final info = await PackageInfo.fromPlatform();
       final currentBuild = int.tryParse(info.buildNumber) ?? 0;
       final stamp = DateTime.now().millisecondsSinceEpoch;
+      final policyFuture = _fetchRemotePolicy();
       Map<dynamic, dynamic>? data;
 
       for (final base in _manifestUrls) {
@@ -156,6 +238,8 @@ class AppUpdateService {
           }
         } catch (_) {}
       }
+
+      final policy = await policyFuture;
 
       if (data == null) {
         await AnalyticsService.capture(
@@ -187,7 +271,7 @@ class AppUpdateService {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                'Noellyne Bet ${info.version} (build ${info.buildNumber}) is up to date. Latest build: $latestBuild.',
+                'Noellyne ${info.version} (build ${info.buildNumber}) is up to date.',
               ),
             ),
           );
@@ -198,11 +282,15 @@ class AppUpdateService {
       final version = data['version_name']?.toString().trim().isNotEmpty == true
           ? data['version_name'].toString()
           : 'new version';
-      // Release URLs come from our own signed manifest only.
       final apkUrl = data['apk_url']?.toString().trim() ?? '';
       final apkSha256 = data['sha256']?.toString().trim().toLowerCase() ?? '';
-      final notes = data['notes']?.toString().trim() ?? '';
-      final mandatory = data['mandatory'] == true;
+      final manifestNotes = data['notes']?.toString().trim() ?? '';
+      final notes = policy.customNotice.isNotEmpty
+          ? policy.customNotice
+          : manifestNotes;
+      final mandatory = data['mandatory'] == true ||
+          (policy.minSupportedBuild > 0 &&
+              currentBuild < policy.minSupportedBuild);
       final validHash = RegExp(r'^[0-9a-f]{64}$').hasMatch(apkSha256);
 
       if (apkUrl.isEmpty || !validHash) {
@@ -224,6 +312,11 @@ class AppUpdateService {
         }
         return;
       }
+
+      // Respect 12h snooze on optional updates unless user tapped Check manually.
+      if (!mandatory && !force && await _isSnoozed(latestBuild)) {
+        return;
+      }
       if (!context.mounted) return;
 
       await AnalyticsService.capture(
@@ -240,33 +333,53 @@ class AppUpdateService {
       await showDialog<void>(
         context: context,
         barrierDismissible: !mandatory,
-        builder: (dialogContext) => AlertDialog(
-          icon: const Icon(Icons.system_update_alt_rounded),
-          title: Text('Noellyne Bet $version available'),
-          content: Text(
-            notes.isEmpty
-                ? 'A newer version of Noellyne Bet is ready. Update now?'
-                : notes,
-          ),
-          actions: [
-            if (!mandatory)
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text('Later'),
-              ),
-            FilledButton.icon(
-              onPressed: () {
-                AnalyticsService.capture(
-                  'update accepted',
-                  properties: {'latest_build': latestBuild, 'version': version},
-                );
-                Navigator.pop(dialogContext);
-                _download(context, apkUrl, apkSha256);
-              },
-              icon: const Icon(Icons.download_rounded),
-              label: const Text('Update now'),
+        builder: (dialogContext) => PopScope(
+          canPop: !mandatory,
+          child: AlertDialog(
+            icon: Icon(
+              mandatory
+                  ? Icons.security_update_warning_rounded
+                  : Icons.system_update_alt_rounded,
             ),
-          ],
+            title: Text(
+              mandatory
+                  ? 'Toleo Jipya la Noellyne Linahitajika'
+                  : 'Noellyne $version inapatikana',
+            ),
+            content: Text(
+              mandatory
+                  ? (notes.isEmpty
+                      ? 'Tumeongeza maboresho muhimu ya usalama na kasi kwenye Noellyne ($version · build $latestBuild). Tafadhali sasisha sasa ili kuendelea.'
+                      : '$notes\n\nSasisha sasa (build $latestBuild) ili kuendelea kutumia Noellyne.')
+                  : (notes.isEmpty
+                      ? 'Toleo jipya la Noellyne ($version · build $latestBuild) liko tayari na maboresho mapya. Ungependa kusasisha sasa?'
+                      : notes),
+            ),
+            actions: [
+              if (!mandatory)
+                TextButton(
+                  onPressed: () {
+                    unawaited(_snooze(latestBuild));
+                    Navigator.pop(dialogContext);
+                  },
+                  child: const Text('Baadaye'),
+                ),
+              FilledButton.icon(
+                onPressed: () {
+                  AnalyticsService.capture(
+                    'update accepted',
+                    properties: {'latest_build': latestBuild, 'version': version},
+                  );
+                  if (!mandatory) {
+                    Navigator.pop(dialogContext);
+                  }
+                  _download(context, apkUrl, apkSha256);
+                },
+                icon: const Icon(Icons.download_rounded),
+                label: const Text('Update Now'),
+              ),
+            ],
+          ),
         ),
       );
     } catch (_) {
@@ -301,7 +414,7 @@ class AppUpdateService {
         child: ValueListenableBuilder<double>(
           valueListenable: progress,
           builder: (context, value, _) => AlertDialog(
-            title: const Text('Downloading Noellyne Bet update'),
+            title: const Text('Downloading Noellyne update'),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -357,7 +470,6 @@ class AppUpdateService {
         );
       }
     } finally {
-      // Close only this progress dialog, even if the app navigated meanwhile.
       if (route.isActive) navigator.removeRoute(route);
       progress.dispose();
       _downloading = false;

@@ -41,26 +41,56 @@ class _AiChatPageState extends State<AiChatPage> {
   int _typingIndex = -1;
   int _typingChars = 0;
 
+  static AiMessage _welcomeMessage() => AiMessage(
+        'Karibu! Mimi ni Noellyne AI.\n'
+        'Niulize kuhusu picks za football, NBA, matokeo, Altraware Technology, '
+        'au mgao wa mtaji — mfano "Nina 20,000 leo".',
+        fromUser: false,
+      );
+
   @override
   void initState() {
     super.initState();
-    _messages.add(
-      AiMessage(
-        'Karibu! Mimi ni Noellyne AI.\n'
-        'Niulize kuhusu picks za football, NBA, matokeo, au mgao wa mtaji — '
-        'mfano "Nina 20,000 leo".',
-        fromUser: false,
-      ),
-    );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final preset = widget.initialPrompt?.trim() ?? '';
-      if (preset.isNotEmpty) {
-        _send(preset);
-      } else {
-        _startTyping(_messages.length - 1);
-      }
+    _messages.add(_welcomeMessage());
+    unawaited(_restoreAndInit());
+  }
+
+  Future<void> _restoreAndInit() async {
+    final saved = await _service.loadHistory();
+    if (!mounted) return;
+    if (saved.isNotEmpty) {
+      setState(() {
+        _messages
+          ..clear()
+          ..addAll(saved);
+      });
+      _scrollToEnd();
+    }
+    final preset = widget.initialPrompt?.trim() ?? '';
+    if (preset.isNotEmpty) {
+      await _send(preset);
+    } else if (saved.isEmpty) {
+      _startTyping(_messages.length - 1);
+    }
+  }
+
+  Future<void> _clearConversation() async {
+    HapticFeedback.lightImpact();
+    _typer?.cancel();
+    await _service.clearHistory();
+    if (!mounted) return;
+    setState(() {
+      _typingIndex = -1;
+      _typingChars = 0;
+      _messages
+        ..clear()
+        ..add(_welcomeMessage());
     });
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(content: Text('Mazungumzo mapya yameanza')),
+      );
   }
 
   /// Reveals [index] character by character, then settles on the full text.
@@ -155,6 +185,7 @@ class _AiChatPageState extends State<AiChatPage> {
       );
       _sending = false;
     });
+    unawaited(_service.saveHistory(_messages));
     _scrollToEnd();
     _startTyping(_messages.length - 1);
   }
@@ -302,6 +333,12 @@ class _AiChatPageState extends State<AiChatPage> {
           ],
         ),
         actions: [
+          if (_messages.length > 1)
+            IconButton(
+              onPressed: _sending ? null : _clearConversation,
+              icon: const Icon(Icons.add_comment_outlined, size: 19),
+              tooltip: 'New chat',
+            ),
           ValueListenableBuilder<NoellyneUser?>(
             valueListenable: NoellyneAuthService.instance.user,
             builder: (context, account, _) {

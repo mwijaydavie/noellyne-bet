@@ -205,7 +205,7 @@ class _NoellyneSplashState extends State<NoellyneSplash>
                   child: Column(
                     children: [
                       Text(
-                        'Noellyne Bet',
+                        'Noellyne',
                         style: TextStyle(
                           fontSize: 24,
                           fontWeight: FontWeight.w800,

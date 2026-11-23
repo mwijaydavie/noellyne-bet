@@ -59,7 +59,7 @@ class LobbyBrand extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Noellyne Bet',
+              'Noellyne',
               style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w800,

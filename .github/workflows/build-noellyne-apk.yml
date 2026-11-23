@@ -188,7 +188,7 @@ jobs:
           if 'com.posthog.posthog.AUTO_INIT' not in s:
               s = s.replace('    </application>', posthog + '    </application>')
 
-          s = re.sub(r'android:label="[^"]+"', 'android:label="Noellyne Bet"', s, count=1)
+          s = re.sub(r'android:label="[^"]+"', 'android:label="Noellyne"', s, count=1)
           if 'android:usesCleartextTraffic=' not in s:
               s = s.replace(
                   '<application',

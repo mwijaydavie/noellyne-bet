@@ -11,6 +11,45 @@ import '../widgets/noellyne_dock_bar.dart';
 
 enum _PicksSection { picks, results }
 
+/// Dedicated filters for the Results ledger so users can inspect Yesterday's
+/// winners or filter strictly by Won / Lost / Sport in one tap.
+enum _ResultsFilter {
+  recent48h('Last 48h'),
+  won('Won'),
+  lost('Lost'),
+  football('Football'),
+  basketball('NBA'),
+  all('All');
+
+  const _ResultsFilter(this.label);
+  final String label;
+
+  bool matches(DailyPick p) {
+    final ref = p.settledAt ?? p.kickoffTime;
+    return switch (this) {
+      _ResultsFilter.all => true,
+      _ResultsFilter.recent48h =>
+        ref != null && DateTime.now().difference(ref).inHours <= 48,
+      _ResultsFilter.won => p.isWon,
+      _ResultsFilter.lost => p.isLost,
+      _ResultsFilter.football => !p.isBasketball,
+      _ResultsFilter.basketball => p.isBasketball,
+    };
+  }
+}
+
+class _ResultDayGroup {
+  const _ResultDayGroup({
+    required this.dateKey,
+    required this.label,
+    required this.picks,
+  });
+
+  final String dateKey;
+  final String label;
+  final List<DailyPick> picks;
+}
+
 /// Daily Bets feed — n8n Hermes picks & settled ROI rendered as interactive
 /// cards (zero emojis in structural UI, vector icons + design tokens only).
 ///
@@ -34,12 +73,14 @@ class DailyPicksPage extends StatefulWidget {
 class _DailyPicksPageState extends State<DailyPicksPage> {
   static _PicksSection _lastSection = _PicksSection.picks;
   static PickFilter _lastFilter = PickFilter.all;
+  static _ResultsFilter _lastResultsFilter = _ResultsFilter.all;
 
   DailyPicksBoard? _board;
   bool _initialLoading = true;
   bool _refreshing = false;
   _PicksSection _section = _lastSection;
   PickFilter _filter = _lastFilter;
+  _ResultsFilter _resultsFilter = _lastResultsFilter;
 
   @override
   void initState() {
@@ -145,15 +186,62 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
     return 'Hermes Sports AI · Updated $ageLabel';
   }
 
+  List<_ResultDayGroup> _groupResultsByDay(List<DailyPick> settled) {
+    final sorted = [...settled]..sort((a, b) {
+        final da = a.settledAt ?? a.kickoffTime ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final db = b.settledAt ?? b.kickoffTime ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return db.compareTo(da);
+      });
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    final map = <String, List<DailyPick>>{};
+    final labels = <String, String>{};
+    for (final p in sorted) {
+      final dt = (p.kickoffTime ?? p.settledAt)?.toLocal();
+      if (dt == null) {
+        map.putIfAbsent('0000-00-00', () => []).add(p);
+        labels['0000-00-00'] = 'Earlier';
+        continue;
+      }
+      final day = DateTime(dt.year, dt.month, dt.day);
+      final key =
+          '${day.year.toString().padLeft(4, '0')}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
+      map.putIfAbsent(key, () => []).add(p);
+      if (!labels.containsKey(key)) {
+        final shortDate = '${day.day} ${months[day.month - 1]}';
+        if (day == today) {
+          labels[key] = 'Today · $shortDate';
+        } else if (day == yesterday) {
+          labels[key] = 'Yesterday · $shortDate';
+        } else {
+          labels[key] = shortDate;
+        }
+      }
+    }
+    final keys = map.keys.toList()..sort((a, b) => b.compareTo(a));
+    return [
+      for (final k in keys)
+        _ResultDayGroup(dateKey: k, label: labels[k] ?? k, picks: map[k]!),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final board =
         _board ?? const DailyPicksBoard(published: [], settled: []);
-    final activeList = _section == _PicksSection.picks
-        ? board.published
-        : board.settled;
-    final filtered =
-        activeList.where((p) => _filter.matches(p)).toList(growable: false);
+    final isResults = _section == _PicksSection.results;
+    final filtered = isResults
+        ? board.settled
+            .where((p) => _resultsFilter.matches(p))
+            .toList(growable: false)
+        : board.published
+            .where((p) => _filter.matches(p))
+            .toList(growable: false);
+    final resultGroups =
+        isResults ? _groupResultsByDay(filtered) : const <_ResultDayGroup>[];
 
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
@@ -246,33 +334,80 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                             child: _SampleBanner(),
                           ),
                         ),
-                      if (_section == _PicksSection.results &&
-                          board.settled.isNotEmpty)
+                      if (isResults && filtered.isNotEmpty)
                         SliverToBoxAdapter(
                           child: Padding(
                             padding:
                                 const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                            child: _RoiSummaryCard(settled: board.settled),
+                            child: _RoiSummaryCard(settled: filtered),
                           ),
                         ),
                       SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                          child: _FilterRail(
-                            selected: _filter,
-                            onSelected: (f) {
-                              HapticFeedback.lightImpact();
-                              _lastFilter = f;
-                              setState(() => _filter = f);
-                            },
-                          ),
+                          child: isResults
+                              ? _ResultsFilterRail(
+                                  selected: _resultsFilter,
+                                  onSelected: (f) {
+                                    HapticFeedback.lightImpact();
+                                    _lastResultsFilter = f;
+                                    setState(() => _resultsFilter = f);
+                                  },
+                                )
+                              : _FilterRail(
+                                  selected: _filter,
+                                  onSelected: (f) {
+                                    HapticFeedback.lightImpact();
+                                    _lastFilter = f;
+                                    setState(() => _filter = f);
+                                  },
+                                ),
                         ),
                       ),
                       if (filtered.isEmpty)
                         SliverToBoxAdapter(
                           child: _EmptyPicks(
-                            isResults: _section == _PicksSection.results,
+                            isResults: isResults,
                             onRefresh: () => _refresh(force: true),
+                          ),
+                        )
+                      else if (isResults)
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
+                          sliver: SliverList(
+                            delegate: SliverChildBuilderDelegate(
+                              (context, gIdx) {
+                                final group = resultGroups[gIdx];
+                                return Padding(
+                                  padding: EdgeInsets.only(
+                                    top: gIdx == 0 ? 0 : 16,
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      _ResultDayHeader(group: group),
+                                      const SizedBox(height: 8),
+                                      for (var i = 0;
+                                          i < group.picks.length;
+                                          i++)
+                                        Padding(
+                                          padding: EdgeInsets.only(
+                                            bottom:
+                                                i == group.picks.length - 1
+                                                    ? 0
+                                                    : 10,
+                                          ),
+                                          child: _SettledPickCard(
+                                            pick: group.picks[i],
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                );
+                              },
+                              childCount: resultGroups.length,
+                            ),
                           ),
                         )
                       else
@@ -287,51 +422,48 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                               delay: Duration(
                                 milliseconds: (35 * i).clamp(0, 280).toInt(),
                               ),
-                              child: _section == _PicksSection.results
-                                  ? _SettledPickCard(pick: filtered[i])
-                                  : PickCard(
-                                      pick: filtered[i],
-                                      onAskAi: () =>
-                                          _askAiAboutPick(filtered[i]),
-                                      onWatch: () {
-                                        final id = filtered[i].streamId;
-                                        if (id == null) {
-                                          _toast('No stream linked yet');
-                                          return;
-                                        }
-                                        if (widget.onWatchMatch == null) {
-                                          _toast(
-                                            'Open this pick from the Live tab',
-                                          );
-                                          return;
-                                        }
-                                        widget.onWatchMatch!.call(id);
-                                      },
-                                      onCopy: () async {
-                                        final p = filtered[i];
-                                        final buf = StringBuffer()
-                                          ..writeln('Noellyne Bet · ${p.league}')
-                                          ..writeln(p.match)
-                                          ..writeln(
-                                            'Pick: ${p.pick} @ ${p.odds.toStringAsFixed(2)} '
-                                            '(${p.confidence}% conf'
-                                            '${p.tier.isNotEmpty ? ' · ${p.tier}' : ''})',
-                                          );
-                                        if (p.units > 0) {
-                                          buf.writeln(
-                                            'Stake: ${p.units.toStringAsFixed(2)}u',
-                                          );
-                                        }
-                                        await Clipboard.setData(
-                                          ClipboardData(
-                                            text: buf.toString().trim(),
-                                          ),
-                                        );
-                                        _toast(
-                                          'Pick copied — ready to share or bet',
-                                        );
-                                      },
+                              child: PickCard(
+                                pick: filtered[i],
+                                onAskAi: () => _askAiAboutPick(filtered[i]),
+                                onWatch: () {
+                                  final id = filtered[i].streamId;
+                                  if (id == null) {
+                                    _toast('No stream linked yet');
+                                    return;
+                                  }
+                                  if (widget.onWatchMatch == null) {
+                                    _toast(
+                                      'Open this pick from the Live tab',
+                                    );
+                                    return;
+                                  }
+                                  widget.onWatchMatch!.call(id);
+                                },
+                                onCopy: () async {
+                                  final p = filtered[i];
+                                  final buf = StringBuffer()
+                                    ..writeln('Noellyne · ${p.league}')
+                                    ..writeln(p.match)
+                                    ..writeln(
+                                      'Pick: ${p.pick} @ ${p.odds.toStringAsFixed(2)} '
+                                      '(${p.confidence}% conf'
+                                      '${p.tier.isNotEmpty ? ' · ${p.tier}' : ''})',
+                                    );
+                                  if (p.units > 0) {
+                                    buf.writeln(
+                                      'Stake: ${p.units.toStringAsFixed(2)}u',
+                                    );
+                                  }
+                                  await Clipboard.setData(
+                                    ClipboardData(
+                                      text: buf.toString().trim(),
                                     ),
+                                  );
+                                  _toast(
+                                    'Pick copied — ready to share or bet',
+                                  );
+                                },
+                              ),
                             ),
                           ),
                         ),
@@ -879,6 +1011,91 @@ class _SettledPickCard extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ResultsFilterRail extends StatelessWidget {
+  const _ResultsFilterRail({
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final _ResultsFilter selected;
+  final ValueChanged<_ResultsFilter> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 38,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: _ResultsFilter.values.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final f = _ResultsFilter.values[i];
+          return FilterPill(
+            label: f.label,
+            selected: f == selected,
+            onTap: () => onSelected(f),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ResultDayHeader extends StatelessWidget {
+  const _ResultDayHeader({required this.group});
+
+  final _ResultDayGroup group;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final wins = group.picks.where((p) => p.isWon).length;
+    final losses = group.picks.where((p) => p.isLost).length;
+    final net = group.picks.fold<double>(0, (acc, p) => acc + p.profitUnits);
+    final pos = net >= 0;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Row(
+        children: [
+          Icon(
+            Icons.calendar_today_rounded,
+            size: 13,
+            color: scheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              group.label,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w800,
+                color: scheme.onSurface,
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: (pos ? NoellyneColors.winDark : scheme.error)
+                  .withValues(alpha: .14),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: TabularText(
+              '${wins}W / ${losses}L · ${pos ? '+' : ''}${net.toStringAsFixed(2)}u',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                color: pos ? NoellyneColors.winDark : scheme.error,
+              ),
+            ),
           ),
         ],
       ),

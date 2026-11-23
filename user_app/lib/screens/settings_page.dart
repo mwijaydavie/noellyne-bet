@@ -384,11 +384,11 @@ class _SettingsPageState extends State<SettingsPage> {
                         const Divider(height: 1, indent: 16, endIndent: 16),
                         ListTile(
                           leading: const _TileIcon(Icons.info_outline_rounded),
-                          title: const _TileTitle('Noellyne Bet'),
+                          title: const _TileTitle('Noellyne'),
                           subtitle: _TileSub(
                             dark
-                                ? 'Viewer · dark theme'
-                                : 'Viewer · light theme',
+                                ? 'Sports & AI · dark theme'
+                                : 'Sports & AI · light theme',
                           ),
                           trailing: Text(
                             '10.0.0',
@@ -405,7 +405,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 18),
                   Center(
                     child: Text(
-                      'Noellyne Bet · made for match day',
+                      'Noellyne · Altraware Technology',
                       style: TextStyle(
                         fontSize: 10.5,
                         fontWeight: FontWeight.w600,

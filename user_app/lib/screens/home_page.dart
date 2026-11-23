@@ -1667,7 +1667,7 @@ class _HomePageState extends State<HomePage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'Noellyne Bet',
+                          'Noellyne',
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.w900,
@@ -1724,7 +1724,7 @@ class _HomePageState extends State<HomePage> {
                 subtitle: FutureBuilder<String>(
                   future: _updateVersionLabel,
                   builder: (context, snapshot) => Text(
-                    snapshot.data ?? 'Check and install the latest Noellyne Bet APK',
+                    snapshot.data ?? 'Check and install the latest Noellyne APK',
                   ),
                 ),
                 trailing: const Icon(Icons.chevron_right_rounded),

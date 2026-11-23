@@ -127,7 +127,7 @@ class _WelcomePageState extends State<WelcomePage>
                           animation: _c,
                           interval: 0.12,
                           child: Text(
-                            'Welcome to\nNoellyne Bet',
+                            'Welcome to\nNoellyne',
                             style: TextStyle(
                               fontSize: 38,
                               height: 1.06,
@@ -260,7 +260,7 @@ class _WelcomePageState extends State<WelcomePage>
         ),
         const SizedBox(width: 12),
         const Text(
-          'NOELLYNE BET',
+          'NOELLYNE',
           style: TextStyle(
             fontSize: 11.5,
             fontWeight: FontWeight.w800,
