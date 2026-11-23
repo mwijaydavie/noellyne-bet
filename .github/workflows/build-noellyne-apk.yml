@@ -1,9 +1,12 @@
-name: Build Noellyne Bet APK
+name: Build Noellyne APK
 
-# Lightweight, self-contained APK build for previews and testing.
-# Unlike build-apks.yml (signed updater releases on main), this never touches
-# the update feed: it produces a debug-signed release APK, uploads it as a
-# workflow artifact and attaches it to a GitHub Release for easy download.
+# Self-contained Android APK build for Noellyne (`noellyne.app`).
+# When the 4 repository secrets (NOELLYNE_KEYSTORE_BASE64,
+# NOELLYNE_KEYSTORE_PASSWORD, NOELLYNE_KEY_ALIAS, NOELLYNE_KEY_PASSWORD)
+# are configured, signs the APK with the permanent release keystore so
+# in-app updates install cleanly in-place without uninstalling.
+# Falls back to Flutter's ephemeral debug key only if none of those secrets
+# are configured yet.
 
 on:
   workflow_dispatch:
@@ -341,6 +344,190 @@ jobs:
           print('SYNC OK: patched player markers present')
           PY
 
+      - name: Configure permanent release signing
+        working-directory: user_app
+        env:
+          NOELLYNE_KEYSTORE_BASE64: ${{ secrets.NOELLYNE_KEYSTORE_BASE64 }}
+          NOELLYNE_KEYSTORE_PASSWORD: ${{ secrets.NOELLYNE_KEYSTORE_PASSWORD }}
+          NOELLYNE_KEY_ALIAS: ${{ secrets.NOELLYNE_KEY_ALIAS }}
+          NOELLYNE_KEY_PASSWORD: ${{ secrets.NOELLYNE_KEY_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          keys = [
+              'NOELLYNE_KEYSTORE_BASE64',
+              'NOELLYNE_KEYSTORE_PASSWORD',
+              'NOELLYNE_KEY_ALIAS',
+              'NOELLYNE_KEY_PASSWORD',
+          ]
+          vals = {k: (os.environ.get(k) or '').strip() for k in keys}
+          present = [k for k, v in vals.items() if v]
+          missing = [k for k, v in vals.items() if not v]
+          gh_env = Path(os.environ['GITHUB_ENV'])
+
+          if not present:
+              print('No permanent release signing secrets configured yet — falling back to Flutter debug key.')
+              with gh_env.open('a', encoding='utf-8') as f:
+                  f.write('SIGNING_MODE=debug\n')
+                  f.write('CERT_SHA1=debug-ephemeral\n')
+                  f.write('CERT_SHA256=debug-ephemeral\n')
+              raise SystemExit(0)
+
+          if missing:
+              raise SystemExit(
+                  'Partial release signing configuration detected! Missing GitHub Secrets: '
+                  + ', '.join(missing)
+              )
+
+          b64_clean = re.sub(r'\s+', '', vals['NOELLYNE_KEYSTORE_BASE64'])
+          try:
+              ks_bytes = base64.b64decode(b64_clean, validate=True)
+          except Exception as exc:
+              raise SystemExit(f'NOELLYNE_KEYSTORE_BASE64 is not valid base64: {exc}')
+
+          if len(ks_bytes) < 128:
+              raise SystemExit(f'Decoded keystore is unexpectedly small ({len(ks_bytes)} bytes).')
+
+          ks_path = Path('android/app/noellyne-release.jks')
+          ks_path.write_bytes(ks_bytes)
+          os.chmod(ks_path, 0o600)
+
+          # Verify keystore integrity, alias, and store password BEFORE building.
+          env_copy = os.environ.copy()
+          env_copy['NOELLYNE_KS_VERIFY_PASS'] = vals['NOELLYNE_KEYSTORE_PASSWORD']
+          proc = subprocess.run(
+              [
+                  'keytool', '-list', '-v',
+                  '-keystore', str(ks_path),
+                  '-alias', vals['NOELLYNE_KEY_ALIAS'],
+                  '-storepass:env', 'NOELLYNE_KS_VERIFY_PASS',
+              ],
+              capture_output=True,
+              text=True,
+              env=env_copy,
+          )
+          if proc.returncode != 0:
+              raise SystemExit(
+                  'Keystore verification failed (check NOELLYNE_KEYSTORE_PASSWORD / NOELLYNE_KEY_ALIAS):\n'
+                  + (proc.stderr or proc.stdout).strip()
+              )
+
+          m_sha1 = re.search(r'SHA1:\s*([0-9A-Fa-f:]+)', proc.stdout)
+          m_sha256 = re.search(r'SHA256:\s*([0-9A-Fa-f:]+)', proc.stdout)
+          cert_sha1 = m_sha1.group(1).upper() if m_sha1 else 'unknown'
+          cert_sha256 = m_sha256.group(1).upper() if m_sha256 else 'unknown'
+          if cert_sha256 == 'unknown':
+              raise SystemExit('Could not read SHA256 certificate fingerprint from release keystore.')
+
+          print(f'KEYSTORE OK: alias={vals["NOELLYNE_KEY_ALIAS"]} SHA256={cert_sha256}')
+
+          def esc_prop(s: str) -> str:
+              return s.replace('\\', '\\\\').replace('\r', '').replace('\n', '')
+
+          props_path = Path('android/key.properties')
+          props_path.write_text(
+              f'storePassword={esc_prop(vals["NOELLYNE_KEYSTORE_PASSWORD"])}\n'
+              f'keyPassword={esc_prop(vals["NOELLYNE_KEY_PASSWORD"])}\n'
+              f'keyAlias={esc_prop(vals["NOELLYNE_KEY_ALIAS"])}\n'
+              'storeFile=noellyne-release.jks\n',
+              encoding='utf-8',
+          )
+          os.chmod(props_path, 0o600)
+
+          gradle_kts = Path('android/app/build.gradle.kts')
+          if gradle_kts.exists():
+              s = gradle_kts.read_text(encoding='utf-8')
+              if 'val noellyneKeystoreProperties = Properties()' not in s:
+                  imports = (
+                      'import java.io.FileInputStream\n'
+                      'import java.util.Properties\n\n'
+                  )
+                  props_block = (
+                      'val noellyneKeystoreProperties = Properties()\n'
+                      'val noellyneKeystorePropertiesFile = rootProject.file("key.properties")\n'
+                      'if (noellyneKeystorePropertiesFile.exists()) {\n'
+                      '    FileInputStream(noellyneKeystorePropertiesFile).use { stream ->\n'
+                      '        noellyneKeystoreProperties.load(stream)\n'
+                      '    }\n'
+                      '}\n\n'
+                  )
+                  if 'plugins {' not in s or 'android {' not in s:
+                      raise SystemExit('Expected plugins/android blocks not found in build.gradle.kts')
+                  s = imports + s.replace('android {', props_block + 'android {', 1)
+
+              if 'create("noellyneRelease")' not in s:
+                  signing_block = (
+                      '    signingConfigs {\n'
+                      '        create("noellyneRelease") {\n'
+                      '            keyAlias = noellyneKeystoreProperties["keyAlias"] as String\n'
+                      '            keyPassword = noellyneKeystoreProperties["keyPassword"] as String\n'
+                      '            storeFile = file(noellyneKeystoreProperties["storeFile"] as String)\n'
+                      '            storePassword = noellyneKeystoreProperties["storePassword"] as String\n'
+                      '        }\n'
+                      '    }\n\n'
+                  )
+                  if 'buildTypes {' not in s:
+                      raise SystemExit('Expected buildTypes block not found in build.gradle.kts')
+                  s = re.sub(r'(\n\s*buildTypes\s*\{)', '\n' + signing_block + r'\1', s, count=1)
+
+              s, n_sub = re.subn(
+                  r'signingConfig\s*=\s*signingConfigs\.getByName\(\s*"debug"\s*\)',
+                  'signingConfig = signingConfigs.getByName("noellyneRelease")',
+                  s,
+              )
+              if n_sub == 0 or 'signingConfigs.getByName("noellyneRelease")' not in s:
+                  raise SystemExit('Failed to apply noellyneRelease signingConfig in build.gradle.kts')
+              gradle_kts.write_text(s, encoding='utf-8')
+              print('GRADLE KTS PATCHED: noellyneRelease signing active')
+          else:
+              gradle_groovy = Path('android/app/build.gradle')
+              if not gradle_groovy.exists():
+                  raise SystemExit('Neither build.gradle.kts nor build.gradle found.')
+              s = gradle_groovy.read_text(encoding='utf-8')
+              if 'def noellyneKeystoreProperties = new Properties()' not in s:
+                  props_block = (
+                      'def noellyneKeystoreProperties = new Properties()\n'
+                      'def noellyneKeystorePropertiesFile = rootProject.file("key.properties")\n'
+                      'if (noellyneKeystorePropertiesFile.exists()) {\n'
+                      '    noellyneKeystorePropertiesFile.withInputStream { stream ->\n'
+                      '        noellyneKeystoreProperties.load(stream)\n'
+                      '    }\n'
+                      '}\n\n'
+                  )
+                  s = s.replace('android {', props_block + 'android {', 1)
+              if 'noellyneRelease {' not in s:
+                  signing_block = (
+                      '    signingConfigs {\n'
+                      '        noellyneRelease {\n'
+                      '            keyAlias noellyneKeystoreProperties["keyAlias"]\n'
+                      '            keyPassword noellyneKeystoreProperties["keyPassword"]\n'
+                      '            storeFile file(noellyneKeystoreProperties["storeFile"])\n'
+                      '            storePassword noellyneKeystoreProperties["storePassword"]\n'
+                      '        }\n'
+                      '    }\n\n'
+                  )
+                  s = re.sub(r'(\n\s*buildTypes\s*\{)', '\n' + signing_block + r'\1', s, count=1)
+              s, n_sub = re.subn(
+                  r'signingConfig\s*=?\s*signingConfigs\.debug',
+                  'signingConfig signingConfigs.noellyneRelease',
+                  s,
+              )
+              if n_sub == 0:
+                  raise SystemExit('Failed to apply noellyneRelease signingConfig in build.gradle')
+              gradle_groovy.write_text(s, encoding='utf-8')
+              print('GRADLE GROOVY PATCHED: noellyneRelease signing active')
+
+          with gh_env.open('a', encoding='utf-8') as f:
+              f.write('SIGNING_MODE=release\n')
+              f.write(f'CERT_SHA1={cert_sha1}\n')
+              f.write(f'CERT_SHA256={cert_sha256}\n')
+          PY
+
       - name: Get dependencies
         working-directory: user_app
         run: flutter pub get
@@ -396,6 +583,29 @@ jobs:
           echo "APK_SIZE=$(du -h /tmp/apk/*.apk | awk '{print $1}')" >> "$GITHUB_ENV"
           echo "APK_FILE=$(basename /tmp/apk/*.apk)" >> "$GITHUB_ENV"
 
+      - name: Verify APK release signature
+        if: ${{ env.SIGNING_MODE == 'release' }}
+        run: |
+          SDK_DIR="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          APKSIGNER=$(find "$SDK_DIR/build-tools" -maxdepth 2 -name apksigner 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner not found under $SDK_DIR/build-tools"
+            exit 1
+          fi
+          CERT_OUT=$("$APKSIGNER" verify --print-certs /tmp/apk/*.apk)
+          echo "$CERT_OUT"
+          if echo "$CERT_OUT" | grep -qi "Android Debug"; then
+            echo "::error::APK was unexpectedly signed with Android Debug key instead of permanent release keystore!"
+            exit 1
+          fi
+          EXPECTED_HEX=$(printf '%s' "$CERT_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          ACTUAL_NORM=$(printf '%s' "$CERT_OUT" | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          if ! printf '%s' "$ACTUAL_NORM" | grep -q "$EXPECTED_HEX"; then
+            echo "::error::Built APK certificate SHA-256 does not match permanent release keystore ($CERT_SHA256)!"
+            exit 1
+          fi
+          echo "SIGNATURE VERIFIED: APK matches permanent Noellyne release keystore ($CERT_SHA256)"
+
       - name: Report build failure
         if: failure()
         env:
@@ -431,18 +641,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="apk-${GITHUB_RUN_NUMBER}"
+          if [ "$SIGNING_MODE" = "release" ]; then
+            SIGN_NOTE="Signed with permanent Noellyne release key (in-place in-app updates enabled). Cert SHA-256: \`${CERT_SHA256}\`"
+          else
+            SIGN_NOTE="Signed with temporary Flutter debug key (configure GitHub Secrets for permanent in-place updates)."
+          fi
           cat > /tmp/notes.md <<EOF
-          Noellyne Bet viewer build from \`${GITHUB_SHA::12}\` on branch \`${GITHUB_REF_NAME}\`.
+          Noellyne Android build from \`${GITHUB_SHA::12}\` on branch \`${GITHUB_REF_NAME}\`.
 
           - Version: \`${APK_VERSION}\` (build ${BUILD_NUMBER})
           - Size: ${APK_SIZE}
-          - SHA-256: \`${APK_SHA256}\`
-          - Signed with the Flutter debug key: **testing only**, not an updater release.
+          - APK SHA-256: \`${APK_SHA256}\`
+          - Signing: ${SIGN_NOTE}
 
           Install: open this release on your phone and download the APK.
           EOF
           gh release create "$TAG" /tmp/apk/*.apk \
-            --title "Noellyne Bet APK · build ${GITHUB_RUN_NUMBER}" \
+            --title "Noellyne APK · build ${GITHUB_RUN_NUMBER}" \
             --notes-file /tmp/notes.md \
             --latest
 
@@ -462,14 +677,15 @@ jobs:
             "apk_url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/viewer-latest/NoellyneBet-latest.apk",
             "sha256": "${APK_SHA256}",
             "size_bytes": ${APK_BYTES},
-            "notes": "Noellyne Bet ${APK_VERSION} (build ${BUILD_NUMBER}) from ${GITHUB_SHA::12}",
+            "signing_mode": "${SIGNING_MODE}",
+            "notes": "Noellyne ${APK_VERSION} (build ${BUILD_NUMBER}) from ${GITHUB_SHA::12}",
             "mandatory": false
           }
           EOF
           cat /tmp/apk/latest.json
           gh release view viewer-latest >/dev/null 2>&1 || \
             gh release create viewer-latest \
-              --title "Noellyne Bet · latest" \
+              --title "Noellyne · latest" \
               --notes "Rolling build consumed by the in-app updater (GET latest.json)."
           gh release upload viewer-latest \
             /tmp/apk/NoellyneBet-latest.apk /tmp/apk/latest.json --clobber
@@ -477,16 +693,19 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "## 📱 Noellyne Bet APK"
+            echo "## 📱 Noellyne APK"
             echo ""
             echo "**Download:** ${{ github.server_url }}/${{ github.repository }}/releases/download/apk-${{ github.run_number }}/${APK_FILE}"
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| Version | \`${APK_VERSION}\` |"
+            echo "| Version | \`${APK_VERSION}\` (build ${BUILD_NUMBER}) |"
             echo "| File | \`${APK_FILE}\` |"
             echo "| Size | ${APK_SIZE} |"
-            echo "| SHA-256 | \`${APK_SHA256}\` |"
+            echo "| Signing | \`${SIGNING_MODE}\` |"
+            echo "| Cert SHA-1 | \`${CERT_SHA1}\` |"
+            echo "| Cert SHA-256 | \`${CERT_SHA256}\` |"
+            echo "| APK SHA-256 | \`${APK_SHA256}\` |"
             echo "| Branch | \`${GITHUB_REF_NAME}\` |"
             echo "| Commit | \`${GITHUB_SHA::12}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

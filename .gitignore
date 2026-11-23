@@ -8,3 +8,11 @@ build/
 *.iml
 android/.gradle/
 **/android/.gradle/
+
+# Never commit Android signing keystores or credentials
+*.jks
+*.keystore
+*.p12
+key.properties
+**/key.properties
+
