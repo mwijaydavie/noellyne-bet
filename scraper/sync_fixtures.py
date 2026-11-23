@@ -117,10 +117,18 @@ def fetch_espn_fixtures(date_keys: list[str]) -> list[dict[str, Any]]:
                 if not home_name or not away_name:
                     continue
 
+                kickoff_str = str(ev.get("date") or now_iso)
+                stale_cutoff = datetime.now(timezone.utc) - timedelta(hours=4)
+                try:
+                    kickoff_dt = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+                    is_too_old = kickoff_dt < stale_cutoff
+                except ValueError:
+                    is_too_old = False
+
                 st_type = (ev.get("status") or {}).get("type") or {}
                 state = str(st_type.get("state") or "pre").lower()
-                completed = bool(st_type.get("completed"))
-                is_live = state == "in"
+                completed = bool(st_type.get("completed")) or state == "post" or is_too_old
+                is_live = (not completed) and state == "in"
                 status = "finished" if completed else ("live" if is_live else "scheduled")
                 clock = str(st_type.get("shortDetail") or st_type.get("detail") or "").strip()
 
@@ -206,15 +214,40 @@ def upsert_supabase(rows: list[dict[str, Any]]) -> None:
         http_json(url, method="POST", headers=headers, payload=batch, timeout=20)
     print(f"Upserted {len(rows)} fixtures into {SUPABASE_URL}/rest/v1/fixtures")
 
+    # Deactivate any stale fixtures older than 4 hours so zombie LIVE rows never survive
+    stale_cutoff = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+    import urllib.parse
+    patch_url = (
+        f"{SUPABASE_URL}/rest/v1/fixtures"
+        f"?is_active=eq.true&kickoff_at=lt.{urllib.parse.quote(stale_cutoff, safe='')}"
+    )
+    http_json(
+        patch_url,
+        method="PATCH",
+        headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Prefer": "return=minimal",
+        },
+        payload={
+            "is_live": False,
+            "is_active": False,
+            "status": "finished",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        timeout=15,
+    )
+
 
 def main() -> None:
     now_eat = datetime.now(EAT)
+    yesterday_key = (now_eat - timedelta(days=1)).strftime("%Y%m%d")
     today_key = now_eat.strftime("%Y%m%d")
     tomorrow_key = (now_eat + timedelta(days=1)).strftime("%Y%m%d")
-    rows = fetch_espn_fixtures([today_key, tomorrow_key])
+    rows = fetch_espn_fixtures([yesterday_key, today_key, tomorrow_key])
     active = sum(1 for r in rows if r["is_active"])
     live = sum(1 for r in rows if r["is_live"])
-    print(f"Collected {len(rows)} fixtures ({active} active, {live} live) for {today_key}/{tomorrow_key}")
+    print(f"Collected {len(rows)} fixtures ({active} active, {live} live) for {yesterday_key}/{today_key}/{tomorrow_key}")
     if "--dry-run" in sys.argv:
         for r in rows[:10]:
             print(f"  [{r['sport']}] {r['league']} | {r['home_team']} vs {r['away_team']} | {r['kickoff_at']} | {r['odds_summary']}")

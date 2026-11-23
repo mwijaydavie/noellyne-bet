@@ -24,4 +24,16 @@ void main() {
     expect(programmeCoversMatch(programme('Inter Milan vs Atalanta'),
       {'home_team':'Inter Milan','away_team':'AC Milan','kickoff_at':now.toIso8601String()},now: now), isFalse);
   });
+  test('matches Internazionale -> Inter, Dortmund, diacritics, and rejects Mini Match / delayed (D)', () {
+    final interMatch = {'home_team': 'Atalanta', 'away_team': 'Internazionale', 'kickoff_at': now.toIso8601String()};
+    expect(programmeCoversMatch(programme('Serie A | Atalanta vs Inter'), interMatch, now: now), isTrue);
+    expect(programmeCoversMatch(programme('Mini Match - Serie A | Atalanta vs Inter'), interMatch, now: now), isFalse);
+    final uclMatch = {'home_team': 'Arsenal', 'away_team': 'Borussia Dortmund', 'kickoff_at': now.toIso8601String()};
+    expect(programmeCoversMatch(programme('(L) UCL : Arsenal Vs Dortmund - MD5'), uclMatch, now: now), isTrue);
+    expect(programmeCoversMatch(programme('(D) UCL : Arsenal Vs Dortmund - MD5'), uclMatch, now: now), isFalse);
+    final laLiga = {'home_team': 'Getafe', 'away_team': 'Atlético Madrid', 'kickoff_at': now.toIso8601String()};
+    expect(programmeCoversMatch(programme('LaLiga | Getafe vs Atletico Madrid'), laLiga, now: now), isTrue);
+    expect(programmeIsLiveNow(programme('LaLiga | Levante vs Elche', minutes: -10), now: now), isTrue);
+    expect(programmeIsLiveNow(programme('LaLiga | Levante vs Elche', minutes: 90), now: now), isFalse);
+  });
 }

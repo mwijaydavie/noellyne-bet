@@ -17,6 +17,8 @@ class PremiumMatchCard extends StatelessWidget {
     this.homeLogo,
     this.awayLogo,
     this.metaLabel,
+    this.scoreLabel,
+    this.clockLabel,
     this.timeLabel,
     this.timeZoneLabel = '',
     this.onRemind,
@@ -34,6 +36,8 @@ class PremiumMatchCard extends StatelessWidget {
   final String? homeLogo;
   final String? awayLogo;
   final String? metaLabel;
+  final String? scoreLabel;
+  final String? clockLabel;
   final String? timeLabel;
   final String timeZoneLabel;
   final VoidCallback? onRemind;
@@ -134,19 +138,38 @@ class PremiumMatchCard extends StatelessWidget {
                     ),
                   ),
                   SizedBox(
-                    width: 58,
+                    width: 66,
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          'VS',
+                          (scoreLabel ?? '').trim().isNotEmpty
+                              ? scoreLabel!.trim()
+                              : 'VS',
                           style: TextStyle(
-                            fontSize: 12.5,
+                            fontSize:
+                                (scoreLabel ?? '').trim().isNotEmpty ? 16 : 12.5,
                             fontWeight: FontWeight.w900,
-                            color: colors.onSurface,
+                            color: isLive && (scoreLabel ?? '').trim().isNotEmpty
+                                ? Colors.redAccent
+                                : colors.onSurface,
                           ),
                         ),
-                        if (kickoff != null) ...[
+                        if ((clockLabel ?? '').trim().isNotEmpty) ...[
+                          const SizedBox(height: 3),
+                          Text(
+                            clockLabel!.trim(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w800,
+                              color: isLive
+                                  ? Colors.redAccent
+                                  : colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ] else if (kickoff != null) ...[
                           const SizedBox(height: 3),
                           Text(
                             DateFormat('dd MMM').format(kickoff!),

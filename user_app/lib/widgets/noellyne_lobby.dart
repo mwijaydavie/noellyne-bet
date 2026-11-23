@@ -99,6 +99,9 @@ class HeroMatchCard extends StatelessWidget {
     this.kickoff,
     this.lineCount = 0,
     this.metaLabel,
+    this.actionLabel,
+    this.scoreLabel,
+    this.clockLabel,
   });
 
   final String league;
@@ -112,6 +115,9 @@ class HeroMatchCard extends StatelessWidget {
   final DateTime? kickoff;
   final int lineCount;
   final String? metaLabel;
+  final String? actionLabel;
+  final String? scoreLabel;
+  final String? clockLabel;
 
   String get _kickoffLabel {
     final k = kickoff;
@@ -192,7 +198,9 @@ class HeroMatchCard extends StatelessWidget {
                 child: Column(
                   children: [
                     TabularText(
-                      'VS',
+                      (scoreLabel ?? '').trim().isNotEmpty
+                          ? scoreLabel!.trim()
+                          : 'VS',
                       style: TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.w800,
@@ -202,7 +210,9 @@ class HeroMatchCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      isLive ? 'LIVE NOW' : _kickoffLabel,
+                      (clockLabel ?? '').trim().isNotEmpty
+                          ? clockLabel!.trim()
+                          : (isLive ? 'LIVE NOW' : _kickoffLabel),
                       style: TextStyle(
                         fontSize: 9.5,
                         fontWeight: FontWeight.w700,
@@ -220,19 +230,29 @@ class HeroMatchCard extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              if (lineCount > 0) ...[
+              if ((metaLabel ?? '').trim().isNotEmpty) ...[
+                Flexible(
+                  child: _MetaPill(
+                    icon: Icons.live_tv_rounded,
+                    label: metaLabel!.trim(),
+                  ),
+                ),
+                const SizedBox(width: 6),
+              ] else if (lineCount > 0) ...[
                 _MetaPill(
                   icon: Icons.sensors_rounded,
                   label: lineCount == 1 ? '1 server' : '$lineCount servers',
                 ),
                 const SizedBox(width: 6),
               ],
-              _MetaPill(icon: Icons.hd_rounded, label: 'HD stream'),
+              const _MetaPill(icon: Icons.hd_rounded, label: 'HD stream'),
             ],
           ),
           const SizedBox(height: 14),
           PillButton(
-            label: canWatch ? '▶  WATCH LIVE' : 'NOT READY YET',
+            label: (actionLabel ?? '').trim().isNotEmpty
+                ? actionLabel!.trim()
+                : (canWatch ? '▶  WATCH LIVE' : 'OPENS NEAR KICKOFF'),
             onPressed: canWatch ? onWatch : null,
           ),
         ],
@@ -299,12 +319,16 @@ class _MetaPill extends StatelessWidget {
         children: [
           Icon(icon, size: 12, color: scheme.onSurfaceVariant),
           const SizedBox(width: 4),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 10.5,
-              fontWeight: FontWeight.w700,
-              color: scheme.onSurfaceVariant,
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w700,
+                color: scheme.onSurfaceVariant,
+              ),
             ),
           ),
         ],

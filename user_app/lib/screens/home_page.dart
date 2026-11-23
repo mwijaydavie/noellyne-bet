@@ -37,6 +37,7 @@ import '../app_update_service.dart';
 import '../live_feed_controller.dart';
 import '../player_loading.dart';
 import '../football_english.dart';
+import '../channel_match_search.dart';
 
 class _MatchLoadResult {
   const _MatchLoadResult(this.rows, this.label);
@@ -104,6 +105,9 @@ class _HomePageState extends State<HomePage> {
   final Map<String, _StreamCacheEntry> _streamLinkCache = {};
   final Map<String, Future<List<Map<String, dynamic>>>> _streamLinkInflight =
       {};
+  static List<Map<String, dynamic>>? _cachedTvSchedule;
+  static DateTime? _cachedTvScheduleAt;
+  static const _tvScheduleTtl = Duration(minutes: 5);
 
   static const _publicApiBase = NoellyneConfig.publicApiBase;
   List<String> get _publicApiBases {
@@ -527,9 +531,32 @@ class _HomePageState extends State<HomePage> {
     if (existing != null) return existing;
 
     final request = () async {
+      final epgChannels = _epgChannelsFor(match);
+      final isScheduleOnly =
+          match['noellyne_fixture'] == true && advertisedCount <= 0;
+
+      if (isScheduleOnly) {
+        try {
+          final tvRows = epgChannels.isEmpty
+              ? const <Map<String, dynamic>>[]
+              : await _resolveChannelBridgeLinks(epgChannels);
+          if (tvRows.isNotEmpty) {
+            _streamLinkCache[matchId] = _StreamCacheEntry(tvRows, DateTime.now());
+          } else {
+            _streamLinkCache.remove(matchId);
+          }
+          return tvRows;
+        } finally {
+          _streamLinkInflight.remove(matchId);
+        }
+      }
+
       if (!_enableNoVpnFallback) {
         try {
-          final rows = playableLinks(await _loadPublicApiStreams(matchId));
+          var rows = playableLinks(await _loadPublicApiStreams(matchId));
+          if (rows.isEmpty && epgChannels.isNotEmpty) {
+            rows = await _resolveChannelBridgeLinks(epgChannels);
+          }
           if (rows.isNotEmpty) {
             _streamLinkCache[matchId] = _StreamCacheEntry(rows, DateTime.now());
           } else {
@@ -606,6 +633,9 @@ class _HomePageState extends State<HomePage> {
       }
 
       try {
+        if (rows.isEmpty && epgChannels.isNotEmpty) {
+          rows = await _resolveChannelBridgeLinks(epgChannels);
+        }
         if (rows.isNotEmpty) {
           _streamLinkCache[matchId] = _StreamCacheEntry(rows, DateTime.now());
         } else {
@@ -862,10 +892,21 @@ class _HomePageState extends State<HomePage> {
       final decoded =
           jsonDecode(utf8.decode(resp.bodyBytes, allowMalformed: true));
       if (decoded is! List) return const <Map<String, dynamic>>[];
+      final nowUtc = DateTime.now().toUtc();
       return decoded
           .whereType<Map>()
           .map((row) {
             final m = Map<String, dynamic>.from(row);
+            final kickoffStr = (m['kickoff_at'] ?? '').toString();
+            final kickoffUtc = DateTime.tryParse(kickoffStr)?.toUtc();
+            // Client-side defense-in-depth: never let a stale fixture older than
+            // 3h45m masquerade as LIVE even if upstream sync lagged.
+            final age = kickoffUtc == null ? null : nowUtc.difference(kickoffUtc);
+            final stale = age != null && age > const Duration(hours: 3, minutes: 45);
+            if (stale) return null;
+            final withinLiveWindow = age == null ||
+                (age >= const Duration(minutes: -20) &&
+                    age <= const Duration(hours: 3, minutes: 30));
             return <String, dynamic>{
               'id': m['id']?.toString() ?? '',
               'league': (m['league'] ?? 'Football').toString(),
@@ -874,8 +915,8 @@ class _HomePageState extends State<HomePage> {
               'away_team': (m['away_team'] ?? '').toString(),
               'home_logo_url': (m['home_logo_url'] ?? '').toString(),
               'away_logo_url': (m['away_logo_url'] ?? '').toString(),
-              'kickoff_at': (m['kickoff_at'] ?? '').toString(),
-              'is_live': m['is_live'] == true,
+              'kickoff_at': kickoffStr,
+              'is_live': m['is_live'] == true && withinLiveWindow,
               'home_score': m['home_score'],
               'away_score': m['away_score'],
               'clock': (m['clock'] ?? '').toString(),
@@ -885,6 +926,7 @@ class _HomePageState extends State<HomePage> {
               'noellyne_fixture': true,
             };
           })
+          .whereType<Map<String, dynamic>>()
           .where((m) =>
               (m['home_team'] as String).isNotEmpty &&
               (m['away_team'] as String).isNotEmpty)
@@ -892,6 +934,223 @@ class _HomePageState extends State<HomePage> {
     } catch (_) {
       return const <Map<String, dynamic>>[];
     }
+  }
+
+  /// Fetch EPG-linked TV channels (`/tv-schedule`) so Home fixtures without
+  /// direct per-match stream lines automatically link to live TV channels
+  /// (e.g. beIN Sports 2, Premier Sports 1 HD, TNT Sports).
+  Future<List<Map<String, dynamic>>> _loadTvScheduleChannels() async {
+    final cached = _cachedTvSchedule;
+    final at = _cachedTvScheduleAt;
+    if (cached != null &&
+        at != null &&
+        DateTime.now().difference(at) < _tvScheduleTtl) {
+      return cached;
+    }
+
+    final nowUtc = DateTime.now().toUtc();
+    final windowStart = nowUtc.subtract(const Duration(hours: 6));
+    final date =
+        '${windowStart.year}-${windowStart.month.toString().padLeft(2, '0')}-${windowStart.day.toString().padLeft(2, '0')}';
+
+    final bases = publicApiBases()
+        .where((base) => base != vercelBackupBase)
+        .toList(growable: false);
+    if (bases.isEmpty) return cached ?? const <Map<String, dynamic>>[];
+
+    for (final base in bases) {
+      try {
+        final resp = await http
+            .get(
+              Uri.parse('$base/tv-schedule?date=$date&days=3'),
+              headers: publicApiHeaders(base),
+            )
+            .timeout(const Duration(seconds: 5));
+        if (resp.statusCode != 200) continue;
+        final decoded =
+            jsonDecode(utf8.decode(resp.bodyBytes, allowMalformed: true));
+        if (decoded is! Map || decoded['channels'] is! List) continue;
+        final parsed = <Map<String, dynamic>>[];
+        for (final raw in decoded['channels'] as List) {
+          if (raw is! Map || raw['matchedEPG'] != true) continue;
+          final id = raw['id']?.toString().trim() ?? '';
+          final name = raw['name']?.toString().trim() ?? '';
+          if (id.isEmpty || name.isEmpty) continue;
+          final progs = (raw['programmes'] as List? ?? const [])
+              .whereType<Map>()
+              .where((p) => currentFootballProgramme(p, now: nowUtc))
+              .map((p) => Map<String, dynamic>.from(p))
+              .toList(growable: false);
+          if (progs.isEmpty) continue;
+          parsed.add(<String, dynamic>{
+            'id': id,
+            'name': name,
+            'programmes': progs,
+          });
+        }
+        _cachedTvSchedule = parsed;
+        _cachedTvScheduleAt = DateTime.now();
+        return parsed;
+      } catch (_) {
+        continue;
+      }
+    }
+    return cached ?? const <Map<String, dynamic>>[];
+  }
+
+  List<Map<String, dynamic>> _epgChannelsFor(Map<String, dynamic> m) {
+    final raw = m['epg_channels'];
+    if (raw is! List) return const <Map<String, dynamic>>[];
+    return raw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .where((e) => (e['id'] ?? '').toString().trim().isNotEmpty)
+        .toList(growable: false);
+  }
+
+  String _cleanChannelDisplayName(String raw) {
+    var name = raw.trim();
+    name = name.replaceAll(RegExp(r'_+'), ' ');
+    name = name.replaceAll(
+      RegExp(r'\b(Digital Mono EN|Digital Stereo EN)\b', caseSensitive: false),
+      '',
+    );
+    return name.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  List<Map<String, dynamic>> _attachEpgChannels(
+    List<Map<String, dynamic>> matches,
+    List<Map<String, dynamic>> tvChannels,
+  ) {
+    if (tvChannels.isEmpty || matches.isEmpty) return matches;
+    final nowUtc = DateTime.now().toUtc();
+    for (final m in matches) {
+      final matched = <Map<String, dynamic>>[];
+      final seenIds = <String>{};
+      for (final ch in tvChannels) {
+        final chId = (ch['id'] ?? '').toString();
+        if (chId.isEmpty || seenIds.contains(chId)) continue;
+        final progs = ch['programmes'];
+        if (progs is! List) continue;
+        for (final rawProg in progs) {
+          if (rawProg is! Map) continue;
+          if (!programmeCoversMatch(rawProg, m, now: nowUtc)) continue;
+          seenIds.add(chId);
+          final chName = _cleanChannelDisplayName((ch['name'] ?? '').toString());
+          matched.add(<String, dynamic>{
+            'id': chId,
+            'name': chName.isEmpty ? (ch['name'] ?? 'TV Channel').toString() : chName,
+            'raw_name': (ch['name'] ?? '').toString(),
+            'programme': (rawProg['title'] ?? rawProg['subtitle'] ?? '').toString(),
+            'is_live_now': programmeIsLiveNow(rawProg, now: nowUtc),
+            'start': rawProg['start'],
+            'end': rawProg['end'],
+          });
+          break;
+        }
+      }
+      if (matched.isNotEmpty) {
+        matched.sort((a, b) {
+          final aLive = a['is_live_now'] == true ? 0 : 1;
+          final bLive = b['is_live_now'] == true ? 0 : 1;
+          if (aLive != bLive) return aLive.compareTo(bLive);
+          final aClean = (a['raw_name'] ?? '').toString().contains('_') ? 1 : 0;
+          final bClean = (b['raw_name'] ?? '').toString().contains('_') ? 1 : 0;
+          if (aClean != bClean) return aClean.compareTo(bClean);
+          return (a['name'] ?? '').toString().compareTo((b['name'] ?? '').toString());
+        });
+        m['epg_channels'] = matched.take(8).toList(growable: false);
+      }
+    }
+    return matches;
+  }
+
+  Future<List<Map<String, dynamic>>> _resolveSingleChannelStreams(
+    Map<String, dynamic> ch,
+  ) async {
+    final chId = (ch['id'] ?? '').toString().trim();
+    if (!RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(chId)) {
+      return const <Map<String, dynamic>>[];
+    }
+    final chName = (ch['name'] ?? 'TV Channel').toString().trim();
+    final bases = publicApiBases()
+        .where((base) => base != vercelBackupBase)
+        .toList(growable: false);
+    for (final base in bases) {
+      try {
+        final resp = await http
+            .get(
+              Uri.parse('$base/channels/$chId/streams'),
+              headers: publicApiHeaders(base),
+            )
+            .timeout(const Duration(seconds: 8));
+        if (resp.statusCode != 200) continue;
+        final decoded =
+            jsonDecode(utf8.decode(resp.bodyBytes, allowMalformed: true));
+        if (decoded is! Map || decoded['ok'] != true || decoded['streams'] is! List) {
+          continue;
+        }
+        final out = <Map<String, dynamic>>[];
+        for (final raw in decoded['streams'] as List) {
+          if (raw is! Map) continue;
+          final row = Map<String, dynamic>.from(raw);
+          final url = (row['stream_url'] ?? '').toString().trim();
+          final uri = Uri.tryParse(url);
+          if (uri == null ||
+              uri.scheme != 'https' ||
+              uri.host.isEmpty ||
+              row['protected_proxy'] != true) {
+            continue;
+          }
+          final rawLabel = (row['label'] ?? '').toString().trim();
+          final label = rawLabel.isEmpty
+              ? chName
+              : (rawLabel.toLowerCase().contains(chName.toLowerCase())
+                  ? rawLabel
+                  : '$chName · $rawLabel');
+          out.add(<String, dynamic>{
+            'id': row['id']?.toString() ?? '$chId-${out.length}',
+            'label': label,
+            'stream_url': url,
+            'stream_type': (row['stream_type'] ?? 'auto').toString(),
+            'key_id': (row['key_id'] ?? '').toString(),
+            'key_data': (row['key_data'] ?? '').toString(),
+            'resolution': (row['resolution'] ?? '').toString(),
+            'referer': (row['referer'] ?? '').toString(),
+            'origin': (row['origin'] ?? '').toString(),
+            'health_status': 'healthy',
+            'priority': (row['priority'] as num?)?.toInt() ?? 10,
+            'is_active': true,
+            'use_webview': false,
+            'from_tv_channel': true,
+          });
+        }
+        if (out.isNotEmpty) return out;
+      } catch (_) {
+        continue;
+      }
+    }
+    return const <Map<String, dynamic>>[];
+  }
+
+  Future<List<Map<String, dynamic>>> _resolveChannelBridgeLinks(
+    List<Map<String, dynamic>> epgChannels,
+  ) async {
+    if (epgChannels.isEmpty) return const <Map<String, dynamic>>[];
+    final candidates = epgChannels.take(4).toList(growable: false);
+    final batches = await Future.wait(
+      candidates.map(_resolveSingleChannelStreams),
+    );
+    final seenUrls = <String>{};
+    final combined = <Map<String, dynamic>>[];
+    for (final list in batches) {
+      for (final row in list) {
+        final url = (row['stream_url'] ?? '').toString().trim();
+        if (url.isEmpty || !seenUrls.add(url)) continue;
+        combined.add(row);
+      }
+    }
+    return combined;
   }
 
   String _normTeamForFixtureMerge(String raw) => raw
@@ -950,6 +1209,16 @@ class _HomePageState extends State<HomePage> {
             (fx['odds_summary'] ?? '').toString().trim().isNotEmpty) {
           existing['odds_summary'] = fx['odds_summary'];
         }
+        if (existing['home_score'] == null && fx['home_score'] != null) {
+          existing['home_score'] = fx['home_score'];
+        }
+        if (existing['away_score'] == null && fx['away_score'] != null) {
+          existing['away_score'] = fx['away_score'];
+        }
+        if ((existing['clock'] ?? '').toString().trim().isEmpty &&
+            (fx['clock'] ?? '').toString().trim().isNotEmpty) {
+          existing['clock'] = fx['clock'];
+        }
         if (fx['is_live'] == true) {
           existing['is_live'] = true;
         }
@@ -963,6 +1232,7 @@ class _HomePageState extends State<HomePage> {
   Future<List<Map<String, dynamic>>> loadMatches() async {
     final started = DateTime.now();
     final fixturesFuture = _loadNoellyneFixtures();
+    final tvScheduleFuture = _loadTvScheduleChannels();
 
     if (!_enableNoVpnFallback) {
       List<Map<String, dynamic>> streamRows;
@@ -972,7 +1242,11 @@ class _HomePageState extends State<HomePage> {
         streamRows = const <Map<String, dynamic>>[];
       }
       final fixtures = await fixturesFuture;
-      final rows = _mergeNoellyneFixtures(streamRows, fixtures);
+      final tvChannels = await tvScheduleFuture;
+      final rows = _attachEpgChannels(
+        _mergeNoellyneFixtures(streamRows, fixtures),
+        tvChannels,
+      );
       if (rows.isEmpty && streamRows.isEmpty) {
         throw StateError('No match sources reachable.');
       }
@@ -1062,9 +1336,12 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
-    final mergedFallback = _mergeNoellyneFixtures(
-      result.rows,
-      await fixturesFuture,
+    final mergedFallback = _attachEpgChannels(
+      _mergeNoellyneFixtures(
+        result.rows,
+        await fixturesFuture,
+      ),
+      await tvScheduleFuture,
     );
 
     unawaited(
@@ -1302,6 +1579,18 @@ class _HomePageState extends State<HomePage> {
       ),
     );
 
+    final epgChannels = _epgChannelsFor(match);
+    final hasAnyStreamCandidate =
+        match['noellyne_fixture'] != true ||
+        _lineCountFor(match) > 0 ||
+        epgChannels.isNotEmpty;
+    if (!hasAnyStreamCandidate) {
+      if (_isOnAir(match)) {
+        await _openLiveChannelFallbackSheet(match);
+        return;
+      }
+    }
+
     final links = await loadPlayerSources(context, () => _resolveLinks(match));
     watchToSourcesClock.stop();
     if (links == null || !mounted) return;
@@ -1341,6 +1630,10 @@ class _HomePageState extends State<HomePage> {
         },
       );
       if (!mounted) return;
+      if (_isOnAir(match)) {
+        await _openLiveChannelFallbackSheet(match);
+        return;
+      }
       final advertised = (match['stream_count'] as num?)?.toInt() ?? 0;
       final isScheduleFixture = match['noellyne_fixture'] == true;
       final title = _matchTitle(match);
@@ -1740,19 +2033,178 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// A match counts as on air when the feed flags it live **or** it carries a
-  /// playable line and sits inside the broadcast window. This is why "nothing
-  /// live" no longer appears while a channel is clearly playing: replays and
-  /// late kickoffs still surface.
+  Future<void> _openLiveChannelFallbackSheet(Map<String, dynamic> match) async {
+    if (!mounted) return;
+    final title = _matchTitle(match);
+    final league = englishKnownFootballName(
+      (match['league'] ?? 'Football').toString(),
+      kind: 'league',
+    );
+    final odds = (match['odds_summary'] ?? '').toString();
+    final suggestedQuery = suggestedChannelQueryForLeague(league);
+    final score = _scoreTextFor(match);
+    final clock = _clockTextFor(match);
+
+    await showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        final colors = Theme.of(sheetContext).colorScheme;
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(18, 2, 18, 22),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                [
+                  league,
+                  if (score != null) score,
+                  if (clock != null) clock,
+                  'Live on Sports TV channels',
+                ].join(' · '),
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () {
+                  Navigator.of(sheetContext).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) =>
+                          ChannelsPage(initialSearch: suggestedQuery),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.live_tv_rounded),
+                label: Text('Open Channels ($suggestedQuery)'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.of(sheetContext).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const ChannelsPage(initialSearch: ''),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.grid_view_rounded),
+                label: const Text('Browse All 390+ Live Channels'),
+              ),
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.of(sheetContext).pop();
+                  openAiChat(
+                    context,
+                    initialPrompt:
+                        'Mechi ya $title ($league) inaendelea live${score != null ? ' ($score${clock != null ? ' $clock' : ''})' : ''}'
+                        '${odds.isNotEmpty ? ' (Odds: $odds)' : ''}. '
+                        'Chambua mwenendo na soko bora la live sasa.',
+                    matchContext: {
+                      'match': title,
+                      'league': league,
+                      'sport': (match['sport'] ?? 'football').toString(),
+                      if (score != null) 'score': score,
+                      if (odds.isNotEmpty) 'odds_summary': odds,
+                    },
+                  );
+                },
+                icon: const Icon(Icons.auto_awesome_rounded),
+                label: const Text('Ask Noellyne AI Live Analysis'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// A match counts as on air when the feed flags it live (and is not stale),
+  /// **or** it carries a playable line / live EPG TV channel inside the
+  /// broadcast window.
   bool _isOnAir(Map<String, dynamic> m) {
+    final kickoff =
+        DateTime.tryParse(m['kickoff_at']?.toString() ?? '')?.toLocal();
+    final now = DateTime.now();
+    if (m['noellyne_fixture'] == true &&
+        kickoff != null &&
+        now.difference(kickoff) > const Duration(hours: 3, minutes: 30)) {
+      return false;
+    }
     if (m['is_live'] == true) return true;
-    if (_lineCountFor(m) <= 0) return false;
+    final hasLiveTv = _epgChannelsFor(m).any((c) => c['is_live_now'] == true);
+    if (_lineCountFor(m) <= 0 && !hasLiveTv) return false;
+    if (kickoff == null) return hasLiveTv;
+    return now.isAfter(kickoff.subtract(const Duration(minutes: 45))) &&
+        now.isBefore(kickoff.add(const Duration(hours: 3, minutes: 30)));
+  }
+
+  bool _hasPlayableTvChannel(Map<String, dynamic> m) {
+    final channels = _epgChannelsFor(m);
+    if (channels.isEmpty) return false;
+    if (_isOnAir(m) || channels.any((c) => c['is_live_now'] == true)) {
+      return true;
+    }
     final kickoff =
         DateTime.tryParse(m['kickoff_at']?.toString() ?? '')?.toLocal();
     if (kickoff == null) return false;
     final now = DateTime.now();
     return now.isAfter(kickoff.subtract(const Duration(minutes: 45))) &&
         now.isBefore(kickoff.add(const Duration(hours: 3, minutes: 30)));
+  }
+
+  String? _scoreTextFor(Map<String, dynamic> m) {
+    final hs = m['home_score'];
+    final as = m['away_score'];
+    if (hs == null || as == null) return null;
+    return '$hs - $as';
+  }
+
+  String? _clockTextFor(Map<String, dynamic> m) {
+    final raw = (m['clock'] ?? '').toString().trim();
+    if (raw.isEmpty) return null;
+    if (!_isOnAir(m) && _scoreTextFor(m) == null) return null;
+    return raw;
+  }
+
+  String? _tvChannelBadgeFor(Map<String, dynamic> m) {
+    final channels = _epgChannelsFor(m);
+    if (channels.isEmpty) return null;
+    final uniqueNames = <String>[];
+    for (final c in channels) {
+      final name = (c['name'] ?? '').toString().trim();
+      if (name.isEmpty) continue;
+      if (!uniqueNames.any((x) => x.toLowerCase() == name.toLowerCase())) {
+        uniqueNames.add(name);
+      }
+    }
+    if (uniqueNames.isEmpty) return null;
+    final first = uniqueNames.first;
+    final extra = uniqueNames.length - 1;
+    final liveNow = channels.any((c) => c['is_live_now'] == true);
+    final prefix = liveNow ? 'LIVE TV: ' : 'TV: ';
+    return extra > 0 ? '$prefix$first +$extra' : '$prefix$first';
+  }
+
+  String _shortChannelCta(String name) {
+    final cleaned = name.trim();
+    if (cleaned.length <= 18) return cleaned.toUpperCase();
+    return '${cleaned.substring(0, 17).trim()}…'.toUpperCase();
   }
 
   bool _isReplay(Map<String, dynamic> m) {
@@ -1788,19 +2240,21 @@ class _HomePageState extends State<HomePage> {
     return rows;
   }
 
-  /// The hero slot: first live match, otherwise the next fixture.
+  /// The hero slot: prefer a live match that can actually play now (direct line
+  /// or live TV channel), then any live match, then next upcoming match with a
+  /// known TV channel/line, otherwise the earliest upcoming fixture.
   Map<String, dynamic>? _featuredMatch(List<Map<String, dynamic>> all) {
     if (all.isEmpty) return null;
-    if (_lobbyFilter == LobbyFilter.all) {
-      // Fixture hub: lead with the next kickoff, not with a live match that
-      // the Live segment already owns.
-      for (final m in all) {
-        if (!_isOnAir(m)) return m;
+    for (final m in all) {
+      if (_isOnAir(m) && (_lineCountFor(m) > 0 || _hasPlayableTvChannel(m))) {
+        return m;
       }
-      return all.first;
     }
     for (final m in all) {
       if (_isOnAir(m)) return m;
+    }
+    for (final m in all) {
+      if (_lineCountFor(m) > 0 || _epgChannelsFor(m).isNotEmpty) return m;
     }
     return all.first;
   }
@@ -1835,9 +2289,32 @@ class _HomePageState extends State<HomePage> {
     int visibleCount,
   ) {
     final featuredLinks = _lineCountFor(featured);
+    final epgChannels = _epgChannelsFor(featured);
+    final hasTvNow = _hasPlayableTvChannel(featured);
+    final isLive = _isOnAir(featured);
+    final canWatch = featuredLinks > 0 || hasTvNow || isLive;
     final kickoff = DateTime.tryParse(
       featured['kickoff_at']?.toString() ?? '',
     )?.toLocal();
+    final tvBadge = _tvChannelBadgeFor(featured);
+
+    String heroCta;
+    if (featuredLinks > 0) {
+      heroCta = featuredLinks > 1
+          ? '▶  WATCH LIVE · $featuredLinks LINES'
+          : '▶  WATCH LIVE';
+    } else if (hasTvNow) {
+      final firstName = (epgChannels.first['name'] ?? 'TV').toString();
+      heroCta = epgChannels.length > 1
+          ? '▶  WATCH ON TV · ${epgChannels.length} CHANNELS'
+          : '▶  WATCH ON ${_shortChannelCta(firstName)}';
+    } else if (isLive) {
+      heroCta = '▶  LIVE · FIND ON CHANNELS';
+    } else {
+      heroCta = epgChannels.isNotEmpty
+          ? 'TV: ${_shortChannelCta((epgChannels.first['name'] ?? '').toString())}'
+          : 'OPENS NEAR KICKOFF';
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1856,9 +2333,13 @@ class _HomePageState extends State<HomePage> {
           homeLogo: featured['home_logo_url']?.toString(),
           awayLogo: featured['away_logo_url']?.toString(),
           kickoff: kickoff,
-          isLive: _isOnAir(featured),
-          canWatch: featuredLinks > 0,
-          lineCount: featuredLinks,
+          isLive: isLive,
+          canWatch: canWatch,
+          lineCount: featuredLinks > 0 ? featuredLinks : epgChannels.length,
+          metaLabel: tvBadge,
+          scoreLabel: _scoreTextFor(featured),
+          clockLabel: _clockTextFor(featured),
+          actionLabel: heroCta,
           onWatch: () => openPlayer(featured),
         ),
         const SizedBox(height: 14),
@@ -1966,9 +2447,38 @@ class _HomePageState extends State<HomePage> {
     final fallbackCount = (m['stream_count'] as num?)?.toInt() ?? 0;
     final displayCount =
         nativeLinkCount > fallbackCount ? nativeLinkCount : fallbackCount;
+    final epgChannels = _epgChannelsFor(m);
+    final hasTvNow = _hasPlayableTvChannel(m);
+    final isLive = _isOnAir(m);
     final kickoff =
         DateTime.tryParse(m['kickoff_at']?.toString() ?? '')?.toLocal();
-    final canWatch = displayCount > 0;
+    final canWatch = displayCount > 0 || hasTvNow || isLive;
+
+    final tvBadge = _tvChannelBadgeFor(m);
+    final odds = (m['odds_summary'] ?? '').toString().trim();
+    final metaParts = <String>[
+      if (tvBadge != null) tvBadge,
+      if (tvBadge == null && odds.isNotEmpty) odds,
+    ];
+
+    String actionLabel;
+    if (displayCount > 0) {
+      actionLabel = displayCount > 1
+          ? 'WATCH LIVE  •  $displayCount LINES'
+          : 'WATCH LIVE';
+    } else if (hasTvNow) {
+      final firstName = (epgChannels.first['name'] ?? 'TV').toString();
+      actionLabel = epgChannels.length > 1
+          ? 'WATCH ON TV  •  ${epgChannels.length} CHANNELS'
+          : 'WATCH ON ${_shortChannelCta(firstName)}';
+    } else if (isLive) {
+      actionLabel = 'LIVE  •  FIND ON CHANNELS';
+    } else if (epgChannels.isNotEmpty) {
+      actionLabel =
+          'OPENS ON ${_shortChannelCta((epgChannels.first['name'] ?? 'TV').toString())}';
+    } else {
+      actionLabel = 'OPENS NEAR KICKOFF';
+    }
 
     return PremiumMatchCard(
       league: englishKnownFootballName(
@@ -1984,13 +2494,12 @@ class _HomePageState extends State<HomePage> {
       homeLogo: m['home_logo_url']?.toString(),
       awayLogo: m['away_logo_url']?.toString(),
       kickoff: kickoff,
-      isLive: _isOnAir(m),
+      isLive: isLive,
       canWatch: canWatch,
-      actionLabel: canWatch
-          ? (displayCount > 1
-              ? 'WATCH LIVE  •  ' + displayCount.toString() + ' LINES'
-              : 'WATCH LIVE')
-          : 'NOT READY',
+      scoreLabel: _scoreTextFor(m),
+      clockLabel: _clockTextFor(m),
+      metaLabel: metaParts.isEmpty ? null : metaParts.join('  ·  '),
+      actionLabel: actionLabel,
       onWatch: () => openPlayer(m),
       reminded: MatchReminders.instance.isReminded(m['id'].toString()),
       onRemind: kickoff == null

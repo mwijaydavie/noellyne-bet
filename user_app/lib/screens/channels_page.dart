@@ -25,7 +25,10 @@ import '../viewer_navigation.dart';
 import '../viewer_tab_cache.dart';
 
 class ChannelsPage extends StatefulWidget {
-  const ChannelsPage({super.key});
+  const ChannelsPage({super.key, this.initialSearch});
+
+  final String? initialSearch;
+
   @override
   State<ChannelsPage> createState() => _ChannelsPageState();
 }
@@ -59,7 +62,13 @@ class _ChannelsPageState extends State<ChannelsPage> {
     selectedGroup = ui.group;
     selectedMatchId = ui.matchId;
     libraryFilter = ui.libraryFilter;
-    search.text = ui.search;
+    final seededSearch = widget.initialSearch?.trim() ?? '';
+    search.text = seededSearch.isNotEmpty ? seededSearch : ui.search;
+    if (seededSearch.isNotEmpty) {
+      selectedGroup = 'All';
+      selectedMatchId = null;
+      libraryFilter = 'all';
+    }
     _channelScroll = ScrollController(initialScrollOffset: ui.scrollOffset);
     _lastChannels = ViewerTabCache.channelRows;
     groupPositions = ViewerTabCache.channelGroups;
@@ -93,8 +102,9 @@ class _ChannelsPageState extends State<ChannelsPage> {
     final generation = ++_guideEpoch;
     try {
       final now = DateTime.now().toUtc();
-      final today = now.add(const Duration(hours: 6, minutes: 30));
-      final date = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      // Start 6h before current UTC so live evening matches (EAT/UTC) never fall off midnight boundary.
+      final windowStart = now.subtract(const Duration(hours: 6));
+      final date = '${windowStart.year}-${windowStart.month.toString().padLeft(2, '0')}-${windowStart.day.toString().padLeft(2, '0')}';
       final data = await _guideCache.load(
         date,
         () => request('/tv-schedule?date=$date&days=3'),
