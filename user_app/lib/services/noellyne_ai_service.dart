@@ -3,30 +3,113 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../noellyne_config.dart';
 import 'noellyne_auth_service.dart';
 
+/// Interactive action button returned alongside a Noellyne AI response.
+class AiAction {
+  const AiAction({
+    required this.type,
+    required this.label,
+    this.url,
+    this.text,
+    this.streamId,
+  });
+
+  /// `open_picks` | `open_results` | `open_watch` | `sign_in` | `open_url` | `copy_text`
+  final String type;
+  final String label;
+  final String? url;
+  final String? text;
+  final String? streamId;
+
+  factory AiAction.fromJson(Map<String, dynamic> json) => AiAction(
+        type: '${json['type'] ?? ''}'.trim(),
+        label: '${json['label'] ?? ''}'.trim(),
+        url: json['url']?.toString().trim(),
+        text: json['text']?.toString(),
+        streamId: json['streamId']?.toString().trim(),
+      );
+}
+
+/// Server-enforced daily quota metadata returned by the AI Chat API.
+class AiQuota {
+  const AiQuota({
+    required this.tier,
+    required this.plan,
+    required this.used,
+    required this.limit,
+    required this.remaining,
+    required this.unlimited,
+  });
+
+  final String tier;
+  final String plan;
+  final int used;
+  final int limit;
+  final int remaining;
+  final bool unlimited;
+
+  factory AiQuota.fromJson(Map<String, dynamic> json) {
+    final lim = json['limit'] is num ? (json['limit'] as num).toInt() : 3;
+    final rem = json['remaining'] is num ? (json['remaining'] as num).toInt() : 0;
+    final used = json['used'] is num ? (json['used'] as num).toInt() : 0;
+    final unlim = json['unlimited'] == true || lim < 0;
+    return AiQuota(
+      tier: '${json['tier'] ?? 'guest'}'.trim(),
+      plan: '${json['plan'] ?? 'guest'}'.trim(),
+      used: used,
+      limit: lim,
+      remaining: unlim ? -1 : rem,
+      unlimited: unlim,
+    );
+  }
+}
+
+/// Structured AI response containing text, clickable in-app actions, and quota.
+class AiReply {
+  const AiReply({
+    required this.text,
+    this.actions = const [],
+    this.quota,
+    this.quotaReached = false,
+  });
+
+  final String text;
+  final List<AiAction> actions;
+  final AiQuota? quota;
+  final bool quotaReached;
+}
+
 /// One chat turn.
 class AiMessage {
-  AiMessage(this.text, {required this.fromUser, this.pending = false});
+  AiMessage(
+    this.text, {
+    required this.fromUser,
+    this.pending = false,
+    this.actions = const [],
+  });
 
   final String text;
   final bool fromUser;
   bool pending;
+  final List<AiAction> actions;
 }
 
 /// Talks to the Noellyne n8n brain (`ai_chat_webhook`).
 ///
-/// The webhook URL is resolved dynamically from Supabase `public.app_config`
-/// and cached on disk for 6 hours (falling back to [NoellyneConfig.aiChatWebhook])
-/// so VPS migrations require zero APK rebuild without adding DB queries per launch.
-///
-/// The n8n side carries the provider fallback chain (Groq -> Gemini ->
-/// OpenRouter), per-device rate limiting, and cryptographic VIP owner bypass
-/// via Supabase Auth JWT.
+/// Features:
+///   - Remote webhook URL cached on disk for 6h via Supabase `public.app_config`
+///     (zero APK rebuild when migrating VPS servers).
+///   - Hardware-stable Android SHA-256 fingerprint (`hwId`) via `MainActivity`
+///     so daily guest/member limits survive Clear Cache, Clear Data & Reinstall.
+///   - Automatic Supabase JWT forwarding for Google Members (10/day), future
+///     Pro subscribers, and VIP Owner Unlimited access.
+///   - Interactive in-app action buttons (`actions`) returned with AI replies.
 class NoellyneAiService {
   const NoellyneAiService();
 
@@ -36,16 +119,20 @@ class NoellyneAiService {
   static const _webhookCachePrefKey = 'noellyne_ai_webhook_url_v1';
   static const _webhookCacheTsKey = 'noellyne_ai_webhook_ts_v1';
   static const _webhookCacheTtl = Duration(hours: 6);
+  static const _nativeChannel = MethodChannel('noellyne/auth_links');
+
+  /// Latest server-reported quota for live display in the AI Chat AppBar.
+  static final ValueNotifier<AiQuota?> quota = ValueNotifier<AiQuota?>(null);
 
   static String? _cachedWebhook;
   static bool _configChecked = false;
   static String? _cachedDeviceId;
+  static String? _cachedHwId;
+  static bool _hwChecked = false;
 
   bool get isConfigured =>
       (_cachedWebhook ?? NoellyneConfig.aiChatWebhook).trim().isNotEmpty;
 
-  /// Resolves the live AI Chat webhook using a 6h disk cache + Supabase
-  /// `public.app_config`, falling back cleanly to the compile-time default.
   Future<String> _resolveWebhook() async {
     if (_configChecked) {
       return (_cachedWebhook ?? NoellyneConfig.aiChatWebhook).trim();
@@ -53,7 +140,6 @@ class NoellyneAiService {
     _configChecked = true;
     final fallback = NoellyneConfig.aiChatWebhook.trim();
 
-    // 1. Fast local disk check (0 network latency if refreshed within 6 hours).
     try {
       final prefs = await SharedPreferences.getInstance();
       final savedUrl = prefs.getString(_webhookCachePrefKey)?.trim() ?? '';
@@ -74,7 +160,6 @@ class NoellyneAiService {
       return fallback;
     }
 
-    // 2. Refresh from Supabase `app_config` once every 6 hours.
     try {
       final base = NoellyneConfig.picksSupabaseUrl
           .trim()
@@ -121,8 +206,21 @@ class NoellyneAiService {
     } catch (_) {}
   }
 
-  /// Generates & persists an anonymous per-device identifier so rate limits
-  /// isolate individual phones cleanly even behind mobile carrier CGNAT IPs.
+  /// Hardware-stable Android SHA-256 fingerprint (survives Clear Cache/Data).
+  Future<String> _getHardwareFingerprint() async {
+    if (_hwChecked) return _cachedHwId ?? '';
+    _hwChecked = true;
+    if (kIsWeb) return '';
+    try {
+      final hw = await _nativeChannel.invokeMethod<String>('getDeviceFingerprint');
+      _cachedHwId = hw?.trim() ?? '';
+      return _cachedHwId!;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// Fallback anonymous per-install ID for non-Android platforms.
   Future<String> _getDeviceId() async {
     if (_cachedDeviceId != null && _cachedDeviceId!.isNotEmpty) {
       return _cachedDeviceId!;
@@ -146,7 +244,22 @@ class NoellyneAiService {
     }
   }
 
+  /// Backward-compatible text-only helper.
   Future<String> send(
+    List<AiMessage> history, {
+    Map<String, dynamic>? matchContext,
+    String? authToken,
+  }) async {
+    final structured = await sendStructured(
+      history,
+      matchContext: matchContext,
+      authToken: authToken,
+    );
+    return structured.text;
+  }
+
+  /// Sends chat turn and returns reply text + interactive actions + live quota.
+  Future<AiReply> sendStructured(
     List<AiMessage> history, {
     Map<String, dynamic>? matchContext,
     String? authToken,
@@ -156,21 +269,27 @@ class NoellyneAiService {
       orElse: () => AiMessage('', fromUser: true),
     );
     final question = lastUser.text.trim();
-    if (question.isEmpty) return _offline('');
+    if (question.isEmpty) return AiReply(text: _offline(''));
 
     final webhookUrl = await _resolveWebhook();
-    if (webhookUrl.isEmpty) return _offline(question);
+    if (webhookUrl.isEmpty) return AiReply(text: _offline(question));
 
     try {
-      final deviceId = await _getDeviceId();
+      final results = await Future.wait<String>([
+        _getHardwareFingerprint(),
+        _getDeviceId(),
+      ]);
+      final hwId = results[0];
+      final deviceId = results[1];
       final resolvedToken = (authToken?.trim().isNotEmpty ?? false)
           ? authToken!.trim()
           : (await NoellyneAuthService.instance.getValidAccessToken() ?? '');
 
       final payload = <String, dynamic>{
         'message': question,
-        'chatId': deviceId,
+        'chatId': hwId.isNotEmpty ? hwId : deviceId,
         'deviceId': deviceId,
+        if (hwId.isNotEmpty) 'hwId': hwId,
         'source': 'noellyne-app',
         'history': history
             .where((m) => !m.pending)
@@ -187,6 +306,7 @@ class NoellyneAiService {
       final headers = <String, String>{
         'Content-Type': 'application/json',
         'X-Device-Id': deviceId,
+        if (hwId.isNotEmpty) 'X-Device-Hardware-Id': hwId,
       };
       if (resolvedToken.isNotEmpty) {
         headers['Authorization'] = 'Bearer $resolvedToken';
@@ -202,23 +322,36 @@ class NoellyneAiService {
 
       final bodyText = utf8.decode(response.bodyBytes, allowMalformed: true);
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        final reply = _extract(bodyText);
-        if (reply != null && reply.isNotEmpty) return reply;
+        final parsed = _extractStructured(bodyText);
+        if (parsed != null && parsed.text.isNotEmpty) {
+          if (parsed.quota != null) {
+            quota.value = parsed.quota;
+          }
+          return parsed;
+        }
       } else if (response.statusCode == 429) {
-        final limitMsg = _extract(bodyText);
-        if (limitMsg != null && limitMsg.isNotEmpty) return limitMsg;
-        return 'Umefikia kikomo cha maswali ya AI kwa saa hii. '
-            'Ingia na Google kwenye Settings ili upate maswali zaidi.';
+        final parsed = _extractStructured(bodyText);
+        if (parsed != null && parsed.text.isNotEmpty) {
+          if (parsed.quota != null) quota.value = parsed.quota;
+          return parsed;
+        }
+        return const AiReply(
+          text: 'Umefikia kikomo cha maswali ya AI kwa leo. '
+              'Ingia na Google kwenye Settings upate maswali 10 kila siku.',
+          quotaReached: true,
+          actions: [
+            AiAction(type: 'sign_in', label: 'Ingia na Google (10/siku)'),
+          ],
+        );
       }
       debugPrint('AI webhook ${response.statusCode}; using offline brain');
     } catch (error) {
       debugPrint('AI webhook failed: $error');
     }
-    return _offline(question);
+    return AiReply(text: _offline(question));
   }
 
-  /// Accepts `{reply}`, `{text}`, `{output}`, `{message}` or an n8n array.
-  String? _extract(String body) {
+  AiReply? _extractStructured(String body) {
     try {
       final decoded = jsonDecode(body);
       final map = decoded is List
@@ -227,14 +360,42 @@ class NoellyneAiService {
               : null)
           : (decoded is Map ? Map<String, dynamic>.from(decoded) : null);
       if (map == null) return null;
+
+      String text = '';
       for (final key in ['reply', 'text', 'output', 'message', 'answer']) {
         final value = map[key];
-        if (value is String && value.trim().isNotEmpty) return value.trim();
+        if (value is String && value.trim().isNotEmpty) {
+          text = value.trim();
+          break;
+        }
       }
-      return null;
+      if (text.isEmpty) return null;
+
+      final rawActions = map['actions'];
+      final actions = rawActions is List
+          ? rawActions
+              .whereType<Map>()
+              .map((a) => AiAction.fromJson(Map<String, dynamic>.from(a)))
+              .where((a) => a.type.isNotEmpty && a.label.isNotEmpty)
+              .toList(growable: false)
+          : const <AiAction>[];
+
+      AiQuota? parsedQuota;
+      if (map['rateLimit'] is Map) {
+        parsedQuota = AiQuota.fromJson(
+          Map<String, dynamic>.from(map['rateLimit'] as Map),
+        );
+      }
+
+      return AiReply(
+        text: text,
+        actions: actions,
+        quota: parsedQuota,
+        quotaReached: map['quotaReached'] == true,
+      );
     } catch (_) {
       final trimmed = body.trim();
-      return trimmed.isEmpty ? null : trimmed;
+      return trimmed.isEmpty ? null : AiReply(text: trimmed);
     }
   }
 
@@ -289,6 +450,15 @@ class NoellyneAiService {
           'Andika kiasi kingine, mfano "Nina 25,000 leo".';
     }
 
+    if (q.contains('altraware') || q.contains('mwijay')) {
+      return 'Altraware Technology Ltd\n'
+          '━━━━━━━━━━━━━━━━━━\n'
+          'Noellyne Bet imeundwa na Altraware Technology Ltd (Dar es Salaam, Tanzania) — '
+          'ikiongozwa na David Erick Mwijage (Mwijay Davie) na Clemence W. N\'gunda.\n\n'
+          'Bidhaa nyingine: Faida POS, CareTrack, TanzaniaReach, Quickopia na Altraware Motion Lab.\n'
+          'Tovuti: https://altra.tanzaniareach.com/';
+    }
+
     if (q.contains('nba') || q.contains('basket')) {
       return 'NBA Leo\n'
           '━━━━━━━━━━━━━━━━━━\n'
@@ -325,11 +495,11 @@ class NoellyneAiService {
     return 'Noellyne AI\n'
         '━━━━━━━━━━━━━━━━━━\n'
         'Niko hapa kukusaidia: football, NBA, mgao wa mtaji, '
-        'na uchambuzi wa mechi.\n\n'
+        'uchambuzi wa mechi, na taarifa za Altraware Technology.\n\n'
         'Jaribu:\n'
         '• "Nina 20,000 leo"\n'
-        '• "Picks za football leo"\n'
-        '• "NBA injury guard"';
+        '• "Picks za leo"\n'
+        '• "Altraware Technology ni nini?"';
   }
 
   /// Suggested first questions shown as chips.
@@ -337,6 +507,6 @@ class NoellyneAiService {
     'Picks za leo',
     'Matokeo ya jana vipi?',
     'Nina 20,000 leo',
-    'NBA injury guard',
+    'Altraware Technology ni nini?',
   ];
 }

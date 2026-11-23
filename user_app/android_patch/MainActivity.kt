@@ -2,9 +2,12 @@ package com.example.football_viewer
 
 import android.app.Activity
 import android.content.Intent
+import android.os.Build
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
     private val channelName = "football_stream/native_player"
@@ -41,12 +44,16 @@ class MainActivity : FlutterActivity() {
         )
         authLinkChannel = linkChannel
         linkChannel.setMethodCallHandler { call, result ->
-            if (call.method == "getInitialAuthLink") {
-                val link = pendingAuthLink
-                pendingAuthLink = null
-                result.success(link)
-            } else {
-                result.notImplemented()
+            when (call.method) {
+                "getInitialAuthLink" -> {
+                    val link = pendingAuthLink
+                    pendingAuthLink = null
+                    result.success(link)
+                }
+                "getDeviceFingerprint" -> {
+                    result.success(computeHardwareFingerprint())
+                }
+                else -> result.notImplemented()
             }
         }
 
@@ -101,6 +108,26 @@ class MainActivity : FlutterActivity() {
             }
 
             result.success(null)
+        }
+    }
+
+    /**
+     * Produces a privacy-safe, one-way SHA-256 hardware fingerprint derived from
+     * `Settings.Secure.ANDROID_ID` + device hardware model. Survives Clear Cache,
+     * Clear App Data, and Uninstall/Reinstall without requiring any permissions.
+     */
+    private fun computeHardwareFingerprint(): String {
+        return try {
+            val androidId = Settings.Secure.getString(
+                contentResolver,
+                Settings.Secure.ANDROID_ID
+            ).orEmpty().trim()
+            val raw = "nly-hw-v1|$androidId|${Build.BRAND}|${Build.MANUFACTURER}|${Build.MODEL}"
+            val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
+            val hex = digest.joinToString("") { "%02x".format(it) }
+            "hw-${hex.take(24)}"
+        } catch (_: Exception) {
+            ""
         }
     }
 

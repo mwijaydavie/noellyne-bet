@@ -460,7 +460,7 @@ class _AccountCard extends StatelessWidget {
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    'Sign in with Google for 25 AI chats/hr and VIP access',
+                                    'Sign in with Google for 10 AI chats/day (up from 3)',
                                     style: TextStyle(
                                       fontSize: 11.5,
                                       fontWeight: FontWeight.w600,

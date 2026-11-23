@@ -2,11 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_theme.dart';
 import '../design/noellyne_ui.dart';
 import '../services/noellyne_ai_service.dart';
 import '../services/noellyne_auth_service.dart';
+import 'daily_picks_page.dart';
+import 'home_page.dart';
 
 /// Noellyne AI — a real chat view over the n8n betting brain, with an offline
 /// fallback so it never looks broken when the webhook isn't wired yet.
@@ -135,7 +138,7 @@ class _AiChatPageState extends State<AiChatPage> {
     });
     _scrollToEnd();
 
-    final reply = await _service.send(
+    final reply = await _service.sendStructured(
       _messages,
       matchContext: widget.matchContext,
     );
@@ -143,11 +146,61 @@ class _AiChatPageState extends State<AiChatPage> {
     if (!mounted) return;
     setState(() {
       _messages.removeWhere((m) => m.pending);
-      _messages.add(AiMessage(reply, fromUser: false));
+      _messages.add(
+        AiMessage(
+          reply.text,
+          fromUser: false,
+          actions: reply.actions,
+        ),
+      );
       _sending = false;
     });
     _scrollToEnd();
     _startTyping(_messages.length - 1);
+  }
+
+  Future<void> _handleAction(AiAction action) async {
+    HapticFeedback.lightImpact();
+    switch (action.type) {
+      case 'sign_in':
+        await NoellyneAuthService.instance.signInWithGoogle();
+      case 'open_picks':
+      case 'open_results':
+        if (widget.onOpenPicks != null) {
+          widget.onOpenPicks!.call();
+        } else if (mounted) {
+          await Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const DailyPicksPage()),
+          );
+        }
+      case 'open_watch':
+        final sid = action.streamId?.trim() ?? '';
+        if (mounted) {
+          await Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => HomePage(initialMatchId: sid.isEmpty ? null : sid),
+            ),
+          );
+        }
+      case 'copy_text':
+        final txt = action.text?.trim() ?? '';
+        if (txt.isNotEmpty) {
+          await Clipboard.setData(ClipboardData(text: txt));
+          if (!mounted) return;
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              const SnackBar(content: Text('Copied to clipboard')),
+            );
+        }
+      case 'open_url':
+        final raw = action.url?.trim() ?? '';
+        final uri = Uri.tryParse(raw);
+        if (uri != null &&
+            (uri.scheme == 'https' || uri.scheme == 'http')) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+    }
   }
 
   @override
@@ -197,37 +250,50 @@ class _AiChatPageState extends State<AiChatPage> {
                 ValueListenableBuilder<NoellyneUser?>(
                   valueListenable: NoellyneAuthService.instance.user,
                   builder: (context, account, _) {
-                    final statusLabel = !_service.isConfigured
-                        ? 'offline brain · add webhook'
-                        : account == null
-                            ? 'Noellyne AI live · Guest (12/hr)'
-                            : account.isVipOwner
-                                ? 'VIP Unlimited · Noellyne AI'
-                                : 'Member · Noellyne AI (25/hr)';
-                    return Row(
-                      children: [
-                        Container(
-                          width: 6,
-                          height: 6,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: _service.isConfigured
-                                ? NoellyneColors.winDark
-                                : NoellyneColors.glowDeep,
-                          ),
-                        ),
-                        const SizedBox(width: 5),
-                        Text(
-                          statusLabel,
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: account?.isVipOwner == true
-                                ? NoellyneColors.winDark
-                                : scheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
+                    return ValueListenableBuilder<AiQuota?>(
+                      valueListenable: NoellyneAiService.quota,
+                      builder: (context, quota, _) {
+                        String statusLabel;
+                        if (!_service.isConfigured) {
+                          statusLabel = 'offline brain · add webhook';
+                        } else if (account?.isVipOwner == true ||
+                            quota?.unlimited == true) {
+                          statusLabel = 'VIP Unlimited · Noellyne AI';
+                        } else if (quota != null && quota.limit > 0) {
+                          statusLabel = account == null
+                              ? 'Guest · ${quota.remaining}/${quota.limit} free left today'
+                              : 'Member · ${quota.remaining}/${quota.limit} left today';
+                        } else {
+                          statusLabel = account == null
+                              ? 'Guest · 3 free chats/day'
+                              : 'Member · 10 chats/day';
+                        }
+                        return Row(
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: _service.isConfigured
+                                    ? NoellyneColors.winDark
+                                    : NoellyneColors.glowDeep,
+                              ),
+                            ),
+                            const SizedBox(width: 5),
+                            Text(
+                              statusLabel,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: account?.isVipOwner == true
+                                    ? NoellyneColors.winDark
+                                    : scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
                     );
                   },
                 ),
@@ -274,6 +340,7 @@ class _AiChatPageState extends State<AiChatPage> {
                     typing: i == _typingIndex,
                     visibleChars: i == _typingIndex ? _typingChars : null,
                     onTapWhileTyping: _finishTyping,
+                    onAction: _handleAction,
                   );
                 },
               ),
@@ -300,12 +367,23 @@ class _Bubble extends StatelessWidget {
     this.typing = false,
     this.visibleChars,
     this.onTapWhileTyping,
+    this.onAction,
   });
 
   final AiMessage message;
   final bool typing;
   final int? visibleChars;
   final VoidCallback? onTapWhileTyping;
+  final ValueChanged<AiAction>? onAction;
+
+  IconData _iconFor(String type) => switch (type) {
+        'sign_in' => Icons.login_rounded,
+        'open_picks' => Icons.receipt_long_rounded,
+        'open_results' => Icons.analytics_outlined,
+        'open_watch' => Icons.play_arrow_rounded,
+        'copy_text' => Icons.copy_all_rounded,
+        _ => Icons.open_in_new_rounded,
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -341,66 +419,114 @@ class _Bubble extends StatelessWidget {
       ),
       child: Align(
         alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-        child: GestureDetector(
-          onTap: typing ? onTapWhileTyping : null,
-          onLongPress: () async {
-            await Clipboard.setData(ClipboardData(text: message.text));
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context)
-              ..hideCurrentSnackBar()
-              ..showSnackBar(
-                const SnackBar(content: Text('Message copied')),
-              );
-          },
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(14, 11, 14, 12),
-            decoration: BoxDecoration(
-              color: mine
-                  ? (dark ? NoellyneColors.glowDark : NoellyneColors.ink)
-                  : (dark ? NoellyneColors.innerDark : NoellyneColors.innerLight),
-              borderRadius: BorderRadius.only(
-                topLeft: const Radius.circular(20),
-                topRight: const Radius.circular(20),
-                bottomLeft: Radius.circular(mine ? 20 : 6),
-                bottomRight: Radius.circular(mine ? 6 : 20),
-              ),
-              border: Border.all(
-                color: dark
-                    ? NoellyneColors.glassBorderDark
-                    : const Color(0x88FFFFFF),
+        child: Column(
+          crossAxisAlignment:
+              mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          children: [
+            GestureDetector(
+              onTap: typing ? onTapWhileTyping : null,
+              onLongPress: () async {
+                await Clipboard.setData(ClipboardData(text: message.text));
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context)
+                  ..hideCurrentSnackBar()
+                  ..showSnackBar(
+                    const SnackBar(content: Text('Message copied')),
+                  );
+              },
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(14, 11, 14, 12),
+                decoration: BoxDecoration(
+                  color: mine
+                      ? (dark ? NoellyneColors.glowDark : NoellyneColors.ink)
+                      : (dark
+                          ? NoellyneColors.innerDark
+                          : NoellyneColors.innerLight),
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(20),
+                    topRight: const Radius.circular(20),
+                    bottomLeft: Radius.circular(mine ? 20 : 6),
+                    bottomRight: Radius.circular(mine ? 6 : 20),
+                  ),
+                  border: Border.all(
+                    color: dark
+                        ? NoellyneColors.glassBorderDark
+                        : const Color(0x88FFFFFF),
+                  ),
+                ),
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: visibleChars == null
+                            ? message.text
+                            : message.text.substring(
+                                0,
+                                visibleChars!
+                                    .clamp(0, message.text.length)
+                                    .toInt(),
+                              ),
+                      ),
+                      if (typing)
+                        TextSpan(
+                          text: '▍',
+                          style: TextStyle(
+                            color: NoellyneColors.glowDeep,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                    ],
+                  ),
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.42,
+                    fontWeight: FontWeight.w500,
+                    color: mine
+                        ? (dark ? NoellyneColors.ink : Colors.white)
+                        : scheme.onSurface,
+                  ),
+                ),
               ),
             ),
-            child: Text.rich(
-              TextSpan(
+            if (!mine && !typing && message.actions.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
                 children: [
-                  TextSpan(
-                    text: visibleChars == null
-                        ? message.text
-                        : message.text.substring(
-                            0,
-                            visibleChars!.clamp(0, message.text.length).toInt(),
-                          ),
-                  ),
-                  if (typing)
-                    TextSpan(
-                      text: '▍',
-                      style: TextStyle(
-                        color: NoellyneColors.glowDeep,
-                        fontWeight: FontWeight.w700,
+                  for (final act in message.actions)
+                    ActionChip(
+                      avatar: Icon(
+                        _iconFor(act.type),
+                        size: 15,
+                        color: act.type == 'sign_in'
+                            ? Colors.white
+                            : NoellyneColors.glowDeep,
                       ),
+                      label: Text(
+                        act.label,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: act.type == 'sign_in'
+                              ? Colors.white
+                              : scheme.onSurface,
+                        ),
+                      ),
+                      backgroundColor: act.type == 'sign_in'
+                          ? NoellyneColors.glowDeep
+                          : (dark
+                              ? NoellyneColors.innerDark
+                              : NoellyneColors.innerLight),
+                      side: BorderSide(
+                        color: NoellyneColors.glowDeep.withValues(alpha: .35),
+                      ),
+                      onPressed: onAction == null ? null : () => onAction!(act),
                     ),
                 ],
               ),
-              style: TextStyle(
-                fontSize: 13,
-                height: 1.42,
-                fontWeight: FontWeight.w500,
-                color: mine
-                    ? (dark ? NoellyneColors.ink : Colors.white)
-                    : scheme.onSurface,
-              ),
-            ),
-          ),
+            ],
+          ],
         ),
       ),
     );
