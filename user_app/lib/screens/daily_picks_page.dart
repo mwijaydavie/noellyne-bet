@@ -371,6 +371,10 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
           .toList(growable: false),
     );
     final filtered = isResults ? filteredResults : filteredPicks;
+    final bankerSlip = !isResults &&
+            (_filter == PickFilter.all || _filter == PickFilter.sure)
+        ? DailyBankerSlip.build(board.published, settled: board.settled)
+        : null;
     final groupByDay = isResults && _resultsSort == ResultSort.newest;
     final resultGroups =
         groupByDay ? _groupResultsByDay(filtered) : const <_ResultDayGroup>[];
@@ -478,6 +482,59 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                           child: Padding(
                             padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
                             child: _SampleBanner(),
+                          ),
+                        ),
+                      if (!isResults && bankerSlip != null)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+                            child: _DailyBankerCard(
+                              slip: bankerSlip,
+                              onAuditSure2: () {
+                                HapticFeedback.lightImpact();
+                                _lastSection = _PicksSection.results;
+                                _lastResultsCategory = PickFilter.sure;
+                                setState(() {
+                                  _section = _PicksSection.results;
+                                  _resultsCategory = PickFilter.sure;
+                                });
+                              },
+                              onCopySlip: () async {
+                                final l1 = bankerSlip.legs[0];
+                                final l2 = bankerSlip.legs[1];
+                                final text = StringBuffer()
+                                  ..writeln(
+                                    'Noellyne · Daily 2.00x Banker (${bankerSlip.combinedOdds.toStringAsFixed(2)}x)',
+                                  )
+                                  ..writeln(
+                                    '1) ${l1.match}: ${l1.pick} @ ${l1.odds.toStringAsFixed(2)} (${l1.confidence}%)',
+                                  )
+                                  ..writeln(
+                                    '2) ${l2.match}: ${l2.pick} @ ${l2.odds.toStringAsFixed(2)} (${l2.confidence}%)',
+                                  )
+                                  ..writeln(
+                                    'Est. Return on TZS 10,000: TZS ${_fmtTzsPlain(bankerSlip.estReturnTzs(10000))}',
+                                  );
+                                await Clipboard.setData(
+                                  ClipboardData(text: text.toString().trim()),
+                                );
+                                _toast('Daily 2.00x Banker slip copied!');
+                              },
+                              onAskAi: () {
+                                HapticFeedback.lightImpact();
+                                final l1 = bankerSlip.legs[0];
+                                final l2 = bankerSlip.legs[1];
+                                openAiChat(
+                                  context,
+                                  initialPrompt:
+                                      'Kagua Daily 2.00x Banker ya leo (${bankerSlip.combinedOdds.toStringAsFixed(2)} odds) kwa dau la TZS 10,000: '
+                                      'Leg 1: ${l1.match} (${l1.pick} @ ${l1.odds.toStringAsFixed(2)}, ${l1.confidence}%), '
+                                      'Leg 2: ${l2.match} (${l2.pick} @ ${l2.odds.toStringAsFixed(2)}, ${l2.confidence}%). '
+                                      'Je kuna risk yoyote ya injury au lineup?',
+                                  matchContext: l1.toAiContext(),
+                                );
+                              },
+                            ),
                           ),
                         ),
                       if (isResults && board.settled.isNotEmpty)
@@ -2339,4 +2396,280 @@ String _formatKickoffChip(DateTime dt) {
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
   ];
   return '${local.day} ${months[local.month - 1]} · $hh:$mm';
+}
+
+String _fmtTzsPlain(int n) {
+  final s = n.toString();
+  final b = StringBuffer();
+  for (var i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 == 0) b.write(',');
+    b.write(s[i]);
+  }
+  return b.toString();
+}
+
+class _DailyBankerCard extends StatelessWidget {
+  const _DailyBankerCard({
+    required this.slip,
+    required this.onCopySlip,
+    required this.onAskAi,
+    required this.onAuditSure2,
+  });
+
+  final DailyBankerSlip slip;
+  final VoidCallback onCopySlip;
+  final VoidCallback onAskAi;
+  final VoidCallback onAuditSure2;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    final winColor = dark ? NoellyneColors.winDark : NoellyneColors.winInk;
+    const stake = 10000;
+    final ret = slip.estReturnTzs(stake);
+    final profit = slip.estProfitTzs(stake);
+
+    return GlassCard(
+      glowCorner: true,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.verified_user_rounded,
+                size: 18,
+                color: NoellyneColors.glowDeep,
+              ),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  slip.allSure2 ? 'DAILY 2.00x BANKER' : 'DAILY SMART DOUBLE',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: .5,
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: NoellyneColors.glowDeep.withValues(alpha: dark ? .22 : .14),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                    color: NoellyneColors.glowDeep.withValues(alpha: .45),
+                  ),
+                ),
+                child: TabularText(
+                  '${slip.combinedOdds.toStringAsFixed(2)}x ODDS',
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w900,
+                    color: NoellyneColors.glowDeep,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (slip.sure2HistoricalTotal > 0) ...[
+            const SizedBox(height: 6),
+            PressableScale(
+              onTap: onAuditSure2,
+              child: Row(
+                children: [
+                  Icon(Icons.verified_rounded, size: 13, color: winColor),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(
+                      'Verified Sure 2+ legs: ${slip.sure2HistoricalWinRate.toStringAsFixed(1)}% '
+                      '(${slip.sure2HistoricalWins}W-${slip.sure2HistoricalLosses}L) · Tap to audit',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: winColor,
+                      ),
+                    ),
+                  ),
+                  Icon(Icons.chevron_right_rounded, size: 15, color: winColor),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          for (var i = 0; i < slip.legs.length; i++) ...[
+            if (i > 0) const SizedBox(height: 6),
+            _BankerLegRow(index: i + 1, pick: slip.legs[i]),
+          ],
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            decoration: BoxDecoration(
+              color: dark ? NoellyneColors.innerDark : NoellyneColors.innerLight,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: dark
+                    ? NoellyneColors.glassBorderDark
+                    : NoellyneColors.glassBorderLight,
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'TZS 10,000 -> TZS ${_fmtTzsPlain(ret)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w900,
+                          color: winColor,
+                        ),
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        '+TZS ${_fmtTzsPlain(profit)} est. net · Joint model prob ${slip.jointConfidencePct}%',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: PillButton(
+                  label: 'Copy 2-Leg Slip',
+                  icon: Icons.copy_all_rounded,
+                  height: 40,
+                  onPressed: onCopySlip,
+                ),
+              ),
+              const SizedBox(width: 8),
+              PillButton(
+                label: 'Ask AI Check',
+                icon: Icons.auto_awesome_rounded,
+                expand: false,
+                height: 40,
+                tone: PillTone.glow,
+                onPressed: onAskAi,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BankerLegRow extends StatelessWidget {
+  const _BankerLegRow({required this.index, required this.pick});
+
+  final int index;
+  final DailyPick pick;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+      decoration: BoxDecoration(
+        color: dark ? NoellyneColors.innerDark : NoellyneColors.innerLight,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 22,
+            height: 22,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: NoellyneColors.glowDeep.withValues(alpha: dark ? .22 : .14),
+            ),
+            child: TabularText(
+              '$index',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w900,
+                color: NoellyneColors.glowDeep,
+              ),
+            ),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  pick.match,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800,
+                    color: scheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  '${pick.pick} · ${pick.league}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              TabularText(
+                pick.odds.toStringAsFixed(2),
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w900,
+                  color: scheme.onSurface,
+                ),
+              ),
+              TabularText(
+                '${pick.confidence}%',
+                style: const TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: NoellyneColors.glowDeep,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }

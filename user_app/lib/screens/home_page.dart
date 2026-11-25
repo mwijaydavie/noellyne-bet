@@ -1024,7 +1024,10 @@ class _HomePageState extends State<HomePage> {
   ) {
     if (tvChannels.isEmpty || matches.isEmpty) return matches;
     final nowUtc = DateTime.now().toUtc();
-    for (final m in matches) {
+    final mutable = matches
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList(growable: false);
+    for (final m in mutable) {
       final matched = <Map<String, dynamic>>[];
       final seenIds = <String>{};
       for (final ch in tvChannels) {
@@ -1062,7 +1065,7 @@ class _HomePageState extends State<HomePage> {
         m['epg_channels'] = matched.take(8).toList(growable: false);
       }
     }
-    return matches;
+    return mutable;
   }
 
   Future<List<Map<String, dynamic>>> _resolveSingleChannelStreams(

@@ -336,3 +336,107 @@ int _compareDatesDesc(DateTime? a, DateTime? b) {
   if (b == null) return -1;
   return b.compareTo(a);
 }
+
+/// Curated 2-leg ~2.00x Banker combo assembled strictly from the highest-certainty
+/// legs on Today's board (never forces low-confidence picks).
+class DailyBankerSlip {
+  const DailyBankerSlip({
+    required this.legs,
+    required this.combinedOdds,
+    required this.jointConfidencePct,
+    required this.allSure2,
+    required this.sure2HistoricalWins,
+    required this.sure2HistoricalLosses,
+  });
+
+  final List<DailyPick> legs;
+  final double combinedOdds;
+
+  /// Mathematically honest joint probability: P(leg1) * P(leg2).
+  final int jointConfidencePct;
+
+  /// True when both legs qualify as `Sure 2+` (>=80% conf).
+  final bool allSure2;
+  final int sure2HistoricalWins;
+  final int sure2HistoricalLosses;
+
+  int get sure2HistoricalTotal => sure2HistoricalWins + sure2HistoricalLosses;
+  double get sure2HistoricalWinRate => sure2HistoricalTotal == 0
+      ? 0
+      : (sure2HistoricalWins / sure2HistoricalTotal) * 100;
+
+  int estReturnTzs(int stakeTzs) => (stakeTzs * combinedOdds).round();
+  int estProfitTzs(int stakeTzs) => estReturnTzs(stakeTzs) - stakeTzs;
+
+  /// Builds the optimal high-conviction 2-leg ~2.00x Banker slip, or returns
+  /// `null` when fewer than 2 qualifying high-confidence legs exist ("linda mtaji").
+  static DailyBankerSlip? build(
+    List<DailyPick> published, {
+    List<DailyPick> settled = const [],
+  }) {
+    final sureSettled = settled
+        .where((p) => p.isSure2 && (p.isWon || p.isLost))
+        .toList(growable: false);
+    final histWins = sureSettled.where((p) => p.isWon).length;
+    final histLosses = sureSettled.length - histWins;
+
+    // Strict eligibility: high-certainty legs in disciplined odds range (1.18 - 1.78).
+    final candidates = published
+        .where(
+          (p) =>
+              p.odds >= 1.18 &&
+              p.odds <= 1.78 &&
+              (p.isSure2 || (p.isStrong && p.confidence >= 72)),
+        )
+        .toList(growable: false);
+    if (candidates.length < 2) return null;
+
+    DailyPick? bestA;
+    DailyPick? bestB;
+    double bestScore = -1e9;
+
+    for (var i = 0; i < candidates.length; i++) {
+      for (var j = i + 1; j < candidates.length; j++) {
+        final a = candidates[i];
+        final b = candidates[j];
+        // Never double up on the same fixture.
+        if (a.match.toLowerCase().trim() == b.match.toLowerCase().trim()) {
+          continue;
+        }
+        final combined = a.odds * b.odds;
+        if (combined < 1.55 || combined > 2.65) continue;
+        final avgConf = (a.confidence + b.confidence) / 2.0;
+        final bothSure = a.isSure2 && b.isSure2;
+        if (!bothSure && avgConf < 76.0) continue;
+
+        final jointProb = (a.confidence / 100.0) * (b.confidence / 100.0);
+        // Prefer both-Sure2+ pairs first, then highest joint probability, with
+        // gentle bonus for landing cleanly near the 1.90 - 2.25 sweet spot.
+        final oddsDistance = (combined - 2.02).abs();
+        final score =
+            (bothSure ? 100.0 : 0.0) + (jointProb * 100.0) - (oddsDistance * 12.0);
+        if (score > bestScore) {
+          bestScore = score;
+          bestA = a;
+          bestB = b;
+        }
+      }
+    }
+
+    if (bestA == null || bestB == null) return null;
+    final legs = [bestA, bestB]
+      ..sort((x, y) => y.confidence.compareTo(x.confidence));
+    final combined = double.parse((legs[0].odds * legs[1].odds).toStringAsFixed(2));
+    final jointPct =
+        ((legs[0].confidence / 100.0) * (legs[1].confidence / 100.0) * 100).round();
+
+    return DailyBankerSlip(
+      legs: legs,
+      combinedOdds: combined,
+      jointConfidencePct: jointPct,
+      allSure2: legs[0].isSure2 && legs[1].isSure2,
+      sure2HistoricalWins: histWins,
+      sure2HistoricalLosses: histLosses,
+    );
+  }
+}

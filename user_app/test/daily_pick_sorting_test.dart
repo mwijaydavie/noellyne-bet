@@ -88,4 +88,50 @@ void main() {
     expect(ResultSort.highestOdds.apply(list).first.id, '2');
     expect(ResultSort.topProfit.apply(list).first.id, '2');
   });
+
+  test('DailyBankerSlip picks optimal ~2.00x Sure 2+ double and never forces weak picks', () {
+    final leg1 = DailyPick(
+      id: 'b1',
+      match: 'Celta Vigo vs AFC Bournemouth',
+      league: 'UEL',
+      pick: 'DC X2',
+      odds: 1.33,
+      confidence: 88,
+      tier: 'STRONG',
+      tags: const ['sure2+', 'strong'],
+    );
+    final leg2 = DailyPick(
+      id: 'b2',
+      match: 'Viktoria Plzen vs Benfica',
+      league: 'UEL',
+      pick: 'Benfica Win (2)',
+      odds: 1.47,
+      confidence: 83,
+      tier: 'STRONG',
+      tags: const ['sure2+', 'strong'],
+    );
+    final weak = DailyPick(
+      id: 'w1',
+      match: 'Hornets vs Bulls',
+      league: 'NBA',
+      sport: 'basketball',
+      pick: 'Bulls +3.5',
+      odds: 1.87,
+      confidence: 59,
+      tier: 'MODERATE',
+    );
+
+    final slip = DailyBankerSlip.build([weak, leg2, leg1], settled: [sureWin, lostPick]);
+    expect(slip, isNotNull);
+    expect(slip!.allSure2, isTrue);
+    expect(slip.legs.map((p) => p.id).toList(), ['b1', 'b2']);
+    expect(slip.combinedOdds, 1.96);
+    expect(slip.jointConfidencePct, 73);
+    expect(slip.sure2HistoricalWins, 1);
+    expect(slip.sure2HistoricalLosses, 0);
+    expect(slip.estReturnTzs(10000), 19600);
+
+    // Never forces a combo from low-confidence picks.
+    expect(DailyBankerSlip.build([weak]), isNull);
+  });
 }

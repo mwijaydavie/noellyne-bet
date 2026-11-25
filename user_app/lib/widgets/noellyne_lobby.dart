@@ -227,24 +227,21 @@ class HeroMatchCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 14),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 6,
+            runSpacing: 6,
             children: [
-              if ((metaLabel ?? '').trim().isNotEmpty) ...[
-                Flexible(
-                  child: _MetaPill(
-                    icon: Icons.live_tv_rounded,
-                    label: metaLabel!.trim(),
-                  ),
-                ),
-                const SizedBox(width: 6),
-              ] else if (lineCount > 0) ...[
+              if ((metaLabel ?? '').trim().isNotEmpty)
+                _MetaPill(
+                  icon: Icons.live_tv_rounded,
+                  label: metaLabel!.trim(),
+                )
+              else if (lineCount > 0)
                 _MetaPill(
                   icon: Icons.sensors_rounded,
                   label: lineCount == 1 ? '1 server' : '$lineCount servers',
                 ),
-                const SizedBox(width: 6),
-              ],
               const _MetaPill(icon: Icons.hd_rounded, label: 'HD stream'),
             ],
           ),
@@ -319,7 +316,8 @@ class _MetaPill extends StatelessWidget {
         children: [
           Icon(icon, size: 12, color: scheme.onSurfaceVariant),
           const SizedBox(width: 4),
-          Flexible(
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 165),
             child: Text(
               label,
               maxLines: 1,
