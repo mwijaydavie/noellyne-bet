@@ -874,7 +874,7 @@ class _HomePageState extends State<HomePage> {
         '$base/rest/v1/fixtures'
         '?is_active=eq.true'
         '&order=kickoff_at.asc'
-        '&limit=60',
+        '&limit=100',
       );
       final resp = await http
           .get(

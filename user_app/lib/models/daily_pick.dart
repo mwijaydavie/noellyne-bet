@@ -79,8 +79,16 @@ class DailyPick {
 
   bool get isHighConfidence => confidence >= 80;
   bool get isBasketball => sport == 'basketball';
+
+  /// Canonical category predicates shared identically across Today AND Results
+  /// so users can audit Sure 2+, Strong, and High Odds with 100% consistency.
+  bool get isSure2 => confidence >= 80 || tags.contains('sure2+');
   bool get isStrong =>
       tier.toUpperCase().contains('STRONG') || tags.contains('strong');
+  bool get isHighOdds => odds >= 1.85 || tags.contains('high-odds');
+  bool get isModerate =>
+      !isStrong && tier.toUpperCase().contains('MODERATE');
+
   bool get isSettled => status == 'settled' && result != null;
   bool get isWon => result == 'won';
   bool get isLost => result == 'lost';
@@ -179,24 +187,149 @@ class DailyPick {
   }
 }
 
-/// Feed filters shown as pills above the picks (vector-clean labels).
+/// Shared category filters shown identically above BOTH Today Picks and Results
+/// so users can track Sure 2+, Strong, and High Odds end-to-end.
 enum PickFilter {
   all('All'),
-  football('Football'),
-  basketball('NBA'),
-  strong('Strong'),
   sure('Sure 2+'),
-  highOdds('High Odds');
+  strong('Strong'),
+  highOdds('High Odds'),
+  football('Football'),
+  basketball('NBA');
 
   const PickFilter(this.label);
   final String label;
 
   bool matches(DailyPick p) => switch (this) {
         PickFilter.all => true,
+        PickFilter.sure => p.isSure2,
+        PickFilter.strong => p.isStrong,
+        PickFilter.highOdds => p.isHighOdds,
         PickFilter.football => !p.isBasketball,
         PickFilter.basketball => p.isBasketball,
-        PickFilter.strong => p.isStrong,
-        PickFilter.sure => p.confidence >= 80 || p.tags.contains('sure2+'),
-        PickFilter.highOdds => p.odds >= 1.9 || p.tags.contains('high-odds'),
       };
+}
+
+/// Outcome / timeframe sub-filter composable with [PickFilter] on Results.
+enum ResultOutcomeFilter {
+  all('All'),
+  won('Won'),
+  lost('Lost'),
+  recent48h('48h');
+
+  const ResultOutcomeFilter(this.label);
+  final String label;
+
+  bool matches(DailyPick p, {DateTime? now}) {
+    final current = now ?? DateTime.now();
+    final ref = p.settledAt ?? p.kickoffTime;
+    return switch (this) {
+      ResultOutcomeFilter.all => true,
+      ResultOutcomeFilter.won => p.isWon,
+      ResultOutcomeFilter.lost => p.isLost,
+      ResultOutcomeFilter.recent48h =>
+        ref != null && current.difference(ref).inHours <= 48,
+    };
+  }
+}
+
+/// Sort modes for Today's active picks.
+enum PickSort {
+  confidence('Confidence'),
+  kickoff('Kickoff Soon'),
+  highestOdds('Highest Odds'),
+  bestEdge('Best Edge');
+
+  const PickSort(this.label);
+  final String label;
+
+  List<DailyPick> apply(List<DailyPick> input) {
+    final out = [...input];
+    out.sort((a, b) => switch (this) {
+          PickSort.confidence => _chain([
+              b.confidence.compareTo(a.confidence),
+              b.edgePct.compareTo(a.edgePct),
+              _compareDatesAsc(a.kickoffTime, b.kickoffTime),
+            ]),
+          PickSort.kickoff => _chain([
+              _compareDatesAsc(a.kickoffTime, b.kickoffTime),
+              b.confidence.compareTo(a.confidence),
+            ]),
+          PickSort.highestOdds => _chain([
+              b.odds.compareTo(a.odds),
+              b.confidence.compareTo(a.confidence),
+            ]),
+          PickSort.bestEdge => _chain([
+              b.edgePct.compareTo(a.edgePct),
+              b.confidence.compareTo(a.confidence),
+            ]),
+        });
+    return out;
+  }
+}
+
+/// Sort modes for verified Results ledger.
+enum ResultSort {
+  newest('By Date'),
+  wonFirst('Won First'),
+  highestConfidence('Highest Conf'),
+  highestOdds('Highest Odds'),
+  topProfit('Top Profit');
+
+  const ResultSort(this.label);
+  final String label;
+
+  List<DailyPick> apply(List<DailyPick> input) {
+    final out = [...input];
+    out.sort((a, b) => switch (this) {
+          ResultSort.newest => _compareDatesDesc(
+              a.settledAt ?? a.kickoffTime,
+              b.settledAt ?? b.kickoffTime,
+            ),
+          ResultSort.wonFirst => _chain([
+              (b.isWon ? 1 : 0).compareTo(a.isWon ? 1 : 0),
+              b.profitUnits.compareTo(a.profitUnits),
+              _compareDatesDesc(
+                a.settledAt ?? a.kickoffTime,
+                b.settledAt ?? b.kickoffTime,
+              ),
+            ]),
+          ResultSort.highestConfidence => _chain([
+              b.confidence.compareTo(a.confidence),
+              (b.isWon ? 1 : 0).compareTo(a.isWon ? 1 : 0),
+              b.odds.compareTo(a.odds),
+            ]),
+          ResultSort.highestOdds => _chain([
+              b.odds.compareTo(a.odds),
+              (b.isWon ? 1 : 0).compareTo(a.isWon ? 1 : 0),
+              b.profitUnits.compareTo(a.profitUnits),
+            ]),
+          ResultSort.topProfit => _chain([
+              b.profitUnits.compareTo(a.profitUnits),
+              b.odds.compareTo(a.odds),
+            ]),
+        });
+    return out;
+  }
+}
+
+int _chain(List<int> comparisons) {
+  for (final c in comparisons) {
+    if (c != 0) return c;
+  }
+  return 0;
+}
+
+int _compareDatesAsc(DateTime? a, DateTime? b) {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return a.compareTo(b);
+}
+
+int _compareDatesDesc(DateTime? a, DateTime? b) {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return b.compareTo(a);
 }

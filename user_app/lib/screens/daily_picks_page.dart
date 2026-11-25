@@ -11,33 +11,6 @@ import '../widgets/noellyne_dock_bar.dart';
 
 enum _PicksSection { picks, results }
 
-/// Dedicated filters for the Results ledger so users can inspect Yesterday's
-/// winners or filter strictly by Won / Lost / Sport in one tap.
-enum _ResultsFilter {
-  recent48h('Last 48h'),
-  won('Won'),
-  lost('Lost'),
-  football('Football'),
-  basketball('NBA'),
-  all('All');
-
-  const _ResultsFilter(this.label);
-  final String label;
-
-  bool matches(DailyPick p) {
-    final ref = p.settledAt ?? p.kickoffTime;
-    return switch (this) {
-      _ResultsFilter.all => true,
-      _ResultsFilter.recent48h =>
-        ref != null && DateTime.now().difference(ref).inHours <= 48,
-      _ResultsFilter.won => p.isWon,
-      _ResultsFilter.lost => p.isLost,
-      _ResultsFilter.football => !p.isBasketball,
-      _ResultsFilter.basketball => p.isBasketball,
-    };
-  }
-}
-
 class _ResultDayGroup {
   const _ResultDayGroup({
     required this.dateKey,
@@ -73,14 +46,20 @@ class DailyPicksPage extends StatefulWidget {
 class _DailyPicksPageState extends State<DailyPicksPage> {
   static _PicksSection _lastSection = _PicksSection.picks;
   static PickFilter _lastFilter = PickFilter.all;
-  static _ResultsFilter _lastResultsFilter = _ResultsFilter.all;
+  static PickSort _lastPickSort = PickSort.confidence;
+  static PickFilter _lastResultsCategory = PickFilter.all;
+  static ResultOutcomeFilter _lastResultsOutcome = ResultOutcomeFilter.all;
+  static ResultSort _lastResultsSort = ResultSort.newest;
 
   DailyPicksBoard? _board;
   bool _initialLoading = true;
   bool _refreshing = false;
   _PicksSection _section = _lastSection;
   PickFilter _filter = _lastFilter;
-  _ResultsFilter _resultsFilter = _lastResultsFilter;
+  PickSort _pickSort = _lastPickSort;
+  PickFilter _resultsCategory = _lastResultsCategory;
+  ResultOutcomeFilter _resultsOutcome = _lastResultsOutcome;
+  ResultSort _resultsSort = _lastResultsSort;
 
   @override
   void initState() {
@@ -233,15 +212,23 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
     final board =
         _board ?? const DailyPicksBoard(published: [], settled: []);
     final isResults = _section == _PicksSection.results;
-    final filtered = isResults
-        ? board.settled
-            .where((p) => _resultsFilter.matches(p))
-            .toList(growable: false)
-        : board.published
-            .where((p) => _filter.matches(p))
-            .toList(growable: false);
+    final resultsAfterCategory = board.settled
+        .where((p) => _resultsCategory.matches(p))
+        .toList(growable: false);
+    final filteredResults = _resultsSort.apply(
+      resultsAfterCategory
+          .where((p) => _resultsOutcome.matches(p))
+          .toList(growable: false),
+    );
+    final filteredPicks = _pickSort.apply(
+      board.published
+          .where((p) => _filter.matches(p))
+          .toList(growable: false),
+    );
+    final filtered = isResults ? filteredResults : filteredPicks;
+    final groupByDay = isResults && _resultsSort == ResultSort.newest;
     final resultGroups =
-        isResults ? _groupResultsByDay(filtered) : const <_ResultDayGroup>[];
+        groupByDay ? _groupResultsByDay(filtered) : const <_ResultDayGroup>[];
 
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
@@ -334,32 +321,72 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                             child: _SampleBanner(),
                           ),
                         ),
-                      if (isResults && filtered.isNotEmpty)
+                      if (isResults && board.settled.isNotEmpty)
                         SliverToBoxAdapter(
                           child: Padding(
                             padding:
                                 const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                            child: _RoiSummaryCard(settled: filtered),
+                            child: _RoiSummaryCard(
+                              allSettled: board.settled,
+                              filteredSettled: filtered,
+                              activeCategory: _resultsCategory,
+                              onSelectCategory: (cat) {
+                                HapticFeedback.lightImpact();
+                                final next = _resultsCategory == cat
+                                    ? PickFilter.all
+                                    : cat;
+                                _lastResultsCategory = next;
+                                setState(() => _resultsCategory = next);
+                              },
+                            ),
                           ),
                         ),
                       SliverToBoxAdapter(
                         child: Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                          child: _FilterRail(
+                            selected: isResults ? _resultsCategory : _filter,
+                            sourceList:
+                                isResults ? board.settled : board.published,
+                            onSelected: (f) {
+                              HapticFeedback.lightImpact();
+                              if (isResults) {
+                                _lastResultsCategory = f;
+                                setState(() => _resultsCategory = f);
+                              } else {
+                                _lastFilter = f;
+                                setState(() => _filter = f);
+                              }
+                            },
+                          ),
+                        ),
+                      ),
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                           child: isResults
-                              ? _ResultsFilterRail(
-                                  selected: _resultsFilter,
-                                  onSelected: (f) {
+                              ? _ResultsControlsBar(
+                                  outcome: _resultsOutcome,
+                                  sort: _resultsSort,
+                                  resultCount: filtered.length,
+                                  onOutcomeChanged: (o) {
                                     HapticFeedback.lightImpact();
-                                    _lastResultsFilter = f;
-                                    setState(() => _resultsFilter = f);
+                                    _lastResultsOutcome = o;
+                                    setState(() => _resultsOutcome = o);
+                                  },
+                                  onSortChanged: (s) {
+                                    HapticFeedback.lightImpact();
+                                    _lastResultsSort = s;
+                                    setState(() => _resultsSort = s);
                                   },
                                 )
-                              : _FilterRail(
-                                  selected: _filter,
-                                  onSelected: (f) {
+                              : _PicksSortBar(
+                                  sort: _pickSort,
+                                  count: filtered.length,
+                                  onSortChanged: (s) {
                                     HapticFeedback.lightImpact();
-                                    _lastFilter = f;
-                                    setState(() => _filter = f);
+                                    _lastPickSort = s;
+                                    setState(() => _pickSort = s);
                                   },
                                 ),
                         ),
@@ -371,7 +398,7 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                             onRefresh: () => _refresh(force: true),
                           ),
                         )
-                      else if (isResults)
+                      else if (isResults && groupByDay)
                         SliverPadding(
                           padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
                           sliver: SliverList(
@@ -407,6 +434,18 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                                 );
                               },
                               childCount: resultGroups.length,
+                            ),
+                          ),
+                        )
+                      else if (isResults)
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
+                          sliver: SliverList.separated(
+                            itemCount: filtered.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, i) => _SettledPickCard(
+                              pick: filtered[i],
                             ),
                           ),
                         )
@@ -669,20 +708,34 @@ class _SegmentItem extends StatelessWidget {
 }
 
 class _RoiSummaryCard extends StatelessWidget {
-  const _RoiSummaryCard({required this.settled});
+  const _RoiSummaryCard({
+    required this.allSettled,
+    required this.filteredSettled,
+    required this.activeCategory,
+    required this.onSelectCategory,
+  });
 
-  final List<DailyPick> settled;
+  final List<DailyPick> allSettled;
+  final List<DailyPick> filteredSettled;
+  final PickFilter activeCategory;
+  final ValueChanged<PickFilter> onSelectCategory;
 
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final scheme = Theme.of(context).colorScheme;
 
-    final graded = settled.where((p) => p.isWon || p.isLost).toList();
+    final scope = filteredSettled.isEmpty ? allSettled : filteredSettled;
+    final graded = scope.where((p) => p.isWon || p.isLost).toList();
     final wins = graded.where((p) => p.isWon).length;
     final losses = graded.length - wins;
     final wr = graded.isEmpty ? 0.0 : (wins / graded.length) * 100;
     final netUnits = graded.fold<double>(0, (a, p) => a + p.profitUnits);
+    final stakedUnits = graded.fold<double>(
+      0,
+      (a, p) => a + (p.units > 0 ? p.units : 1.0),
+    );
+    final roiPct = stakedUnits > 0 ? (netUnits / stakedUnits) * 100 : 0.0;
     final netTzs = (netUnits * 1000).round();
 
     final fb = graded.where((p) => !p.isBasketball).toList();
@@ -695,6 +748,10 @@ class _RoiSummaryCard extends StatelessWidget {
         ? (dark ? NoellyneColors.winDark : NoellyneColors.winInk)
         : NoellyneColors.lossInk;
 
+    final headerTitle = activeCategory == PickFilter.all
+        ? 'Verified Track Record'
+        : '${activeCategory.label} Audit';
+
     return GlassCard(
       glowCorner: true,
       padding: const EdgeInsets.all(16),
@@ -705,17 +762,20 @@ class _RoiSummaryCard extends StatelessWidget {
             children: [
               Icon(Icons.verified_rounded, size: 18, color: profitColor),
               const SizedBox(width: 8),
-              Text(
-                'Verified Performance',
-                style: TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.w800,
-                  color: scheme.onSurface,
+              Expanded(
+                child: Text(
+                  headerTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w800,
+                    color: scheme.onSurface,
+                  ),
                 ),
               ),
-              const Spacer(),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                 decoration: BoxDecoration(
                   color: positive
                       ? (dark
@@ -727,9 +787,9 @@ class _RoiSummaryCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: TabularText(
-                  '${positive ? '+' : ''}${netUnits.toStringAsFixed(2)}u',
+                  '${positive ? '+' : ''}${netUnits.toStringAsFixed(2)}u · ${roiPct >= 0 ? '+' : ''}${roiPct.toStringAsFixed(1)}% ROI',
                   style: TextStyle(
-                    fontSize: 11.5,
+                    fontSize: 11,
                     fontWeight: FontWeight.w800,
                     color: profitColor,
                   ),
@@ -744,7 +804,7 @@ class _RoiSummaryCard extends StatelessWidget {
                 child: _StatTile(
                   label: 'Win Rate',
                   value: '${wr.toStringAsFixed(1)}%',
-                  sub: '${wins}W / ${losses}L',
+                  sub: '${wins}W / ${losses}L (${graded.length} graded)',
                 ),
               ),
               const SizedBox(width: 8),
@@ -753,13 +813,45 @@ class _RoiSummaryCard extends StatelessWidget {
                   label: 'Est. P&L (1u=1k)',
                   value:
                       '${netTzs >= 0 ? '+' : '-'}TZS ${_fmtTzs(netTzs.abs())}',
-                  sub: 'Net bankroll',
+                  sub: '${stakedUnits.toStringAsFixed(1)}u staked',
                   valueColor: profitColor,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
+          // Per-tier verified accountability strip — tap any tier to audit its picks.
+          Row(
+            children: [
+              Expanded(
+                child: _TierAuditTile(
+                  label: 'Sure 2+',
+                  picks: allSettled.where((p) => p.isSure2).toList(),
+                  selected: activeCategory == PickFilter.sure,
+                  onTap: () => onSelectCategory(PickFilter.sure),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _TierAuditTile(
+                  label: 'Strong',
+                  picks: allSettled.where((p) => p.isStrong).toList(),
+                  selected: activeCategory == PickFilter.strong,
+                  onTap: () => onSelectCategory(PickFilter.strong),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _TierAuditTile(
+                  label: 'High Odds',
+                  picks: allSettled.where((p) => p.isHighOdds).toList(),
+                  selected: activeCategory == PickFilter.highOdds,
+                  onTap: () => onSelectCategory(PickFilter.highOdds),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
@@ -790,6 +882,96 @@ class _RoiSummaryCard extends StatelessWidget {
       b.write(s[i]);
     }
     return b.toString();
+  }
+}
+
+class _TierAuditTile extends StatelessWidget {
+  const _TierAuditTile({
+    required this.label,
+    required this.picks,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final List<DailyPick> picks;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    final graded = picks.where((p) => p.isWon || p.isLost).toList();
+    final wins = graded.where((p) => p.isWon).length;
+    final losses = graded.length - wins;
+    final wr = graded.isEmpty ? 0.0 : (wins / graded.length) * 100;
+    final net = graded.fold<double>(0, (a, p) => a + p.profitUnits);
+    final positive = net >= 0;
+    final accent = positive
+        ? (dark ? NoellyneColors.winDark : NoellyneColors.winInk)
+        : NoellyneColors.lossInk;
+
+    return PressableScale(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: NoellyneMotion.tap,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+        decoration: BoxDecoration(
+          color: selected
+              ? NoellyneColors.glowDeep.withValues(alpha: dark ? .20 : .12)
+              : (dark ? NoellyneColors.innerDark : NoellyneColors.innerLight),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected
+                ? NoellyneColors.glowDeep
+                : (dark
+                    ? NoellyneColors.glassBorderDark
+                    : NoellyneColors.glassBorderLight),
+            width: selected ? 1.4 : 1,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                color: selected
+                    ? NoellyneColors.glowDeep
+                    : scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 3),
+            TabularText(
+              graded.isEmpty ? '—' : '${wr.toStringAsFixed(1)}%',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w900,
+                color: graded.isEmpty ? scheme.onSurfaceVariant : accent,
+              ),
+            ),
+            const SizedBox(height: 1),
+            TabularText(
+              '${wins}W-${losses}L · ${positive ? '+' : ''}${net.toStringAsFixed(1)}u',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 9.5,
+                fontWeight: FontWeight.w700,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -990,6 +1172,34 @@ class _SettledPickCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              if (pick.isSure2)
+                const _MetaChip(
+                  icon: Icons.verified_user_rounded,
+                  label: 'SURE 2+',
+                  warn: true,
+                ),
+              if (pick.isStrong)
+                const _MetaChip(
+                  icon: Icons.workspace_premium_rounded,
+                  label: 'STRONG',
+                ),
+              if (pick.isHighOdds)
+                const _MetaChip(
+                  icon: Icons.trending_up_rounded,
+                  label: 'HIGH ODDS',
+                ),
+              if (pick.confidence > 0)
+                _MetaChip(
+                  icon: Icons.insights_rounded,
+                  label: '${pick.confidence}% conf.',
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
           Row(
             children: [
               if (pick.units > 0)
@@ -1018,31 +1228,247 @@ class _SettledPickCard extends StatelessWidget {
   }
 }
 
-class _ResultsFilterRail extends StatelessWidget {
-  const _ResultsFilterRail({
-    required this.selected,
-    required this.onSelected,
+class _ResultsControlsBar extends StatelessWidget {
+  const _ResultsControlsBar({
+    required this.outcome,
+    required this.sort,
+    required this.resultCount,
+    required this.onOutcomeChanged,
+    required this.onSortChanged,
   });
 
-  final _ResultsFilter selected;
-  final ValueChanged<_ResultsFilter> onSelected;
+  final ResultOutcomeFilter outcome;
+  final ResultSort sort;
+  final int resultCount;
+  final ValueChanged<ResultOutcomeFilter> onOutcomeChanged;
+  final ValueChanged<ResultSort> onSortChanged;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 38,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: _ResultsFilter.values.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 8),
-        itemBuilder: (context, i) {
-          final f = _ResultsFilter.values[i];
-          return FilterPill(
-            label: f.label,
-            selected: f == selected,
-            onTap: () => onSelected(f),
-          );
-        },
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final o in ResultOutcomeFilter.values) ...[
+                  _MiniChipToggle(
+                    label: o.label,
+                    selected: o == outcome,
+                    onTap: () => onOutcomeChanged(o),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        PopupMenuButton<ResultSort>(
+          initialValue: sort,
+          onSelected: onSortChanged,
+          tooltip: 'Sort results',
+          itemBuilder: (_) => [
+            for (final s in ResultSort.values)
+              PopupMenuItem<ResultSort>(
+                value: s,
+                child: Row(
+                  children: [
+                    Icon(
+                      s == sort ? Icons.check_rounded : Icons.sort_rounded,
+                      size: 16,
+                      color: s == sort
+                          ? NoellyneColors.glowDeep
+                          : scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      s.label,
+                      style: TextStyle(
+                        fontWeight:
+                            s == sort ? FontWeight.w800 : FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: dark ? NoellyneColors.innerDark : NoellyneColors.innerLight,
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: dark
+                    ? NoellyneColors.glassBorderDark
+                    : NoellyneColors.glassBorderLight,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.swap_vert_rounded,
+                  size: 14,
+                  color: NoellyneColors.glowDeep,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  sort.label,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PicksSortBar extends StatelessWidget {
+  const _PicksSortBar({
+    required this.sort,
+    required this.count,
+    required this.onSortChanged,
+  });
+
+  final PickSort sort;
+  final int count;
+  final ValueChanged<PickSort> onSortChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            count == 1 ? '1 curated pick' : '$count curated picks',
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w700,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        PopupMenuButton<PickSort>(
+          initialValue: sort,
+          onSelected: onSortChanged,
+          tooltip: 'Sort picks',
+          itemBuilder: (_) => [
+            for (final s in PickSort.values)
+              PopupMenuItem<PickSort>(
+                value: s,
+                child: Row(
+                  children: [
+                    Icon(
+                      s == sort ? Icons.check_rounded : Icons.sort_rounded,
+                      size: 16,
+                      color: s == sort
+                          ? NoellyneColors.glowDeep
+                          : scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      s.label,
+                      style: TextStyle(
+                        fontWeight:
+                            s == sort ? FontWeight.w800 : FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: dark ? NoellyneColors.innerDark : NoellyneColors.innerLight,
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: dark
+                    ? NoellyneColors.glassBorderDark
+                    : NoellyneColors.glassBorderLight,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.swap_vert_rounded,
+                  size: 14,
+                  color: NoellyneColors.glowDeep,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  'Sort: ${sort.label}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: scheme.onSurface,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MiniChipToggle extends StatelessWidget {
+  const _MiniChipToggle({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final scheme = Theme.of(context).colorScheme;
+    return PressableScale(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: NoellyneMotion.tap,
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected
+              ? (dark ? NoellyneColors.glowDark : NoellyneColors.ink)
+              : (dark ? NoellyneColors.innerDark : NoellyneColors.innerLight),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: selected
+                ? Colors.transparent
+                : (dark
+                    ? NoellyneColors.glassBorderDark
+                    : NoellyneColors.glassBorderLight),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            color: selected
+                ? (dark ? NoellyneColors.ink : Colors.white)
+                : scheme.onSurfaceVariant,
+          ),
+        ),
       ),
     );
   }
@@ -1104,9 +1530,14 @@ class _ResultDayHeader extends StatelessWidget {
 }
 
 class _FilterRail extends StatelessWidget {
-  const _FilterRail({required this.selected, required this.onSelected});
+  const _FilterRail({
+    required this.selected,
+    required this.sourceList,
+    required this.onSelected,
+  });
 
   final PickFilter selected;
+  final List<DailyPick> sourceList;
   final ValueChanged<PickFilter> onSelected;
 
   @override
@@ -1119,8 +1550,12 @@ class _FilterRail extends StatelessWidget {
         separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (context, i) {
           final f = PickFilter.values[i];
+          final cnt = f == PickFilter.all
+              ? sourceList.length
+              : sourceList.where(f.matches).length;
+          final label = cnt > 0 ? '${f.label} ($cnt)' : f.label;
           return FilterPill(
-            label: f.label,
+            label: label,
             selected: f == selected,
             onTap: () => onSelected(f),
           );
@@ -1247,7 +1682,10 @@ class PickCard extends StatelessWidget {
               ],
             ),
           ),
-          if (pick.tier.isNotEmpty ||
+          if (pick.isSure2 ||
+              pick.isHighOdds ||
+              pick.tier.isNotEmpty ||
+              pick.kickoffTime != null ||
               pick.units > 0 ||
               pick.edgePct > 0 ||
               pick.injuryNote.isNotEmpty) ...[
@@ -1256,10 +1694,26 @@ class PickCard extends StatelessWidget {
               spacing: 6,
               runSpacing: 6,
               children: [
+                if (pick.isSure2)
+                  const _MetaChip(
+                    icon: Icons.verified_user_rounded,
+                    label: 'SURE 2+',
+                    warn: true,
+                  ),
                 if (pick.tier.isNotEmpty)
                   _MetaChip(
                     icon: Icons.workspace_premium_rounded,
                     label: pick.tier,
+                  ),
+                if (pick.isHighOdds)
+                  const _MetaChip(
+                    icon: Icons.local_fire_department_rounded,
+                    label: 'HIGH ODDS',
+                  ),
+                if (pick.kickoffTime != null)
+                  _MetaChip(
+                    icon: Icons.schedule_rounded,
+                    label: _formatKickoffChip(pick.kickoffTime!),
                   ),
                 if (pick.units > 0)
                   _MetaChip(
@@ -1666,4 +2120,21 @@ class _Disclaimer extends StatelessWidget {
       ),
     );
   }
+}
+
+String _formatKickoffChip(DateTime dt) {
+  final local = dt.toLocal();
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final day = DateTime(local.year, local.month, local.day);
+  final diff = day.difference(today).inDays;
+  final hh = local.hour.toString().padLeft(2, '0');
+  final mm = local.minute.toString().padLeft(2, '0');
+  if (diff == 0) return 'Today · $hh:$mm';
+  if (diff == 1) return 'Tomorrow · $hh:$mm';
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  return '${local.day} ${months[local.month - 1]} · $hh:$mm';
 }

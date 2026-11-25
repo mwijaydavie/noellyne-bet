@@ -157,20 +157,28 @@ class DailyPicksRepository {
 
   Future<DailyPicksBoard> _fetchBoardLive({required int limit}) async {
     try {
+      final settledLimit = limit < 100 ? 100 : limit;
       final results = await _withRetry(
         () => Future.wait<List<DailyPick>>([
           _query(status: 'published', order: 'kickoff_time.asc', limit: limit),
           _query(
             status: 'settled',
             order: 'settled_at.desc.nullslast,kickoff_time.desc',
-            limit: limit,
+            limit: settledLimit,
           ),
         ]),
       );
 
       final now = DateTime.now();
+      // Hide stale ungraded picks older than 6h past kickoff from Today's active board.
+      final freshPublished = results[0].where((p) {
+        final ko = p.kickoffTime;
+        if (ko == null) return true;
+        return now.difference(ko) <= const Duration(hours: 6);
+      }).toList(growable: false);
+
       final board = DailyPicksBoard(
-        published: results[0].isNotEmpty || !_enableDemo ? results[0] : _demo,
+        published: freshPublished.isNotEmpty || !_enableDemo ? freshPublished : _demo,
         settled: results[1],
         fromCache: false,
         fetchedAt: now,

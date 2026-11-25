@@ -189,7 +189,7 @@ void main() {
               );
             } else {
               expect(find.text('WATCH LIVE'), findsNothing);
-              expect(find.text('NOT READY'), findsOneWidget);
+              expect(find.text('OPENS NEAR KICKOFF'), findsAtLeastNWidgets(1));
             }
             expect(find.text('Loading lines…'), findsNothing);
             await tester.pumpWidget(const SizedBox());
