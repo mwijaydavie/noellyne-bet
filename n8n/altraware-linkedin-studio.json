@@ -1,0 +1,2027 @@
+{
+  "name": "Altraware Visual & Video Studio v4.0 — LinkedIn (@linkinmwijay_bot)",
+  "description": "LinkedIn Images & Native MP4 Videos Studio via @linkinmwijay_bot: Drive & Telegram photo/video uploads, smart QR skip, Gemini 2.5 Flash Vision (photo + video), 3-step LinkedIn feedshare-image & feedshare-video publishing.",
+  "active": true,
+  "nodes": [
+    {
+      "id": "c5b956b3-abc4-45ac-a30b-dcc17a862e3e",
+      "name": "Daily Visual 10:30 EAT",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        32
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 10 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "c02b1f04-9c86-478c-82fe-2b54b4e7c261",
+      "name": "Capture Trigger Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        224
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Preserves exact trigger payload + any Telegram photo binary before reading Google Sheet\nconst inp = $input.first();\nconst j = inp.json || {};\nconst out = { json: { triggerPayload: j, capturedAt: new Date().toISOString() } };\nif (inp.binary && Object.keys(inp.binary).length > 0) {\n  const k = Object.keys(inp.binary)[0];\n  out.binary = { data: inp.binary[k] };\n  out.json.hasBinary = true;\n} else {\n  out.json.hasBinary = false;\n}\nreturn [out];"
+      }
+    },
+    {
+      "id": "e44362e9-2137-47a5-a4fc-5526e923bf72",
+      "name": "Read Projects Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        448,
+        224
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "url",
+          "value": "https://docs.google.com/spreadsheets/d/120HHilbpr_6yFDZhz41PHdbJt8_xVrlnLKcBTF-ssV8/edit"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Projects"
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "fd35a851-947f-4bf2-9610-3a6c98349886",
+      "name": "Parse & Route Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        224
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// =============================================================\n// Altraware Visual & Video Studio v4.0 — Images + Native MP4 Videos\n// =============================================================\nconst DRIVE_ROOT = '1WHIGFLidnYXNDAzhzroR7D90PBMPdW-T';\nconst KNOWN_FOLDERS = {\n  'faida-pos': '12YSPp0V6LhvhmUYqNeR21B4ZCgWbwcrR',\n  'aymi-africa': '1WOsLc9YtYhvyIJF81_IFT-cdKf2HCCkR',\n  'uaut-connect': '1Zu_EqFe8Z5IwkIhvlJTiDTKX8Qh4njiE',\n  'tanzania-reach': '1pRzWgSG_KZvuo9cpxjCqFVhOe2tFntcI',\n  'caretrack': '1vyajGmjlVO0n0LzWhL_huo39oA4EMMYs',\n  'audenic': '1i6cuYjYtt9F1sjPbKxJMLB85VJNHnn__',\n  'bongo-foodie': '16hob1JQp5x1Zf_pkXk0bvli4_VDAfLI8',\n  'altraware': '1lDPsKroOXpsFOmfYIrFFbypk3qjbn-LU',\n  'altra-motion-lab': '1Weah7CJqE8pBl6jyjC2SCyYETT0fhDN9',\n  'quickopia': '12GTyS4UefDAwFxQGBFjTK3rmtJa4_2Z3'\n};\n\nconst BUILTIN_EXTRAS = [\n  {\n    slug: 'altra-motion-lab',\n    project_name: 'Altraware Motion Lab',\n    url: 'https://altra-motion-lab.vercel.app/',\n    tagline: 'Interactive software studio website in Dar es Salaam — fast, mobile-first websites, apps & business systems in Kiswahili and English with M-Pesa at the core.',\n    aliases: 'altramotion, motion lab, altra motion lab, motion, altraware studio',\n    drive_folder_id: '1Weah7CJqE8pBl6jyjC2SCyYETT0fhDN9',\n    last_posted: '',\n    post_count: 0,\n    status: 'live'\n  },\n  {\n    slug: 'quickopia',\n    project_name: 'Quickopia',\n    url: 'https://quickopia-web.vercel.app/',\n    tagline: 'Online supermarket & on-demand fast delivery platform engineered by Altraware Technology.',\n    aliases: 'quickopia, quickopia web, supermarket, grocery, delivery',\n    drive_folder_id: '12GTyS4UefDAwFxQGBFjTK3rmtJa4_2Z3',\n    last_posted: '',\n    post_count: 0,\n    status: 'live'\n  }\n];\n\nconst cap = $('Capture Trigger Input').first();\nconst j = cap.json.triggerPayload || {};\nconst hasBinary = Boolean(cap.json.hasBinary && cap.binary && cap.binary.data);\nconst ownerId = String($env.ALTRAWARE_OWNER_TG_ID || '8051901138').trim();\nconst runId = 'vis_' + Date.now();\nconst sd = $getWorkflowStaticData('global');\nsd.mediaGroups = sd.mediaGroups || {};\n\nconst rawRows = $input.all().map(i => i.json).filter(r => r && r.slug);\nconst projectMap = {};\nfor (const r of rawRows) {\n  const slug = String(r.slug).trim().toLowerCase();\n  const folderId = String(r.drive_folder_id || KNOWN_FOLDERS[slug] || '').trim();\n  const aliasList = String(r.aliases || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);\n  aliasList.push(slug, slug.replace(/-/g, ''), slug.replace(/-/g, ' '), String(r.project_name || '').toLowerCase());\n  projectMap[slug] = {\n    slug,\n    name: String(r.project_name || slug).trim(),\n    url: String(r.url || 'https://altra-motion-lab.vercel.app/').trim(),\n    desc: String(r.tagline || r.bot_blurb_en || r.project_name || '').trim(),\n    folderId,\n    lastPosted: String(r.last_posted || '').trim(),\n    postCount: Number(r.post_count || 0) || 0,\n    aliases: [...new Set(aliasList.filter(a => a.length >= 3))],\n    inSheet: true\n  };\n}\nfor (const ex of BUILTIN_EXTRAS) {\n  if (!projectMap[ex.slug]) {\n    const aliasList = ex.aliases.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);\n    aliasList.push(ex.slug, ex.slug.replace(/-/g, ''), ex.project_name.toLowerCase());\n    projectMap[ex.slug] = {\n      slug: ex.slug,\n      name: ex.project_name,\n      url: ex.url,\n      desc: ex.tagline,\n      folderId: ex.drive_folder_id,\n      lastPosted: '',\n      postCount: 0,\n      aliases: [...new Set(aliasList)],\n      inSheet: true\n    };\n  }\n}\n\nconst projects = Object.values(projectMap);\nconst esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nfunction matchProject(text) {\n  const low = String(text || '').toLowerCase();\n  const hash = low.match(/#([a-z0-9_-]+)/i);\n  if (hash) {\n    const h = hash[1].toLowerCase();\n    for (const p of projects) {\n      if (p.slug === h || p.slug.replace(/-/g, '') === h.replace(/-/g, '') || p.aliases.includes(h)) return p;\n    }\n  }\n  let best = null, bestLen = 0;\n  for (const p of projects) {\n    for (const a of p.aliases) {\n      if (a.length < 3) continue;\n      const re = new RegExp('(^|[^a-z0-9])' + a.replace(/[.*+?^$' + '{}' + '()|[\\]\\\\]/g, '\\\\$&') + '($|[^a-z0-9])', 'i');\n      if (re.test(low) && a.length > bestLen) {\n        best = p;\n        bestLen = a.length;\n      }\n    }\n  }\n  return best;\n}\n\nfunction buildMultiFolderQuery(list) {\n  const fids = [...new Set(list.map(p => p.folderId).filter(Boolean))];\n  if (!fids.length) return '';\n  return \"trashed = false and (mimeType contains 'image/' or mimeType = 'video/mp4' or mimeType = 'video/quicktime' or mimeType = 'video/webm') and (\" + fids.map(id => \"'\" + id + \"' in parents\").join(' or ') + \")\";\n}\n\nfunction makeHelpText() {\n  return [\n    '🎬 <b>Altraware Visual &amp; Video Studio v4.0</b>',\n    '<i>Bot rasmi ya Picha, Screen-Record Videos (MP4), Google Drive &amp; ripoti za LinkedIn!</i>',\n    '',\n    '<b>1️⃣ Hifadhi Picha au Video Drive (Bila Kupost Sasa):</b>',\n    '• Tuma picha au video (&lt;20MB) na caption: <code>save quickopia: demo ya checkout</code>',\n    '• Video kubwa (20MB–60MB): weka moja kwa moja kwenye folder la mradi Google Drive!',\n    '',\n    '<b>2️⃣ Hifadhi Drive + Post LinkedIn Sasa Hivi:</b>',\n    '• Tuma picha au screen-record video na caption: <code>#altramotion demo ya site yetu mpya</code>',\n    '• Gemini 2.5 Flash inaona picha/video halisi na kuandika post kali!',\n    '',\n    '<b>3️⃣ Ongeza Mradi Mpya (Auto-Folder + Link):</b>',\n    '• <code>/add Jina | https://link-yako.app/ | Maelezo mafupi</code>',\n    '',\n    '<b>4️⃣ Amri za Haraka:</b>',\n    '• <code>/projects</code> — Orodha ya miradi yote &amp; hali ya kupost',\n    '• <code>/post</code> — Chagua mradi (picha/video) na u-draft sasa',\n    '• <code>quickopia</code> — Post picha/video kutoka folder la mradi huo',\n    '• <code>/stock AI agents for SMEs</code> — Post ya picha ya stock',\n    '',\n    '⏰ <i>Ratiba ya Kila Siku: Saa 10:30 AM EAT (inazungusha miradi yote bila kurudia!)</i>'\n  ].join('\\n');\n}\n\nfunction makeProjectsText() {\n  const sorted = [...projects].sort((a, b) => (a.lastPosted || '0000').localeCompare(b.lastPosted || '0000'));\n  const lines = sorted.map((p, idx) => {\n    const lp = p.lastPosted ? p.lastPosted.slice(0, 10) : 'Haijawahi';\n    const fld = p.folderId ? '📁 Drive OK' : '⚠️ No Folder';\n    return (idx + 1) + '. <b>' + esc(p.name) + '</b> (<code>#' + esc(p.slug) + '</code>) — ' + fld +\n      '\\n   🔗 ' + esc(p.url || '—') + ' | 📊 Posts: ' + p.postCount + ' | 🗓️ ' + esc(lp);\n  });\n  return '📂 <b>MIRADI YA ALTRAWARE (' + projects.length + ' jumla)</b>\\n<i>(Wa kwanza juu ndiye anayefuata kwenye ratiba ya 10:30 AM!)</i>\\n\\n' + lines.join('\\n\\n');\n}\n\nconst cb = j.callback_query || null;\nconst msg = j.message || (cb && cb.message) || null;\nif (cb || j.message || j.update_id) {\n  const fromId = String((cb && cb.from && cb.from.id) || (msg && msg.from && msg.from.id) || '');\n  if (ownerId && fromId && fromId !== ownerId) return [];\n  const chatId = String((msg && msg.chat && msg.chat.id) || fromId || ownerId);\n\n  if (cb && cb.data) {\n    const d = String(cb.data);\n    if (d === 'cmd_projects') return [{ json: { action: 'reply', chatId, replyText: makeProjectsText(), runId } }];\n    if (d === 'cmd_help') return [{ json: { action: 'reply', chatId, replyText: makeHelpText(), runId } }];\n    if (d === 'cmd_add_guide') {\n      return [{ json: { action: 'reply', chatId, runId, replyText: '➕ <b>Kuongeza Mradi Mpya (1-Step):</b>\\n\\n<code>/add Jina la Mradi | https://link-yako.vercel.app/ | Maelezo mafupi</code>' } }];\n    }\n    if (d === 'cmd_photo_guide') {\n      return [{ json: { action: 'reply', chatId, runId, replyText: '🎬 <b>Tuma Picha au Screen-Record Video Hapa:</b>\\n\\n<b>A) Hifadhi Drive Tu:</b>\\n<code>save quickopia: demo ya checkout</code>\\n\\n<b>B) Hifadhi Drive + Post LinkedIn Sasa:</b>\\n<code>#altramotion muonekano mpya wa website yetu</code>\\n\\n✨ <i>Video kubwa (&gt;20MB) weka moja kwa moja Google Drive kwenye folder la mradi!</i>' } }];\n    }\n    if (d === 'cmd_auto') {\n      const q = buildMultiFolderQuery(projects);\n      return [{ json: { action: 'drive_post', mode: 'auto', chatId, runId, requestedSlug: '', brief: '', projects, driveQuery: q } }];\n    }\n  }\n\n  let raw = String((msg && (msg.text || msg.caption)) || '').trim();\n  const mgId = msg && msg.media_group_id ? String(msg.media_group_id) : '';\n\n  if (hasBinary && mgId) {\n    if (raw) {\n      sd.mediaGroups[mgId] = { raw, ts: Date.now() };\n    } else if (sd.mediaGroups[mgId] && (Date.now() - sd.mediaGroups[mgId].ts < 120000)) {\n      raw = sd.mediaGroups[mgId].raw;\n    }\n  }\n\n  if (!hasBinary && (!raw || /^\\/(start|help)\\b/i.test(raw))) {\n    return [{ json: { action: 'reply', chatId, replyText: makeHelpText(), runId } }];\n  }\n\n  if (!hasBinary && /^\\/(projects|list|miradi)\\b/i.test(raw)) {\n    return [{ json: { action: 'reply', chatId, replyText: makeProjectsText(), runId } }];\n  }\n\n  const addMatch = !hasBinary && raw.match(/^\\/(?:add|addproject|newproject)\\s+(.+)$/is);\n  if (addMatch) {\n    const body = addMatch[1].trim();\n    let name = '', url = '', tagline = '';\n    if (body.includes('|')) {\n      const parts = body.split('|').map(s => s.trim()).filter(Boolean);\n      name = parts[0] || '';\n      for (const part of parts.slice(1)) {\n        if (/^https?:\\/\\//i.test(part) && !url) url = part;\n        else if (!tagline) tagline = part;\n        else tagline += ' — ' + part;\n      }\n    } else {\n      const urlM = body.match(/https?:\\/\\/\\S+/i);\n      url = urlM ? urlM[0] : '';\n      const rest = body.replace(/https?:\\/\\/\\S+/i, '').trim();\n      const words = rest.split(/\\s+/);\n      name = words.slice(0, 2).join(' ');\n      tagline = words.slice(2).join(' ') || name;\n    }\n    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');\n    if (!name || !slug) {\n      return [{ json: { action: 'reply', chatId, runId, replyText: '⚠️ Tumia muundo: <code>/add Jina | https://link.app/ | Maelezo mafupi</code>' } }];\n    }\n    return [{\n      json: {\n        action: 'add_project',\n        chatId,\n        runId,\n        driveRootId: DRIVE_ROOT,\n        newProject: {\n          name,\n          slug,\n          url: url || 'https://altra-motion-lab.vercel.app/',\n          tagline: tagline || (name + ' — built by Altraware Technology Ltd in Dar es Salaam, Tanzania.'),\n          folderName: name.replace(/[^a-zA-Z0-9 _-]/g, '').trim() || slug\n        }\n      }\n    }];\n  }\n\n  if (hasBinary) {\n    const isSaveOnly = /^\\/?(save|hifadhi|drive|upload)\\b/i.test(raw);\n    const cleanedCaption = raw.replace(/^\\/?(save|hifadhi|drive|upload)\\b[:\\s-]*/i, '').trim();\n    const matched = matchProject(cleanedCaption);\n    const targetFolderId = (matched && matched.folderId) ? matched.folderId : DRIVE_ROOT;\n    const slug = matched ? matched.slug : 'altraware';\n    const projName = matched ? matched.name : 'Altraware Technology';\n    const projUrl = matched ? matched.url : 'https://altra-motion-lab.vercel.app/';\n    const projDesc = matched ? matched.desc : 'Altraware Technology Ltd — software studio in Dar es Salaam, Tanzania.';\n    const binMime = String(cap.binary.data.mimeType || (msg && msg.video && msg.video.mime_type) || 'image/jpeg').toLowerCase();\n    const isVideo = binMime.startsWith('video/') || Boolean(msg && msg.video);\n    const mediaKind = isVideo ? 'video' : 'image';\n    const ext = isVideo\n      ? (binMime.includes('quicktime') ? '.mov' : (binMime.includes('webm') ? '.webm' : '.mp4'))\n      : (binMime.includes('png') ? '.png' : '.jpg');\n    const uploadFileName = slug + '_' + new Date().toISOString().slice(0, 10) + '_' + String(Date.now()).slice(-4) + ext;\n\n    return [{\n      json: {\n        action: isSaveOnly ? 'save_photo' : 'photo_post',\n        chatId,\n        runId,\n        mediaKind,\n        mimeType: isVideo ? (binMime.startsWith('video/') ? binMime : 'video/mp4') : binMime,\n        targetFolderId,\n        uploadFileName,\n        driveDescription: cleanedCaption || (projName + (isVideo ? ' demo video' : ' screenshot') + ' uploaded via @linkinmwijay_bot'),\n        productSlug: slug,\n        productName: projName,\n        productUrl: projUrl,\n        productDesc: projDesc,\n        postCount: matched ? matched.postCount : 0,\n        inSheet: Boolean(matched && matched.inSheet),\n        brief: cleanedCaption || ('Showcase this authentic ' + projName + (isVideo ? ' screen-recorded product demo video' : ' screenshot') + ' built by Altraware Technology.'),\n        imgOrigin: isVideo ? 'telegram_video_saved_to_drive' : 'telegram_saved_to_drive'\n      },\n      binary: { data: cap.binary.data }\n    }];\n  }\n\n  if (/^\\/stock\\b/i.test(raw)) {\n    const topic = raw.replace(/^\\/stock\\s*/i, '').trim() || 'Practical AI automation for East African SMEs';\n    return [{\n      json: {\n        action: 'stock_post',\n        chatId,\n        runId,\n        mediaKind: 'image',\n        productSlug: 'altraware',\n        productName: 'Altraware Insights',\n        productUrl: 'https://altra-motion-lab.vercel.app/',\n        productDesc: 'Altraware Technology Ltd — software studio in Dar es Salaam, Tanzania.',\n        postCount: 0,\n        inSheet: false,\n        brief: topic,\n        topic\n      }\n    }];\n  }\n\n  if (/^\\/(post|auto|run)\\s*$/i.test(raw)) {\n    return [{\n      json: {\n        action: 'drive_post',\n        mode: 'auto',\n        chatId,\n        runId,\n        requestedSlug: '',\n        brief: '',\n        projects,\n        driveQuery: buildMultiFolderQuery(projects)\n      }\n    }];\n  }\n\n  const cleanBody = raw\n    .replace(/^\\/(post|drive|pic|video)\\b\\s*/i, '')\n    .replace(/^post\\s+(?:about\\s+)?/i, '')\n    .trim();\n  const matched = matchProject(cleanBody);\n  const candidateProjects = matched ? [matched] : projects;\n  return [{\n    json: {\n      action: 'drive_post',\n      mode: matched ? 'specific' : 'auto',\n      chatId,\n      runId,\n      requestedSlug: matched ? matched.slug : '',\n      brief: cleanBody,\n      projects: candidateProjects,\n      driveQuery: buildMultiFolderQuery(candidateProjects)\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    action: 'drive_post',\n    mode: 'auto',\n    viaSchedule: Boolean(j.timestamp || j['Day of week']),\n    chatId: ownerId,\n    runId,\n    requestedSlug: '',\n    brief: '',\n    projects,\n    driveQuery: buildMultiFolderQuery(projects)\n  }\n}];"
+      }
+    },
+    {
+      "id": "4d3b9020-ee94-480b-b301-f71e8933b1c4",
+      "name": "Is Menu / Reply?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        896,
+        224
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c-rep",
+              "leftValue": "={{ $json.action === 'reply' }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "rightValue": true
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "7e42d637-be7d-43d9-a77a-4593133b7233",
+      "name": "Send Bot Menu / Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1120,
+        128
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chatId || '8051901138' }}",
+        "text": "={{ $json.replyText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "📂 Miradi Yote",
+                    "additionalFields": {
+                      "callback_data": "cmd_projects"
+                    }
+                  },
+                  {
+                    "text": "🚀 Post Sasa (Auto)",
+                    "additionalFields": {
+                      "callback_data": "cmd_auto"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "➕ Ongeza Mradi",
+                    "additionalFields": {
+                      "callback_data": "cmd_add_guide"
+                    }
+                  },
+                  {
+                    "text": "📸 Tuma Picha",
+                    "additionalFields": {
+                      "callback_data": "cmd_photo_guide"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "onError": "continueRegularOutput",
+      "webhookId": "77ad268d-c718-49ec-923d-820286a4116e",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "linkedin Mwijay"
+        }
+      }
+    },
+    {
+      "id": "9712d7fe-8c17-4546-bc8d-8c6146f0169d",
+      "name": "Is Add Project?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        320
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c-add",
+              "leftValue": "={{ $json.action === 'add_project' }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "rightValue": true
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "91dd5436-f7c1-41f4-8c2b-bf4cfa87cb2c",
+      "name": "Create Project Drive Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1344,
+        0
+      ],
+      "parameters": {
+        "resource": "folder",
+        "operation": "create",
+        "name": "={{ $json.newProject.folderName }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1WHIGFLidnYXNDAzhzroR7D90PBMPdW-T"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "2a4b21e4-421c-44c2-b9f4-1969326ceb51",
+      "name": "Prepare New Project Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const req = $('Parse & Route Request').first().json;\nconst np = req.newProject;\nconst folderId = $input.first().json.id || '';\nconst aliases = [np.slug, np.slug.replace(/-/g, ''), np.slug.replace(/-/g, ' '), np.name.toLowerCase()].join(', ');\nreturn [{\n  json: {\n    chatId: req.chatId,\n    id: Math.floor(Date.now() / 1000),\n    slug: np.slug,\n    project_name: np.name,\n    tagline: np.tagline,\n    url: np.url,\n    status: 'live',\n    last_posted: '',\n    post_count: 0,\n    notes: 'Added via @linkinmwijay_bot',\n    category: 'web',\n    aliases,\n    visibility: 'public',\n    bot_blurb_sw: np.tagline,\n    bot_blurb_en: np.tagline,\n    drive_folder_id: folderId,\n    client_proof: 'yes'\n  }\n}];"
+      }
+    },
+    {
+      "id": "92b1555e-57fb-4e56-9bce-da02ec4a80c7",
+      "name": "Save Project to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1792,
+        0
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "url",
+          "value": "https://docs.google.com/spreadsheets/d/120HHilbpr_6yFDZhz41PHdbJt8_xVrlnLKcBTF-ssV8/edit"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Projects"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "project_name": "={{ $json.project_name }}",
+            "tagline": "={{ $json.tagline }}",
+            "url": "={{ $json.url }}",
+            "status": "={{ $json.status }}",
+            "last_posted": "={{ $json.last_posted }}",
+            "post_count": "={{ $json.post_count }}",
+            "notes": "={{ $json.notes }}",
+            "slug": "={{ $json.slug }}",
+            "category": "={{ $json.category }}",
+            "aliases": "={{ $json.aliases }}",
+            "visibility": "={{ $json.visibility }}",
+            "bot_blurb_sw": "={{ $json.bot_blurb_sw }}",
+            "bot_blurb_en": "={{ $json.bot_blurb_en }}",
+            "drive_folder_id": "={{ $json.drive_folder_id }}",
+            "client_proof": "={{ $json.client_proof }}"
+          },
+          "matchingColumns": [
+            "slug"
+          ],
+          "schema": [
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "id",
+              "id": "id",
+              "required": false,
+              "type": "number"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "project_name",
+              "id": "project_name",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "tagline",
+              "id": "tagline",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "url",
+              "id": "url",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "status",
+              "id": "status",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "last_posted",
+              "id": "last_posted",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "post_count",
+              "id": "post_count",
+              "required": false,
+              "type": "number"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "notes",
+              "id": "notes",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": true,
+              "display": true,
+              "displayName": "slug",
+              "id": "slug",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "category",
+              "id": "category",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "aliases",
+              "id": "aliases",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "visibility",
+              "id": "visibility",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "bot_blurb_sw",
+              "id": "bot_blurb_sw",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "bot_blurb_en",
+              "id": "bot_blurb_en",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "drive_folder_id",
+              "id": "drive_folder_id",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "client_proof",
+              "id": "client_proof",
+              "required": false,
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "fed5b344-cbfa-43bc-a5e3-849482587193",
+      "name": "Notify Project Added",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2016,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Prepare New Project Row').first().json.chatId || '8051901138' }}",
+        "text": "=✅ <b>MRADI MPYA UMEONGEZWA!</b>\n\n🏷️ <b>{{ $('Prepare New Project Row').first().json.project_name }}</b> (<code>#{{ $('Prepare New Project Row').first().json.slug }}</code>)\n🔗 {{ $('Prepare New Project Row').first().json.url }}\n📁 Google Drive Folder imetengenezwa kiotomatiki!\n\n📸 <b>Sasa tuma tu picha hapa:</b>\n• Kuhifadhi Drive tu: <code>save #{{ $('Prepare New Project Row').first().json.slug }}: maelezo yako</code>\n• Hifadhi + Post sasa: <code>#{{ $('Prepare New Project Row').first().json.slug }}: maelezo yako</code>",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "onError": "continueRegularOutput",
+      "webhookId": "f784d42a-8a2a-45b2-bbb6-66946a1b322b",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "linkedin Mwijay"
+        }
+      }
+    },
+    {
+      "id": "bd62b1be-75fd-4c58-867b-80165d23d9a9",
+      "name": "Is Photo Upload?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1344,
+        416
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c-ph",
+              "leftValue": "={{ $json.action === 'save_photo' || $json.action === 'photo_post' }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "rightValue": true
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "76bebe2b-3bca-4baa-aabd-338101e6a82a",
+      "name": "Upload Photo to Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        2016,
+        192
+      ],
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "inputDataFieldName": "data",
+        "name": "={{ $json.uploadFileName }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.targetFolderId }}"
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "156267bb-3bcb-4f86-a00a-b3965af582c4",
+      "name": "Save Caption to Drive Metadata",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2240,
+        192
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://www.googleapis.com/drive/v3/files/{{ $json.id }}?supportsAllDrives=true",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ description: $('Parse & Route Request').first().json.driveDescription || '' }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "8456ef16-0f41-4c3e-9b92-8c53cc03a5f3",
+      "name": "Save to Drive Only?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2464,
+        192
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c-sv",
+              "leftValue": "={{ $('Parse & Route Request').first().json.action === 'save_photo' }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "rightValue": true
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "3d6d2f67-35f7-4be4-92f5-053230a48064",
+      "name": "Notify Photo Saved",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2688,
+        96
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Parse & Route Request').first().json.chatId || '8051901138' }}",
+        "text": "=✅ <b>PICHA IMEHIFADHIWA GOOGLE DRIVE!</b>\n\n📁 Mradi: <b>{{ $('Parse & Route Request').first().json.productName }}</b> (<code>#{{ $('Parse & Route Request').first().json.productSlug }}</code>)\n🖼️ Faili: <code>{{ $('Parse & Route Request').first().json.uploadFileName }}</code>\n📝 Maelezo yamehifadhiwa: <i>{{ $('Parse & Route Request').first().json.driveDescription.slice(0, 180) }}</i>\n\n🤖 <i>Gemini Vision itayasoma maelezo haya pamoja na picha wakati wa kupost! Ukitaka kuipost sasa hivi andika tu:</i> <code>{{ $('Parse & Route Request').first().json.productSlug }}</code>",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "webhookId": "59601646-53ba-4b35-a3d7-12c6596955c9",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "linkedin Mwijay"
+        }
+      }
+    },
+    {
+      "id": "996bd46b-87e6-487c-a7e8-f0ac3ebe3557",
+      "name": "Attach Photo Binary for AI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2688,
+        288
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const req = $('Parse & Route Request').first().json;\nconst cap = $('Capture Trigger Input').first();\nconst uploaded = $('Upload Photo to Drive').first().json || {};\nreturn [{\n  json: {\n    ...req,\n    fileId: uploaded.id || '',\n    fileName: req.uploadFileName || 'altraware.jpg',\n    driveSaved: Boolean(uploaded.id)\n  },\n  binary: cap.binary ? { data: cap.binary.data } : {}\n}];"
+      }
+    },
+    {
+      "id": "7f5b9813-f15f-48bc-bd33-ce45d336bb28",
+      "name": "AI Vision Writer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2912,
+        512
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Multimodal Gemini 2.5 Flash Writer (Images + Native MP4 Screen-Record Videos <=14MB) + Groq Fallback\nconst inp = $input.first();\nconst meta = inp.json || {};\nconst binKeys = inp.binary ? Object.keys(inp.binary) : [];\nif (!binKeys.length) throw new Error('No media binary reached AI Vision Writer.');\n\nconst bKey = binKeys[0];\nconst origBin = inp.binary[bKey];\nconst mediaBuf = await this.helpers.getBinaryDataBuffer(0, bKey);\nconst mimeType = String(origBin.mimeType || meta.mimeType || 'image/jpeg').toLowerCase();\nconst isVideo = mimeType.startsWith('video/') || meta.mediaKind === 'video';\nconst mediaKind = isVideo ? 'video' : 'image';\nconst fileName = meta.fileName || origBin.fileName || (isVideo ? 'altraware_demo.mp4' : 'altraware_post.jpg');\n\n// Send inline binary to Gemini Vision for all images and for videos <= 14MB (keeps RAM safe on 2GB EC2)\nconst canInlineVision = !isVideo ? (mediaBuf.length <= 8 * 1024 * 1024) : (mediaBuf.length <= 14 * 1024 * 1024);\nconst inlineB64 = canInlineVision ? mediaBuf.toString('base64') : '';\n\nconst system = [\n  'You write high-impact LinkedIn posts for David Erick Mwijage, Co-Founder (Engineering & Architecture) at Altraware Technology Ltd (Dar es Salaam, Tanzania), co-founded with Clemence W. N\\'gunda.',\n  'Company voice: sharp, grounded Tanzanian systems builder (\"Rooted at Home. Engineered for the World.\").',\n  'NEVER mention retired brands (Piano Sifa, Ideazzy) or LIMS.',\n  isVideo\n    ? 'CRITICAL: This post accompanies a REAL screen-recorded product demo video. Describe the live workflow, responsiveness, and real East African / Tanzanian business value demonstrated in the video.'\n    : 'CRITICAL: Actually look closely at the attached image AND incorporate the founder\\'s notes if provided (even if written in Kiswahili — translate the insight into crisp, natural English).',\n  'STRUCTURE:',\n  '1) Strong 1-line hook (<= 14 words) that stops the scroll.',\n  '2) Concrete explanation referencing real UI details / workflow shown and the East African/Tanzanian problem it solves.',\n  '3) 2-3 crisp short bullet points starting with \"- \".',\n  '4) Sharp closing question to spark comments.',\n  '5) Last line: exactly 3 hashtags starting with #Altraware plus 2 relevant topic tags.',\n  'LENGTH: 550 to 950 characters total. Strictly English, plain text, NO markdown bold (**), NO HTML tags, max 2 emojis.',\n  'BANNED AI SLOP: delve, game-changer, revolutionize, unleash, tapestry, landscape, embark, leverage, synergy, unlock, supercharge, in today\\'s fast-paced.',\n  'Output ONLY the final LinkedIn post text.'\n].join('\\n');\n\nconst userPrompt = [\n  'Media Type: ' + (isVideo ? 'Native Product Demo Video (MP4)' : 'Authentic Screenshot / Visual'),\n  'Product / Project: ' + (meta.productName || 'Altraware Technology'),\n  'Live URL (will go in First Comment): ' + (meta.productUrl || 'https://altra-motion-lab.vercel.app/'),\n  'Product Description: ' + (meta.productDesc || ''),\n  meta.brief ? ('Founder Explanation / Notes: ' + meta.brief) : '',\n  'File: ' + fileName + ' (Source: ' + (meta.imgOrigin || 'drive') + ')',\n  isVideo\n    ? 'Write an authentic LinkedIn post tailored directly to this product walkthrough video.'\n    : 'Write an authentic LinkedIn post tailored directly to what is shown in the attached image.'\n].filter(Boolean).join('\\n');\n\nconst keysOf = (v) => String(v || '').split(',').map(s => s.trim()).filter(Boolean);\nconst gemKeys = keysOf($env.GEMINI_KEYS);\nconst groqKeys = keysOf($env.GROQ_KEYS);\n\nlet postText = '', providerUsed = '', modelUsed = '', visionUsed = false, lastErr = '';\n\nfor (let i = 0; i < Math.min(gemKeys.length, 4) && !postText; i++) {\n  try {\n    const parts = inlineB64\n      ? [{ inline_data: { mime_type: mimeType, data: inlineB64 } }, { text: userPrompt }]\n      : [{ text: userPrompt }];\n    const r = await this.helpers.httpRequest({\n      method: 'POST',\n      url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',\n      headers: { 'x-goog-api-key': gemKeys[i], 'Content-Type': 'application/json' },\n      body: {\n        system_instruction: { parts: [{ text: system }] },\n        contents: [{ role: 'user', parts }],\n        generationConfig: { temperature: 0.65, maxOutputTokens: 900, thinkingConfig: { thinkingBudget: 0 } }\n      },\n      json: true,\n      returnFullResponse: true,\n      ignoreHttpStatusErrors: true,\n      timeout: isVideo ? 65000 : 35000\n    });\n    if (r.statusCode >= 200 && r.statusCode < 300) {\n      const txt = r.body?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';\n      const cleaned = txt.replace(/<think>[\\s\\S]*?<\\/think>/gi, '').replace(/\\*\\*/g, '').trim();\n      if (cleaned.length > 100) {\n        postText = cleaned;\n        providerUsed = 'gemini';\n        modelUsed = inlineB64 ? (isVideo ? 'gemini-2.5-flash (Video Vision)' : 'gemini-2.5-flash (Vision)') : 'gemini-2.5-flash';\n        visionUsed = Boolean(inlineB64);\n      }\n    } else { lastErr = 'gemini HTTP ' + r.statusCode; }\n  } catch (e) { lastErr = 'gemini err: ' + e.message; }\n}\n\nif (!postText) {\n  for (const mdl of ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile']) {\n    for (let i = 0; i < Math.min(groqKeys.length, 3) && !postText; i++) {\n      try {\n        const body = { model: mdl, messages: [{ role: 'system', content: system }, { role: 'user', content: userPrompt }], temperature: 0.65 };\n        if (/gpt-oss/.test(mdl)) { body.max_completion_tokens = 900; body.reasoning_effort = 'low'; }\n        else { body.max_tokens = 900; }\n        const r = await this.helpers.httpRequest({\n          method: 'POST',\n          url: 'https://api.groq.com/openai/v1/chat/completions',\n          headers: { Authorization: 'Bearer ' + groqKeys[i], 'Content-Type': 'application/json' },\n          body,\n          json: true,\n          returnFullResponse: true,\n          ignoreHttpStatusErrors: true,\n          timeout: 30000\n        });\n        if (r.statusCode >= 200 && r.statusCode < 300) {\n          const txt = r.body?.choices?.[0]?.message?.content || '';\n          const cleaned = txt.replace(/<think>[\\s\\S]*?<\\/think>/gi, '').replace(/\\*\\*/g, '').trim();\n          if (cleaned.length > 100) { postText = cleaned; providerUsed = 'groq'; modelUsed = mdl; }\n        } else { lastErr = 'groq HTTP ' + r.statusCode; }\n      } catch (e) { lastErr = 'groq err'; }\n    }\n    if (postText) break;\n  }\n}\n\nif (!postText) throw new Error('All AI providers failed: ' + lastErr);\n\nconst foundTags = postText.match(/#[A-Za-z0-9_]+/g) || [];\nconst bodyOnly = postText.replace(/#[A-Za-z0-9_]+/g, '').replace(/[ \\t]+\\n/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim();\nconst tags = ['#Altraware'];\n[...foundTags, '#TanzaniaTech', '#EastAfrica'].forEach(h => {\n  if (tags.length < 3 && !tags.some(x => x.toLowerCase() === h.toLowerCase())) tags.push(h);\n});\nconst finalPost = bodyOnly + '\\n\\n' + tags.join(' ');\nconst esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst savedBadge = meta.driveSaved ? '💾 Saved to Google Drive ✅\\n' : '';\nconst driveWarn = (meta.imgOrigin === 'stock' && meta.driveReason) ? ('⚠️ Drive fallback: ' + esc(meta.driveReason).slice(0, 120) + '\\n') : '';\nconst headerIcon = isVideo ? '🎬 <b>LINKEDIN VIDEO DRAFT READY</b>\\n' : '📸 <b>LINKEDIN VISUAL DRAFT READY</b>\\n';\nconst tgCaption = (headerIcon +\n  '🎯 Mradi: ' + esc(meta.productName) + ' (' + esc(meta.imgOrigin || 'drive') + ')\\n' +\n  savedBadge + driveWarn +\n  '🤖 AI: ' + esc(providerUsed + '/' + modelUsed) + '\\n' +\n  '⏳ Check Gmail ku-Approve au Cancel (auto-post dk 10)\\n\\n' +\n  esc(finalPost)).slice(0, 1020);\n\nconst preparedBin = await this.helpers.prepareBinaryData(mediaBuf, fileName, mimeType);\n\nreturn [{\n  json: {\n    runId: meta.runId || ('vis_' + Date.now()),\n    chatId: meta.chatId || '8051901138',\n    authorUrn: 'urn:li:person:9GHSXzTuiz',\n    mediaKind,\n    productSlug: meta.productSlug || 'altraware',\n    productName: meta.productName || 'Altraware Technology',\n    productUrl: meta.productUrl || 'https://altra-motion-lab.vercel.app/',\n    postCount: Number(meta.postCount || 0) || 0,\n    inSheet: Boolean(meta.inSheet),\n    imgOrigin: meta.imgOrigin || 'drive',\n    driveReason: meta.driveReason || '',\n    fileName,\n    mimeType,\n    imgSizeKb: Math.round(mediaBuf.length / 1024),\n    imgB64: (!isVideo && mediaBuf.length <= 4500000) ? mediaBuf.toString('base64') : '',\n    providerUsed,\n    modelUsed,\n    visionUsed,\n    postText: finalPost,\n    postHtml: esc(finalPost).replace(/\\n/g, '<br>'),\n    tgCaption\n  },\n  binary: { data: preparedBin }\n}];"
+      }
+    },
+    {
+      "id": "02238345-6349-4853-b2f2-18c701d9341d",
+      "name": "Telegram Photo Preview",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3136,
+        512
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendPhoto",
+        "chatId": "={{ $json.chatId || '8051901138' }}",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "caption": "={{ $json.tgCaption }}",
+          "parse_mode": "HTML"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "webhookId": "6685f827-2e18-4f08-8961-ceca8dec7e7e",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "linkedin Mwijay"
+        }
+      }
+    },
+    {
+      "id": "c3da0af8-841b-4e1d-a163-405376b70d81",
+      "name": "Gmail Approval (10 min)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        3808,
+        512
+      ],
+      "parameters": {
+        "operation": "sendAndWait",
+        "sendTo": "faidahq.tz@gmail.com",
+        "subject": "=Altraware LinkedIn Visual Draft [{{ $('AI Vision Writer').first().json.productName }}] {{ $('AI Vision Writer').first().json.runId }}",
+        "message": "=<p><b>Project:</b> {{ $('AI Vision Writer').first().json.productName }} | <b>Image:</b> {{ $('AI Vision Writer').first().json.fileName }} ({{ $('AI Vision Writer').first().json.imgSizeKb }} KB, {{ $('AI Vision Writer').first().json.imgOrigin }})</p><p><b>CTA Link:</b> {{ $('AI Vision Writer').first().json.productUrl }} | <b>AI:</b> {{ $('AI Vision Writer').first().json.providerUsed }} / {{ $('AI Vision Writer').first().json.modelUsed }}</p><hr><p>{{ $('AI Vision Writer').first().json.postHtml }}</p><hr><p><i>Check the photo preview on @linkinmwijay_bot. Press <b>Post now</b> to publish immediately, <b>Cancel</b> to stop, or wait 10 minutes to auto-publish WITH image.</i></p>",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double",
+            "approveLabel": "Post now",
+            "disapproveLabel": "Cancel"
+          }
+        },
+        "options": {
+          "limitWaitTime": {
+            "values": {
+              "resumeAmount": 10,
+              "resumeUnit": "minutes"
+            }
+          },
+          "appendAttribution": false
+        }
+      },
+      "webhookId": "e0378e5f-b83e-4d9b-b9e5-3cb4f2c18a44",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "6fe6de95-537e-4536-b090-f0494742c24a",
+      "name": "Cancelled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4032,
+        512
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cancel-c",
+              "leftValue": "={{ $json.data?.approved === false }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "rightValue": true
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "41249a71-ca88-47df-b5cb-cbed075eece2",
+      "name": "Notify Cancelled",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        4256,
+        416
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('AI Vision Writer').first().json.chatId || '8051901138' }}",
+        "text": "🛑 <b>Cancelled.</b> Post haikupandishwa LinkedIn.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "webhookId": "bbd6840c-2359-4474-84d7-1986b9436efb",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "linkedin Mwijay"
+        }
+      }
+    },
+    {
+      "id": "7d259d51-9e00-4ea4-8762-53f2912f49ac",
+      "name": "LinkedIn: Register Image Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4256,
+        608
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.linkedin.com/v2/assets?action=registerUpload",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Restli-Protocol-Version",
+              "value": "2.0.0"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ registerUploadRequest: { recipes: [$('AI Vision Writer').first().json.mediaKind === 'video' ? 'urn:li:digitalmediaRecipe:feedshare-video' : 'urn:li:digitalmediaRecipe:feedshare-image'], owner: $('AI Vision Writer').first().json.authorUrn, serviceRelationships: [{ relationshipType: 'OWNER', identifier: 'urn:li:userGeneratedContent' }] } }) }}",
+        "options": {
+          "timeout": 25000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "oAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "LinkedIn"
+        }
+      }
+    },
+    {
+      "id": "e43a585e-2e93-41b5-9951-8e979208054c",
+      "name": "Prepare LinkedIn Binary Upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        608
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const reg = $input.first().json || {};\nconst aiItem = $('AI Vision Writer').first();\nconst d = aiItem.json;\nconst isVideo = d.mediaKind === 'video' || String(d.mimeType || '').startsWith('video/');\nconst mech = reg.value && reg.value.uploadMechanism ? reg.value.uploadMechanism['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'] : null;\nconst uploadUrl = (mech && mech.uploadUrl) || '';\nconst assetUrn = (reg.value && reg.value.asset) || '';\nif (!uploadUrl || !assetUrn) throw new Error('LinkedIn registerUpload failed: ' + JSON.stringify(reg).slice(0, 260));\n\nlet binData = null;\nif (aiItem.binary && aiItem.binary.data) {\n  binData = aiItem.binary.data;\n} else if (d.imgB64) {\n  binData = await this.helpers.prepareBinaryData(Buffer.from(d.imgB64, 'base64'), d.fileName || 'altraware.jpg', d.mimeType || 'image/jpeg');\n} else {\n  throw new Error('Media binary missing after wait.');\n}\n\nconst linkedinBody = {\n  author: d.authorUrn,\n  lifecycleState: 'PUBLISHED',\n  specificContent: {\n    'com.linkedin.ugc.ShareContent': {\n      shareCommentary: { text: d.postText },\n      shareMediaCategory: isVideo ? 'VIDEO' : 'IMAGE',\n      media: [{ status: 'READY', description: { text: String(d.productName) }, media: assetUrn, title: { text: String(d.productName) } }]\n    }\n  },\n  visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' }\n};\n\nreturn [{\n  json: {\n    uploadUrl,\n    assetUrn,\n    authorUrn: d.authorUrn,\n    mediaKind: isVideo ? 'video' : 'image',\n    productSlug: d.productSlug,\n    productName: d.productName,\n    productUrl: d.productUrl,\n    postCount: d.postCount,\n    inSheet: d.inSheet,\n    chatId: d.chatId,\n    fileName: d.fileName,\n    linkedinBody\n  },\n  binary: { data: binData }\n}];"
+      }
+    },
+    {
+      "id": "755a98c6-f26a-4e17-8b26-ada23a9155bb",
+      "name": "LinkedIn: Upload Image Binary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4704,
+        608
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $json.uploadUrl }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "oAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "LinkedIn"
+        }
+      }
+    },
+    {
+      "id": "5ab52420-2fb7-4b07-90da-12bac2529c3d",
+      "name": "LinkedIn: Publish Image Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4928,
+        608
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.linkedin.com/v2/ugcPosts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Restli-Protocol-Version",
+              "value": "2.0.0"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Prepare LinkedIn Binary Upload').first().json.linkedinBody) }}",
+        "options": {
+          "timeout": 25000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "oAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "LinkedIn"
+        }
+      }
+    },
+    {
+      "id": "0078c7af-105e-49fa-8256-e9451e62a4d0",
+      "name": "Wait 15s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        5152,
+        512
+      ],
+      "parameters": {
+        "amount": 15
+      },
+      "webhookId": "fe8aaf39-e80a-4305-a741-93f68025f0fa"
+    },
+    {
+      "id": "d84f3276-d55c-4abe-b526-226602d7904d",
+      "name": "First Comment CTA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5376,
+        512
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.linkedin.com/v2/socialActions/{{ encodeURIComponent($('LinkedIn: Publish Image Post').first().json.id) }}/comments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Restli-Protocol-Version",
+              "value": "2.0.0"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ actor: $('Prepare LinkedIn Binary Upload').first().json.authorUrn, message: { text: 'Explore ' + $('Prepare LinkedIn Binary Upload').first().json.productName + ' & Altraware Technology: ' + $('Prepare LinkedIn Binary Upload').first().json.productUrl } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "credentials": {
+        "oAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "LinkedIn"
+        }
+      }
+    },
+    {
+      "id": "ac86b0b7-4016-4707-958a-106ec374a462",
+      "name": "Notify Publish Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        5152,
+        704
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('AI Vision Writer').first().json.chatId || '8051901138' }}",
+        "text": "=❌ <b>LinkedIn Image Post FAILED</b>\nMradi: {{ $('AI Vision Writer').first().json.productName }}\nError: {{ String($json.message || $json.error || 'Unknown error').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0, 300) }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "webhookId": "1da0bf1b-d1a1-4327-94d6-5605187d271b",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "linkedin Mwijay"
+        }
+      }
+    },
+    {
+      "id": "97e72d1e-0596-44ce-9272-412e92b42570",
+      "name": "Notify Published",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        5600,
+        416
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Prepare LinkedIn Binary Upload').first().json.chatId || '8051901138' }}",
+        "text": "=✅ <b>PUBLISHED TO LINKEDIN ({{ $('Prepare LinkedIn Binary Upload').first().json.mediaKind === 'video' ? 'WITH VIDEO 🎬' : 'WITH IMAGE 🖼️' }})</b>\n\n🎯 Mradi: {{ $('Prepare LinkedIn Binary Upload').first().json.productName }}\n📁 Faili: {{ $('Prepare LinkedIn Binary Upload').first().json.fileName }}\n🔗 Post: https://www.linkedin.com/feed/update/{{ $('LinkedIn: Publish Image Post').first().json.id }}/\n👤 Profile Posts: https://www.linkedin.com/in/mwijay-davie/recent-activity/all/\n\n💬 First Comment CTA: {{ $('Prepare LinkedIn Binary Upload').first().json.productUrl }}\n📊 Sheet updated — kesho itazunguka mradi mwingine!",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "webhookId": "db13b6f9-e2a7-4009-ab30-eb8916b07fc7",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "linkedin Mwijay"
+        }
+      }
+    },
+    {
+      "id": "39325072-e8b0-4967-8528-25533b3bdfa7",
+      "name": "Notify Published (Admin Fallback)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        5824,
+        416
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Prepare LinkedIn Binary Upload').first().json.chatId || '8051901138' }}",
+        "text": "=✅ <b>PUBLISHED TO LINKEDIN (WITH IMAGE!)</b>\n\n🎯 Mradi: {{ $('Prepare LinkedIn Binary Upload').first().json.productName }}\n🖼️ Faili: {{ $('Prepare LinkedIn Binary Upload').first().json.fileName }}\n🔗 https://www.linkedin.com/feed/update/{{ $('LinkedIn: Publish Image Post').first().json.id }}/\n\n💬 First Comment CTA: {{ $('Prepare LinkedIn Binary Upload').first().json.productUrl }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "webhookId": "4e9d06e3-197b-4eac-bd6b-6e2b928a9951",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "id": "87d5f326-5693-4e70-8274-40ff1807d108",
+      "name": "Prepare Sheet Rotation Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        608
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const p = $('Prepare LinkedIn Binary Upload').first().json;\nif (!p.inSheet || !p.productSlug) return [];\nreturn [{\n  json: {\n    slug: p.productSlug,\n    last_posted: new Date().toISOString(),\n    post_count: (Number(p.postCount || 0) || 0) + 1\n  }\n}];"
+      }
+    },
+    {
+      "id": "edb1973d-06fa-4555-bc0c-53940e2aef54",
+      "name": "Update Sheet Last Posted",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        5824,
+        608
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "url",
+          "value": "https://docs.google.com/spreadsheets/d/120HHilbpr_6yFDZhz41PHdbJt8_xVrlnLKcBTF-ssV8/edit"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Projects"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "slug": "={{ $json.slug }}",
+            "last_posted": "={{ $json.last_posted }}",
+            "post_count": "={{ $json.post_count }}"
+          },
+          "matchingColumns": [
+            "slug"
+          ],
+          "schema": [
+            {
+              "canBeUsedToMatch": true,
+              "display": true,
+              "displayName": "slug",
+              "id": "slug",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "last_posted",
+              "id": "last_posted",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": false,
+              "display": true,
+              "displayName": "post_count",
+              "id": "post_count",
+              "required": false,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "1b8abaad-7cea-4f7f-ace7-d02293fe5748",
+      "name": "Restore Binary for Fallback Preview",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        576
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const ai = $('AI Vision Writer').first();\nconst d = ai.json;\nlet binData = ai.binary && ai.binary.data ? ai.binary.data : null;\nif (!binData && d.imgB64) {\n  binData = await this.helpers.prepareBinaryData(Buffer.from(d.imgB64, 'base64'), d.fileName || 'altraware.jpg', d.mimeType || 'image/jpeg');\n}\nreturn [{ json: d, binary: binData ? { data: binData } : {} }];"
+      }
+    },
+    {
+      "id": "64b7b55d-47a7-4cb7-8ea3-d10d64d136f6",
+      "name": "Telegram Preview (Admin Fallback)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3584,
+        576
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendPhoto",
+        "chatId": "={{ $('AI Vision Writer').first().json.chatId || '8051901138' }}",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "caption": "={{ $('AI Vision Writer').first().json.tgCaption }}",
+          "parse_mode": "HTML"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "webhookId": "90a6cceb-2790-43d7-8a79-c5c257808837",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "id": "d1c67e38-3d7e-4d75-b1ba-ecf0bcefa776",
+      "name": "Use Google Drive?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1568,
+        608
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c-dr",
+              "leftValue": "={{ $json.action === 'drive_post' && Boolean($json.driveQuery) }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "rightValue": true
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "cfdc8d5f-cc85-4fe9-964d-02b40972d452",
+      "name": "Drive: Scan Project Folders",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1792,
+        528
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/drive/v3/files",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $json.driveQuery }}"
+            },
+            {
+              "name": "fields",
+              "value": "files(id,name,mimeType,size,description,parents,createdTime,webViewLink)"
+            },
+            {
+              "name": "orderBy",
+              "value": "createdTime desc"
+            },
+            {
+              "name": "supportsAllDrives",
+              "value": "true"
+            },
+            {
+              "name": "includeItemsFromAllDrives",
+              "value": "true"
+            },
+            {
+              "name": "pageSize",
+              "value": "200"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 25000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "622b2516-a12c-47b9-bdf3-e7a77dc37f95",
+      "name": "Pick Fresh Project & Image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        528
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Picks next project in rotation + fresh authentic screenshot OR MP4 screen-record video from Drive\n// Automatically skips QR codes / favicons whenever real UI screenshots or videos exist!\nconst req = $('Parse & Route Request').first().json;\nconst res = $input.first().json || {};\nconst sd = $getWorkflowStaticData('global');\nsd.usedDriveIds = sd.usedDriveIds || [];\nconst usedSet = new Set(sd.usedDriveIds);\n\nconst allowedImg = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/gif']);\nconst allowedVid = new Set(['video/mp4', 'video/quicktime', 'video/webm']);\nconst qrSkipRe = /(^|[_\\-\\s])(qr|qrcode|whatsapp_qr|favicon)([_\\-\\s.]|$)/i;\n\nconst allFiles = (res.files || []).filter(f => {\n  const mt = String(f.mimeType || '').toLowerCase();\n  const sz = Number(f.size || 0);\n  if (allowedImg.has(mt)) return sz > 0 && sz < 5 * 1024 * 1024;\n  if (allowedVid.has(mt)) return sz > 0 && sz < 60 * 1024 * 1024;\n  return false;\n});\n\nconst byFolder = {};\nfor (const f of allFiles) {\n  for (const pid of (f.parents || [])) {\n    byFolder[pid] = byFolder[pid] || [];\n    byFolder[pid].push(f);\n  }\n}\n\nconst candidates = (req.projects || []).filter(p => p.folderId && byFolder[p.folderId] && byFolder[p.folderId].length > 0);\n\nif (!candidates.length) {\n  const fallbackProj = (req.projects && req.projects[0]) || { slug: 'altraware', name: 'Altraware Technology', url: 'https://altra-motion-lab.vercel.app/', desc: 'Altraware Technology Ltd (Dar es Salaam, Tanzania)', postCount: 0, inSheet: false };\n  const errDetail = res.error ? (typeof res.error === 'string' ? res.error : JSON.stringify(res.error)).slice(0, 160) : ('Hakuna picha/video kwenye Drive folder la ' + fallbackProj.name);\n  return [{\n    json: {\n      ...req,\n      mediaKind: 'image',\n      productSlug: fallbackProj.slug,\n      productName: fallbackProj.name,\n      productUrl: fallbackProj.url,\n      productDesc: fallbackProj.desc,\n      postCount: fallbackProj.postCount || 0,\n      inSheet: Boolean(fallbackProj.inSheet),\n      driveFound: false,\n      driveReason: errDetail\n    }\n  }];\n}\n\ncandidates.sort((a, b) => {\n  const ta = a.lastPosted ? Date.parse(a.lastPosted) || 0 : 0;\n  const tb = b.lastPosted ? Date.parse(b.lastPosted) || 0 : 0;\n  if (ta !== tb) return ta - tb;\n  return (a.postCount || 0) - (b.postCount || 0);\n});\n\nlet chosenProj = candidates[0];\nif (candidates.length > 1 && sd.lastSlug && chosenProj.slug === sd.lastSlug) {\n  chosenProj = candidates[1];\n}\n\nlet folderAssets = byFolder[chosenProj.folderId];\nconst nonQr = folderAssets.filter(f => !qrSkipRe.test(String(f.name || '')));\nif (nonQr.length > 0) folderAssets = nonQr;\n\nconst freshAssets = folderAssets.filter(f => !usedSet.has(f.id));\nconst chosenFile = freshAssets.length ? freshAssets[0] : folderAssets[Math.floor(Math.random() * folderAssets.length)];\n\nsd.lastSlug = chosenProj.slug;\nsd.usedDriveIds.push(chosenFile.id);\nif (sd.usedDriveIds.length > 80) sd.usedDriveIds = sd.usedDriveIds.slice(-80);\n\nconst mt = String(chosenFile.mimeType || 'image/jpeg').toLowerCase();\nconst isVideo = allowedVid.has(mt);\nconst savedDesc = String(chosenFile.description || '').trim();\nconst combinedBrief = [req.brief, savedDesc].filter(Boolean).join(' | ');\n\nreturn [{\n  json: {\n    ...req,\n    driveFound: true,\n    driveReason: '',\n    mediaKind: isVideo ? 'video' : 'image',\n    imgOrigin: isVideo ? 'drive_video' : 'drive',\n    productSlug: chosenProj.slug,\n    productName: chosenProj.name,\n    productUrl: chosenProj.url,\n    productDesc: chosenProj.desc,\n    postCount: chosenProj.postCount || 0,\n    inSheet: Boolean(chosenProj.inSheet),\n    brief: combinedBrief,\n    savedDriveDesc: savedDesc,\n    fileId: chosenFile.id,\n    fileName: chosenFile.name || (chosenProj.slug + (isVideo ? '.mp4' : '.jpg')),\n    mimeType: mt,\n    downloadUrl: 'https://www.googleapis.com/drive/v3/files/' + chosenFile.id + '?alt=media&supportsAllDrives=true'\n  }\n}];"
+      }
+    },
+    {
+      "id": "b5baba64-6a25-4bfc-93b4-18d1deaed237",
+      "name": "Drive Image Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2240,
+        528
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "df-ok",
+              "leftValue": "={{ Boolean($json.driveFound) }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "rightValue": true
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "98a03dd2-e5d5-44fc-803e-096e9a21ff05",
+      "name": "Drive: Download Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2688,
+        480
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.downloadUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 40000
+        }
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "4c2f9087-bf8a-4fd9-b8e7-c69fca522212",
+      "name": "Find Stock Photo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        704
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const prev = $input.first().json || {};\nconst query = String(prev.topic || prev.brief || prev.productName || 'software engineering Africa').slice(0, 80);\nlet imgUrl = '';\nconst pexKey = String($env.PEXELS_API_KEY || '').trim();\nif (pexKey) {\n  try {\n    const r = await this.helpers.httpRequest({\n      method: 'GET',\n      url: 'https://api.pexels.com/v1/search?per_page=8&orientation=landscape&query=' + encodeURIComponent(query),\n      headers: { Authorization: pexKey },\n      json: true,\n      timeout: 15000,\n      ignoreHttpStatusErrors: true\n    });\n    const photos = (r && r.photos) || [];\n    if (photos.length) {\n      const pick = photos[Math.floor(Math.random() * photos.length)];\n      imgUrl = (pick.src && (pick.src.large2x || pick.src.large || pick.src.original)) || '';\n    }\n  } catch (e) {}\n}\nif (!imgUrl) {\n  const curated = [\n    'https://images.pexels.com/photos/3183150/pexels-photo-3183150.jpeg?auto=compress&cs=tinysrgb&w=1260',\n    'https://images.pexels.com/photos/3182812/pexels-photo-3182812.jpeg?auto=compress&cs=tinysrgb&w=1260',\n    'https://images.pexels.com/photos/3861969/pexels-photo-3861969.jpeg?auto=compress&cs=tinysrgb&w=1260',\n    'https://images.pexels.com/photos/1181467/pexels-photo-1181467.jpeg?auto=compress&cs=tinysrgb&w=1260',\n    'https://images.pexels.com/photos/3184292/pexels-photo-3184292.jpeg?auto=compress&cs=tinysrgb&w=1260'\n  ];\n  imgUrl = curated[Math.floor(Math.random() * curated.length)];\n}\nreturn [{\n  json: {\n    ...prev,\n    imgOrigin: 'stock',\n    imgUrl,\n    fileName: 'altraware_visual.jpg',\n    mimeType: 'image/jpeg'\n  }\n}];"
+      }
+    },
+    {
+      "id": "a96bace3-7e59-4f00-a45c-ebf17be569a8",
+      "name": "Download Stock Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2688,
+        704
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.imgUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "87cfd7ea-5aa8-4aa9-a1a9-03911c70efcb",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        224
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "c9859b8d-1fad-400e-b7a8-830525b957c6",
+      "name": "Telegram LinkedIn Bot",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        416
+      ],
+      "parameters": {
+        "updates": [
+          "message",
+          "callback_query"
+        ],
+        "additionalFields": {
+          "download": true,
+          "imageSize": "large"
+        }
+      },
+      "webhookId": "b542ec51-4d99-4654-bba7-6da8d7dc795f",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "linkedin Mwijay"
+        }
+      }
+    },
+    {
+      "id": "bf130674-efda-454e-a005-e123bc35dcba",
+      "name": "Wait Media Ready",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        4820,
+        608
+      ],
+      "parameters": {
+        "amount": "={{ $('Prepare LinkedIn Binary Upload').first().json.mediaKind === 'video' ? 20 : 1 }}",
+        "unit": "seconds"
+      },
+      "webhookId": "8ed6feb7-ffbc-41f5-aa06-3ed4a78a3159"
+    },
+    {
+      "id": "1d17d438-0c75-4317-91ae-a9d0f31f49f2",
+      "name": "Is Video Preview?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3040,
+        512
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "is-vid-prev",
+              "leftValue": "={{ $json.mediaKind === 'video' }}",
+              "operator": {
+                "operation": "true",
+                "type": "boolean"
+              }
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "a2abe6e1-d4ba-403b-96d4-e838fba961e6",
+      "name": "Telegram Video Preview",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3260,
+        360
+      ],
+      "parameters": {
+        "additionalFields": {
+          "caption": "={{ $json.tgCaption }}",
+          "parse_mode": "HTML"
+        },
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "chatId": "={{ $json.chatId || '8051901138' }}",
+        "operation": "sendVideo",
+        "resource": "message"
+      },
+      "onError": "continueRegularOutput",
+      "webhookId": "d00ee3fc-7c68-45e1-9205-b23c41075a00",
+      "credentials": {
+        "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "linkedin Mwijay"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily Visual 10:30 EAT": {
+      "main": [
+        [
+          {
+            "node": "Capture Trigger Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Capture Trigger Input": {
+      "main": [
+        [
+          {
+            "node": "Read Projects Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Projects Sheet": {
+      "main": [
+        [
+          {
+            "node": "Parse & Route Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Route Request": {
+      "main": [
+        [
+          {
+            "node": "Is Menu / Reply?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Menu / Reply?": {
+      "main": [
+        [
+          {
+            "node": "Send Bot Menu / Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Add Project?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Add Project?": {
+      "main": [
+        [
+          {
+            "node": "Create Project Drive Folder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Photo Upload?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Project Drive Folder": {
+      "main": [
+        [
+          {
+            "node": "Prepare New Project Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare New Project Row": {
+      "main": [
+        [
+          {
+            "node": "Save Project to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Project to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Notify Project Added",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Photo Upload?": {
+      "main": [
+        [
+          {
+            "node": "Upload Photo to Drive",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Use Google Drive?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Photo to Drive": {
+      "main": [
+        [
+          {
+            "node": "Save Caption to Drive Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Caption to Drive Metadata": {
+      "main": [
+        [
+          {
+            "node": "Save to Drive Only?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Drive Only?": {
+      "main": [
+        [
+          {
+            "node": "Notify Photo Saved",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Attach Photo Binary for AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Photo Binary for AI": {
+      "main": [
+        [
+          {
+            "node": "AI Vision Writer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Photo Preview": {
+      "main": [
+        [
+          {
+            "node": "Gmail Approval (10 min)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Restore Binary for Fallback Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Approval (10 min)": {
+      "main": [
+        [
+          {
+            "node": "Cancelled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancelled?": {
+      "main": [
+        [
+          {
+            "node": "Notify Cancelled",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LinkedIn: Register Image Upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LinkedIn: Register Image Upload": {
+      "main": [
+        [
+          {
+            "node": "Prepare LinkedIn Binary Upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare LinkedIn Binary Upload": {
+      "main": [
+        [
+          {
+            "node": "LinkedIn: Upload Image Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LinkedIn: Publish Image Post": {
+      "main": [
+        [
+          {
+            "node": "Wait 15s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Publish Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 15s": {
+      "main": [
+        [
+          {
+            "node": "First Comment CTA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "First Comment CTA": {
+      "main": [
+        [
+          {
+            "node": "Notify Published",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Sheet Rotation Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Published": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Notify Published (Admin Fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Sheet Rotation Update": {
+      "main": [
+        [
+          {
+            "node": "Update Sheet Last Posted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Binary for Fallback Preview": {
+      "main": [
+        [
+          {
+            "node": "Telegram Preview (Admin Fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Preview (Admin Fallback)": {
+      "main": [
+        [
+          {
+            "node": "Gmail Approval (10 min)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use Google Drive?": {
+      "main": [
+        [
+          {
+            "node": "Drive: Scan Project Folders",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Stock Photo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive: Scan Project Folders": {
+      "main": [
+        [
+          {
+            "node": "Pick Fresh Project & Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Fresh Project & Image": {
+      "main": [
+        [
+          {
+            "node": "Drive Image Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive Image Found?": {
+      "main": [
+        [
+          {
+            "node": "Drive: Download Image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Stock Photo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive: Download Image": {
+      "main": [
+        [
+          {
+            "node": "AI Vision Writer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Stock Photo": {
+      "main": [
+        [
+          {
+            "node": "Download Stock Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Stock Image": {
+      "main": [
+        [
+          {
+            "node": "AI Vision Writer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Capture Trigger Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram LinkedIn Bot": {
+      "main": [
+        [
+          {
+            "node": "Capture Trigger Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LinkedIn: Upload Image Binary": {
+      "main": [
+        [
+          {
+            "node": "Wait Media Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Media Ready": {
+      "main": [
+        [
+          {
+            "node": "LinkedIn: Publish Image Post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Vision Writer": {
+      "main": [
+        [
+          {
+            "node": "Is Video Preview?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Video Preview?": {
+      "main": [
+        [
+          {
+            "node": "Telegram Video Preview",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Photo Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Video Preview": {
+      "main": [
+        [
+          {
+            "node": "Gmail Approval (10 min)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "timezone": "Africa/Dar_es_Salaam"
+  },
+  "meta": {
+    "sourceWorkflowId": "QzZ8x4zGpZec8PXa",
+    "activeVersionId": "fa26dc75-d5a7-4ca7-8128-e37bf48be42c",
+    "backedUpAtUtc": "2026-11-25T07:21:19Z",
+    "sanitized": true
+  }
+}

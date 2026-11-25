@@ -1,6 +1,7 @@
 {
   "name": "Hermes Sports AI v5.0 — Pro Dual Engine & BetPawa Assistant",
   "description": "Hermes Sports AI v5.0: Football + NBA Sniper Engine, NBA Injury Guard, One-Tap Telegram Buttons, Live Sheet Chat & BetPawa Slip Helper.",
+  "active": true,
   "nodes": [
     {
       "parameters": {
@@ -21,6 +22,7 @@
       "webhookId": "hermes-chat-webhook-v1",
       "credentials": {
         "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Noellyne BetBot"
         }
       }
@@ -145,6 +147,7 @@
       "webhookId": "hermes-chat-reply-v1",
       "credentials": {
         "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Noellyne BetBot"
         }
       }
@@ -186,7 +189,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// =============================================================\n// Build Dual-Sport Fetch Plan + Live NBA Injury Report Feed\n// =============================================================\nconst nowEat = $now.setZone('Africa/Dar_es_Salaam');\nconst d0 = nowEat.toFormat('yyyyLLdd');\nconst d1 = nowEat.plus({ days: 1 }).toFormat('yyyyLLdd');\nconst d2 = nowEat.plus({ days: 2 }).toFormat('yyyyLLdd');\n\nconst soccerLeagues = [\n  { sport: 'soccer', slug: 'eng.1', name: 'EPL' },\n  { sport: 'soccer', slug: 'esp.1', name: 'La Liga' },\n  { sport: 'soccer', slug: 'ita.1', name: 'Serie A' },\n  { sport: 'soccer', slug: 'ger.1', name: 'Bundesliga' },\n  { sport: 'soccer', slug: 'fra.1', name: 'Ligue 1' },\n  { sport: 'soccer', slug: 'uefa.champions', name: 'UCL' },\n  { sport: 'soccer', slug: 'uefa.europa', name: 'UEL' },\n  { sport: 'soccer', slug: 'uefa.nations', name: 'UEFA Nations' },\n  { sport: 'soccer', slug: 'fifa.worldq.uefa', name: 'WCQ Europe' },\n  { sport: 'soccer', slug: 'ned.1', name: 'Eredivisie' },\n  { sport: 'soccer', slug: 'por.1', name: 'Liga Portugal' },\n  { sport: 'soccer', slug: 'tur.1', name: 'Super Lig' },\n  { sport: 'soccer', slug: 'bra.1', name: 'Brasileirão' },\n  { sport: 'soccer', slug: 'usa.1', name: 'MLS' },\n  { sport: 'soccer', slug: 'arg.1', name: 'Argentina Primera' },\n  { sport: 'soccer', slug: 'eng.2', name: 'Championship' }\n];\n\nconst basketLeagues = [\n  { sport: 'basketball', slug: 'nba', name: 'NBA' },\n  { sport: 'basketball', slug: 'mens-college-basketball', name: 'NCAAM' }\n];\n\nconst list = [];\nfunction pushLeague(l, dt) {\n  list.push({\n    ...l,\n    dateStr: dt,\n    url: `https://site.api.espn.com/apis/site/v2/sports/${l.sport}/${l.slug}/scoreboard?dates=${dt}`\n  });\n}\n\nfor (const l of soccerLeagues) {\n  pushLeague(l, d0);\n  pushLeague(l, d1);\n}\nfor (const slug of ['eng.1', 'esp.1', 'ita.1', 'ger.1', 'fra.1']) {\n  const found = soccerLeagues.find(x => x.slug === slug);\n  if (found) pushLeague(found, d2);\n}\nfor (const b of basketLeagues) {\n  pushLeague(b, d0);\n  pushLeague(b, d1);\n}\n\n// Live ESPN NBA Injury Report Feed for 🏥 NBA Injury Guard\nlist.push({\n  sport: 'nba_injuries',\n  slug: 'nba-injuries',\n  name: 'NBA Injuries',\n  dateStr: d0,\n  url: 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries'\n});\n\nreturn list.map(item => ({ json: item }));"
+        "jsCode": "// =============================================================\n// Build Dual-Sport Fetch Plan + Live NBA Injury Report Feed\n// Includes CAF Champions League & CAF Confed (Simba, Yanga, Azam) + Top European & African Leagues\n// =============================================================\nconst nowEat = $now.setZone('Africa/Dar_es_Salaam');\nconst d0 = nowEat.toFormat('yyyyLLdd');\nconst d1 = nowEat.plus({ days: 1 }).toFormat('yyyyLLdd');\nconst d2 = nowEat.plus({ days: 2 }).toFormat('yyyyLLdd');\n\nconst soccerLeagues = [\n  { sport: 'soccer', slug: 'eng.1', name: 'EPL' },\n  { sport: 'soccer', slug: 'esp.1', name: 'La Liga' },\n  { sport: 'soccer', slug: 'ita.1', name: 'Serie A' },\n  { sport: 'soccer', slug: 'ger.1', name: 'Bundesliga' },\n  { sport: 'soccer', slug: 'fra.1', name: 'Ligue 1' },\n  { sport: 'soccer', slug: 'uefa.champions', name: 'UCL' },\n  { sport: 'soccer', slug: 'uefa.europa', name: 'UEL' },\n  { sport: 'soccer', slug: 'uefa.europa.conf', name: 'UECL' },\n  { sport: 'soccer', slug: 'caf.champions', name: 'CAF Champions League' },\n  { sport: 'soccer', slug: 'caf.confed', name: 'CAF Confederation Cup' },\n  { sport: 'soccer', slug: 'caf.nations', name: 'AFCON' },\n  { sport: 'soccer', slug: 'rsa.1', name: 'South African Premiership' },\n  { sport: 'soccer', slug: 'uefa.nations', name: 'UEFA Nations' },\n  { sport: 'soccer', slug: 'fifa.worldq.uefa', name: 'WCQ Europe' },\n  { sport: 'soccer', slug: 'ned.1', name: 'Eredivisie' },\n  { sport: 'soccer', slug: 'por.1', name: 'Liga Portugal' },\n  { sport: 'soccer', slug: 'tur.1', name: 'Super Lig' },\n  { sport: 'soccer', slug: 'bra.1', name: 'Brasileirão' },\n  { sport: 'soccer', slug: 'usa.1', name: 'MLS' },\n  { sport: 'soccer', slug: 'arg.1', name: 'Argentina Primera' },\n  { sport: 'soccer', slug: 'mex.1', name: 'Liga MX' },\n  { sport: 'soccer', slug: 'eng.2', name: 'Championship' }\n];\n\nconst basketLeagues = [\n  { sport: 'basketball', slug: 'nba', name: 'NBA' },\n  { sport: 'basketball', slug: 'mens-college-basketball', name: 'NCAAM' }\n];\n\nconst list = [];\nfunction pushLeague(l, dt) {\n  list.push({\n    ...l,\n    dateStr: dt,\n    url: `https://site.api.espn.com/apis/site/v2/sports/${l.sport}/${l.slug}/scoreboard?dates=${dt}`\n  });\n}\n\nfor (const l of soccerLeagues) {\n  pushLeague(l, d0);\n  pushLeague(l, d1);\n}\nfor (const slug of ['eng.1', 'esp.1', 'ita.1', 'ger.1', 'fra.1', 'caf.champions', 'caf.confed']) {\n  const found = soccerLeagues.find(x => x.slug === slug);\n  if (found) pushLeague(found, d2);\n}\nfor (const b of basketLeagues) {\n  pushLeague(b, d0);\n  pushLeague(b, d1);\n}\n\n// Live ESPN NBA Injury Report Feed for 🏥 NBA Injury Guard\nlist.push({\n  sport: 'nba_injuries',\n  slug: 'nba-injuries',\n  name: 'NBA Injuries',\n  dateStr: d0,\n  url: 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries'\n});\n\nreturn list.map(item => ({ json: item }));"
       },
       "id": "fae791b6-da5b-4461-93e5-8f55dc5d3dca",
       "name": "Build League List",
@@ -321,6 +324,7 @@
       "webhookId": "a3329fc0-f49d-47a4-8549-027d1533bd67",
       "credentials": {
         "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Noellyne BetBot"
         }
       }
@@ -543,6 +547,7 @@
       "onError": "continueRegularOutput",
       "credentials": {
         "googleSheetsOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Google Sheets account"
         }
       }
@@ -608,6 +613,7 @@
       "webhookId": "9b81572b-2396-4712-8e14-1e5a92c9e2ef",
       "credentials": {
         "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Noellyne BetBot"
         }
       }
@@ -638,6 +644,7 @@
       "alwaysOutputData": true,
       "credentials": {
         "googleSheetsOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Google Sheets account"
         }
       }
@@ -652,7 +659,7 @@
         640
       ],
       "parameters": {
-        "jsCode": "// Maps Hermes Sports AI v5.0 footballPicks + basketballPicks to Supabase public.daily_picks\n// AND auto-matches live stream_id from the live match feed so \"Watch Live\" opens the stream directly!\nconst up = $('Quant Model v3.1').first().json || {};\nconst picks = [...(up.footballPicks || []), ...(up.basketballPicks || [])];\nif (!picks.length) return [];\n\nconst strip = (v) => String(v ?? '')\n  .replace(/[\\u{1F000}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{FE0F}\\u{2B00}-\\u{2BFF}]/gu, '')\n  .replace(/\\s+/g, ' ')\n  .trim();\n\nfunction slipCode(match, market) {\n  const s = `${match}|${market}`.toLowerCase();\n  let h = 2166136261;\n  for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';\n  let out = '', n = h;\n  for (let i = 0; i < 5; i++) { out += alphabet[n % alphabet.length]; n = Math.floor(n / alphabet.length); }\n  return `NLY-${out}`;\n}\n\nfunction tagsFor(p) {\n  const tags = [];\n  const market = String(p.market || '').toUpperCase();\n  const prob = Number(p.probPct) || 0;\n  const odds = Number(p.odds) || 0;\n  if (prob >= 80) tags.push('sure2+');\n  if (String(p.tier || '').toUpperCase().includes('STRONG')) tags.push('strong');\n  if (market.includes('OVER')) tags.push('over2.5');\n  if (market.includes('UNDER')) tags.push('under2.5');\n  if (market.includes('DC') || market.includes('BTTS') || market.includes('BOTH TEAMS')) tags.push('btts');\n  if (odds >= 2) tags.push('high-odds');\n  return tags;\n}\n\n// Fetch live stream catalog (non-blocking — never breaks picks if unreachable)\nlet streamMatches = [];\ntry {\n  const r = await this.helpers.httpRequest({\n    method: 'GET',\n    url: 'https://woggzixprvyjnfjzsglz.supabase.co/rest/v1/matches?select=id,home_team,away_team,kickoff_at&is_active=eq.true&limit=250',\n    headers: { apikey: 'sb_publishable_ka-rZxHdJUMYng6WJDDQUg_ZcWZJl3O' },\n    json: true,\n    timeout: 8000,\n    ignoreHttpStatusErrors: true\n  });\n  if (Array.isArray(r)) streamMatches = r;\n} catch (e) {}\n\nconst STOP = new Set(['fc','cf','afc','sc','ac','as','ss','us','cd','rc','rcd','real','club','athletic','de','la','le','st','saint','united','city','sporting']);\nconst normTokens = (s) => {\n  const clean = String(s || '')\n    .toLowerCase()\n    .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')\n    .replace(/paris saint[\\s-]germain/g, 'psg paris')\n    .replace(/manchester united/g, 'man utd manchester united')\n    .replace(/manchester city/g, 'man city manchester city')\n    .replace(/nottingham forest/g, 'nottingham forest')\n    .replace(/[^a-z0-9\\s]/g, ' ')\n    .split(/\\s+/)\n    .filter(w => w.length >= 3);\n  const filtered = clean.filter(w => !STOP.has(w));\n  return filtered.length ? filtered : clean;\n};\n\nfunction teamScore(a, b) {\n  const ta = normTokens(a), tb = normTokens(b);\n  if (!ta.length || !tb.length) return 0;\n  let hits = 0;\n  for (const x of ta) {\n    if (tb.some(y => y === x || y.includes(x) || x.includes(y))) hits++;\n  }\n  return hits / Math.max(ta.length, tb.length);\n}\n\nfunction findStreamId(matchName, kickoffIso) {\n  if (!streamMatches.length) return null;\n  const parts = String(matchName || '').split(/\\s+vs\\.?\\s+/i);\n  if (parts.length !== 2) return null;\n  const [h, a] = parts;\n  const targetMs = kickoffIso ? Date.parse(kickoffIso) : 0;\n  let bestId = null, bestScore = 0;\n  for (const sm of streamMatches) {\n    if (!sm.id || !sm.home_team || !sm.away_team) continue;\n    if (targetMs && sm.kickoff_at) {\n      const diffHrs = Math.abs(targetMs - Date.parse(sm.kickoff_at)) / 3600000;\n      if (diffHrs > 36) continue;\n    }\n    const sDirect = (teamScore(h, sm.home_team) + teamScore(a, sm.away_team)) / 2;\n    const sSwap = (teamScore(h, sm.away_team) + teamScore(a, sm.home_team)) / 2;\n    const sc = Math.max(sDirect, sSwap);\n    if (sc >= 0.65 && sc > bestScore) {\n      bestScore = sc;\n      bestId = String(sm.id);\n    }\n  }\n  return bestId;\n}\n\nconst nowIso = new Date().toISOString();\nreturn picks\n  .filter(p => p && p.match && p.market)\n  .map(p => {\n    const m = strip(p.match);\n    const mk = strip(p.market);\n    const kIso = p.kickoffISO || nowIso;\n    const streamId = p.sport === 'basketball' ? null : findStreamId(m, kIso);\n    return {\n      json: {\n        match: m,\n        league: strip(p.league) || (p.sport === 'basketball' ? 'NBA' : 'Football'),\n        pick: mk,\n        market: mk,\n        odds: Math.round((Number(p.odds) || 0) * 100) / 100,\n        confidence: Math.max(0, Math.min(100, Math.round(Number(p.probPct) || 0))),\n        reasoning: strip([p.explain, p.injuryNote ? `Injury Guard: ${p.injuryNote}` : ''].filter(Boolean).join(' — ')).slice(0, 600),\n        stream_id: streamId,\n        kickoff_time: kIso,\n        tags: tagsFor(p),\n        slip_code: slipCode(m, mk),\n        sport: p.sport === 'basketball' ? 'basketball' : 'football',\n        tier: strip(p.tier),\n        units: Math.round((Number(p.units) || 0) * 100) / 100,\n        edge_pct: Math.round((Number(p.edgePct) || 0) * 10) / 10,\n        injury_note: strip(p.injuryNote || ''),\n        event_id: String(p.id || ''),\n        home_form: String(p.homeForm || ''),\n        away_form: String(p.awayForm || ''),\n        status: 'published',\n        source: 'hermes-n8n'\n      }\n    };\n  });",
+        "jsCode": "// Maps Hermes Sports AI v5.4 footballPicks + basketballPicks to Supabase public.daily_picks\n// AND auto-matches live stream_id from the live match feed so \"Watch Live\" opens the stream directly!\nconst up = $('Quant Model v3.1').first().json || {};\nconst picks = [...(up.footballPicks || []), ...(up.basketballPicks || [])];\nif (!picks.length) return [];\n\nconst strip = (v) => String(v ?? '')\n  .replace(/[\\u{1F000}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{FE0F}\\u{2B00}-\\u{2BFF}]/gu, '')\n  .replace(/\\s+/g, ' ')\n  .trim();\n\nfunction slipCode(match, market) {\n  const s = `${match}|${market}`.toLowerCase();\n  let h = 2166136261;\n  for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }\n  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';\n  let out = '', n = h;\n  for (let i = 0; i < 5; i++) { out += alphabet[n % alphabet.length]; n = Math.floor(n / alphabet.length); }\n  return `NLY-${out}`;\n}\n\nfunction tagsFor(p) {\n  const tags = [];\n  const market = String(p.market || '').toUpperCase();\n  const prob = Number(p.probPct) || 0;\n  const odds = Number(p.odds) || 0;\n  if (prob >= 80) tags.push('sure2+');\n  if (String(p.tier || '').toUpperCase().includes('STRONG')) tags.push('strong');\n  if (market.includes('OVER')) tags.push('over2.5');\n  if (market.includes('UNDER')) tags.push('under2.5');\n  if (market.includes('DC') || market.includes('BTTS') || market.includes('BOTH TEAMS')) tags.push('btts');\n  if (odds >= 1.85) tags.push('high-odds');\n  return tags;\n}\n\n// Fetch live stream catalog (non-blocking — never breaks picks if unreachable)\nlet streamMatches = [];\ntry {\n  const r = await this.helpers.httpRequest({\n    method: 'GET',\n    url: 'https://woggzixprvyjnfjzsglz.supabase.co/rest/v1/matches?select=id,home_team,away_team,kickoff_at&is_active=eq.true&limit=250',\n    headers: { apikey: 'sb_publishable_ka-rZxHdJUMYng6WJDDQUg_ZcWZJl3O' },\n    json: true,\n    timeout: 8000,\n    ignoreHttpStatusErrors: true\n  });\n  if (Array.isArray(r)) streamMatches = r;\n} catch (e) {}\n\nconst STOP = new Set(['fc','cf','afc','sc','ac','as','ss','us','cd','rc','rcd','real','club','athletic','de','la','le','st','saint','united','city','sporting']);\nconst normTokens = (s) => {\n  const clean = String(s || '')\n    .toLowerCase()\n    .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')\n    .replace(/paris saint[\\s-]germain/g, 'psg paris')\n    .replace(/manchester united/g, 'man utd manchester united')\n    .replace(/manchester city/g, 'man city manchester city')\n    .replace(/nottingham forest/g, 'nottingham forest')\n    .replace(/[^a-z0-9\\s]/g, ' ')\n    .split(/\\s+/)\n    .filter(w => w.length >= 3);\n  const filtered = clean.filter(w => !STOP.has(w));\n  return filtered.length ? filtered : clean;\n};\n\nfunction teamScore(a, b) {\n  const ta = normTokens(a), tb = normTokens(b);\n  if (!ta.length || !tb.length) return 0;\n  let hits = 0;\n  for (const x of ta) {\n    if (tb.some(y => y === x || y.includes(x) || x.includes(y))) hits++;\n  }\n  return hits / Math.max(ta.length, tb.length);\n}\n\nfunction findStreamId(matchName, kickoffIso) {\n  if (!streamMatches.length) return null;\n  const parts = String(matchName || '').split(/\\s+vs\\.?\\s+/i);\n  if (parts.length !== 2) return null;\n  const [h, a] = parts;\n  const targetMs = kickoffIso ? Date.parse(kickoffIso) : 0;\n  let bestId = null, bestScore = 0;\n  for (const sm of streamMatches) {\n    if (!sm.id || !sm.home_team || !sm.away_team) continue;\n    if (targetMs && sm.kickoff_at) {\n      const diffHrs = Math.abs(targetMs - Date.parse(sm.kickoff_at)) / 3600000;\n      if (diffHrs > 36) continue;\n    }\n    const sDirect = (teamScore(h, sm.home_team) + teamScore(a, sm.away_team)) / 2;\n    const sSwap = (teamScore(h, sm.away_team) + teamScore(a, sm.home_team)) / 2;\n    const sc = Math.max(sDirect, sSwap);\n    if (sc >= 0.65 && sc > bestScore) {\n      bestScore = sc;\n      bestId = String(sm.id);\n    }\n  }\n  return bestId;\n}\n\nconst nowIso = new Date().toISOString();\nreturn picks\n  .filter(p => p && p.match && p.market)\n  .map(p => {\n    const m = strip(p.match);\n    const mk = strip(p.market);\n    const kIso = p.kickoffISO || nowIso;\n    const streamId = p.sport === 'basketball' ? null : findStreamId(m, kIso);\n    return {\n      json: {\n        match: m,\n        league: strip(p.league) || (p.sport === 'basketball' ? 'NBA' : 'Football'),\n        pick: mk,\n        market: mk,\n        odds: Math.round((Number(p.odds) || 0) * 100) / 100,\n        confidence: Math.max(0, Math.min(100, Math.round(Number(p.probPct) || 0))),\n        reasoning: strip([p.explain, p.injuryNote ? `Injury Guard: ${p.injuryNote}` : ''].filter(Boolean).join(' — ')).slice(0, 600),\n        stream_id: streamId,\n        kickoff_time: kIso,\n        tags: tagsFor(p),\n        slip_code: slipCode(m, mk),\n        sport: p.sport === 'basketball' ? 'basketball' : 'football',\n        tier: strip(p.tier),\n        units: Math.round((Number(p.units) || 0) * 100) / 100,\n        edge_pct: Math.round((Number(p.edgePct) || 0) * 10) / 10,\n        injury_note: strip(p.injuryNote || ''),\n        event_id: String(p.id || ''),\n        home_form: String(p.homeForm || ''),\n        away_form: String(p.awayForm || ''),\n        status: 'published',\n        source: 'hermes-n8n'\n      }\n    };\n  });",
         "language": "javaScript",
         "mode": "runOnceForAllItems"
       }
@@ -702,6 +709,7 @@
       "waitBetweenTries": 2000,
       "credentials": {
         "httpHeaderAuth": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Noellyne Supabase"
         }
       }
@@ -750,6 +758,7 @@
       "onError": "continueRegularOutput",
       "credentials": {
         "googleApi": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Google Service Account account"
         }
       }
@@ -948,9 +957,10 @@
     "timezone": "Africa/Dar_es_Salaam",
     "binaryMode": "separate"
   },
-  "active": false,
   "meta": {
     "sourceWorkflowId": "reZre7G6tPP2aSwj",
+    "activeVersionId": "175cd29d-7a1a-4f5b-89a3-05af641f3399",
+    "backedUpAtUtc": "2026-11-25T07:21:18Z",
     "sanitized": true
   }
 }

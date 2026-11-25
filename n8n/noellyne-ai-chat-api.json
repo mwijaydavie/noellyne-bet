@@ -1,6 +1,7 @@
 {
   "name": "Noellyne — AI Chat & Intelligence API v3.1 (Memory + Quotas + Actions)",
   "description": "Noellyne AI Chat v3.1: persistent daily quotas (3/10/VIP), hardware anti-cache-clear, persistent Cloud User Memory, Altraware & Mwijay identity, and interactive in-app action buttons.",
+  "active": true,
   "nodes": [
     {
       "id": "c5c912d4-a5d2-41ba-a33f-9057913827bf",
@@ -40,7 +41,7 @@
             },
             {
               "name": "Authorization",
-              "value": "Bearer sb_publishable_o2i64llO0OwnaUMD5NUEAQ_ARb4R7T5"
+              "value": "Bearer <REDACTED_BEARER_TOKEN>"
             }
           ]
         },
@@ -150,6 +151,7 @@
       "alwaysOutputData": true,
       "credentials": {
         "httpHeaderAuth": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Noellyne Supabase"
         }
       }
@@ -208,6 +210,7 @@
       "alwaysOutputData": true,
       "credentials": {
         "httpHeaderAuth": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Noellyne Supabase"
         }
       }
@@ -239,6 +242,7 @@
       "alwaysOutputData": true,
       "credentials": {
         "httpHeaderAuth": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Noellyne Supabase"
         }
       }
@@ -285,6 +289,7 @@
       "onError": "continueRegularOutput",
       "credentials": {
         "httpHeaderAuth": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Noellyne Supabase"
         }
       }
@@ -415,9 +420,10 @@
     "executionOrder": "v1",
     "availableInMCP": true
   },
-  "active": false,
   "meta": {
     "sourceWorkflowId": "mKAODz9f6rZyLCT7",
+    "activeVersionId": "8361716a-0db3-4974-9d80-13e3a9f178aa",
+    "backedUpAtUtc": "2026-11-25T07:21:19Z",
     "sanitized": true
   }
 }

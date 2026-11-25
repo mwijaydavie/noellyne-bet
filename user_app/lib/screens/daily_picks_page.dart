@@ -7,6 +7,7 @@ import '../app_theme.dart';
 import '../design/noellyne_ui.dart';
 import '../models/daily_pick.dart';
 import '../services/daily_picks_repository.dart';
+import '../services/weekly_audit_pdf_service.dart';
 import '../widgets/noellyne_dock_bar.dart';
 
 enum _PicksSection { picks, results }
@@ -54,6 +55,7 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
   DailyPicksBoard? _board;
   bool _initialLoading = true;
   bool _refreshing = false;
+  bool _exportingPdf = false;
   _PicksSection _section = _lastSection;
   PickFilter _filter = _lastFilter;
   PickSort _pickSort = _lastPickSort;
@@ -148,6 +150,149 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
     openAiChat(context, initialPrompt: 'Nina 10,000 leo');
   }
 
+  Future<void> _runPdfExport({
+    required List<DailyPick> ledger,
+    required List<DailyPick> pool,
+    required String title,
+    required String scope,
+  }) async {
+    if (_exportingPdf) return;
+    if (ledger.isEmpty) {
+      _toast('Hakuna matokeo ya ku-export kwa chaguo hili bado.');
+      return;
+    }
+    setState(() => _exportingPdf = true);
+    try {
+      await WeeklyAuditPdfService.generateAndOpen(
+        ledgerPicks: ledger,
+        breakdownPool: pool.isEmpty ? ledger : pool,
+        reportTitle: title,
+        scopeSubtitle: scope,
+      );
+      if (mounted) {
+        _toast('PDF Audit tayari! Unaweza ku-share au ku-save.');
+      }
+    } catch (e) {
+      if (mounted) {
+        _toast('Imeshindwa kutengeneza PDF: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _exportingPdf = false);
+    }
+  }
+
+  Future<void> _openPdfExportSheet(
+    DailyPicksBoard board,
+    List<DailyPick> filtered,
+  ) async {
+    if (!mounted || board.settled.isEmpty) {
+      _toast('Hakuna settled results za ku-export bado.');
+      return;
+    }
+    HapticFeedback.lightImpact();
+    final now = DateTime.now();
+    final weeklyPicks = ResultSort.newest.apply(
+      board.settled
+          .where((p) => ResultOutcomeFilter.week7d.matches(p, now: now))
+          .toList(growable: false),
+    );
+    final allPicks = _resultsSort.apply(board.settled);
+
+    await showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (sheetCtx) {
+        final scheme = Theme.of(sheetCtx).colorScheme;
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(18, 2, 18, 22),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Icon(
+                    Icons.picture_as_pdf_rounded,
+                    color: NoellyneColors.glowDeep,
+                    size: 22,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Export Verified Audit PDF',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w900,
+                        color: scheme.onSurface,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Inajumuisha Win Rate, ROI, Sure 2+ / Strong / High Odds breakdown na jedwali kamili la mechi.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                onPressed: () {
+                  Navigator.of(sheetCtx).pop();
+                  unawaited(_runPdfExport(
+                    ledger: weeklyPicks.isNotEmpty ? weeklyPicks : allPicks,
+                    pool: weeklyPicks.isNotEmpty ? weeklyPicks : board.settled,
+                    title: 'Weekly Performance Audit (Last 7 Days)',
+                    scope: 'All Tiers · Sorted By Date',
+                  ));
+                },
+                icon: const Icon(Icons.calendar_view_week_rounded),
+                label: Text(
+                  'Weekly Audit PDF · Last 7 Days (${weeklyPicks.length} picks)',
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.of(sheetCtx).pop();
+                  unawaited(_runPdfExport(
+                    ledger: filtered,
+                    pool: board.settled,
+                    title: '${_resultsCategory.label} Verified Audit',
+                    scope:
+                        '${_resultsOutcome.label} · Sorted: ${_resultsSort.label}',
+                  ));
+                },
+                icon: const Icon(Icons.filter_alt_rounded),
+                label: Text(
+                  'Current Filter (${_resultsCategory.label} · ${filtered.length} picks)',
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.of(sheetCtx).pop();
+                  unawaited(_runPdfExport(
+                    ledger: allPicks,
+                    pool: board.settled,
+                    title: 'Full Verified Track Record',
+                    scope: 'All ${board.settled.length} Settled Picks',
+                  ));
+                },
+                icon: const Icon(Icons.history_edu_rounded),
+                label: Text('Full History PDF (${board.settled.length} picks)'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   String _subtitleText() {
     final b = _board;
     if (b == null || b.fetchedAt == null) {
@@ -237,6 +382,20 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
         titleSpacing: 0,
         title: _Header(subtitle: _subtitleText()),
         actions: [
+          if (isResults && board.settled.isNotEmpty)
+            IconButton(
+              onPressed: _exportingPdf
+                  ? null
+                  : () => _openPdfExportSheet(board, filtered),
+              icon: _exportingPdf
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.picture_as_pdf_rounded),
+              tooltip: 'Export Weekly Audit PDF',
+            ),
           IconButton(
             onPressed: _openStakeSplit,
             icon: const Icon(Icons.account_balance_wallet_outlined),
@@ -330,6 +489,9 @@ class _DailyPicksPageState extends State<DailyPicksPage> {
                               allSettled: board.settled,
                               filteredSettled: filtered,
                               activeCategory: _resultsCategory,
+                              exportingPdf: _exportingPdf,
+                              onExportPdf: () =>
+                                  _openPdfExportSheet(board, filtered),
                               onSelectCategory: (cat) {
                                 HapticFeedback.lightImpact();
                                 final next = _resultsCategory == cat
@@ -713,12 +875,16 @@ class _RoiSummaryCard extends StatelessWidget {
     required this.filteredSettled,
     required this.activeCategory,
     required this.onSelectCategory,
+    required this.onExportPdf,
+    this.exportingPdf = false,
   });
 
   final List<DailyPick> allSettled;
   final List<DailyPick> filteredSettled;
   final PickFilter activeCategory;
   final ValueChanged<PickFilter> onSelectCategory;
+  final VoidCallback onExportPdf;
+  final bool exportingPdf;
 
   @override
   Widget build(BuildContext context) {
@@ -860,11 +1026,47 @@ class _RoiSummaryCard extends StatelessWidget {
                   label: 'Football: ${fbW}W / ${fb.length - fbW}L',
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               Expanded(
                 child: _MiniSplit(
                   icon: Icons.sports_basketball_rounded,
                   label: 'NBA: ${bbW}W / ${bb.length - bbW}L',
+                ),
+              ),
+              const SizedBox(width: 6),
+              PressableScale(
+                onTap: exportingPdf ? null : onExportPdf,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: NoellyneColors.glowDeep.withValues(alpha: .14),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: NoellyneColors.glowDeep.withValues(alpha: .4),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.picture_as_pdf_rounded,
+                        size: 13,
+                        color: NoellyneColors.glowDeep,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        exportingPdf ? 'Building...' : 'Weekly PDF',
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
+                          color: NoellyneColors.glowDeep,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],

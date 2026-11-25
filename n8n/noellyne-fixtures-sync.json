@@ -1,0 +1,169 @@
+{
+  "name": "Noellyne Fixtures & Live Scores Sync (15m)",
+  "description": "Syncs 12 top Football leagues + NBA fixtures, live scores, team crests & decimal odds into Supabase tahigoqhuyxedhmeqhnp/public.fixtures every 15 minutes so Home never depends on a single third-party stream operator.",
+  "active": true,
+  "nodes": [
+    {
+      "id": "3b3b7d8a-7543-42d9-b9c3-24d27d174ea6",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "7daa517c-5694-4c4e-853c-d39afd1d2bbf",
+      "name": "Collect Multi-League Fixtures & Odds",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Fetch Football (29 top European, Midweek & African CAF leagues — incl. Simba SC, Yanga, Azam FC) + NBA\n// Scans yesterday + today + next 2 days (EAT) so weekend CAF CL / UCL / UEL fixtures appear cleanly\n// and late-night matches crossing 00:00 EAT transition cleanly from live -> finished.\nconst LEAGUES = [\n  ['soccer', 'eng.1', 'Premier League'],\n  ['soccer', 'esp.1', 'La Liga'],\n  ['soccer', 'ita.1', 'Serie A'],\n  ['soccer', 'ger.1', 'Bundesliga'],\n  ['soccer', 'fra.1', 'Ligue 1'],\n  ['soccer', 'uefa.champions', 'UEFA Champions League'],\n  ['soccer', 'uefa.europa', 'UEFA Europa League'],\n  ['soccer', 'uefa.europa.conf', 'UEFA Conference League'],\n  ['soccer', 'caf.champions', 'CAF Champions League'],\n  ['soccer', 'caf.confed', 'CAF Confederation Cup'],\n  ['soccer', 'caf.nations', 'AFCON'],\n  ['soccer', 'caf.nations_qual', 'AFCON Qualifiers'],\n  ['soccer', 'rsa.1', 'South African Premiership'],\n  ['soccer', 'ken.1', 'Kenyan Premier League'],\n  ['soccer', 'uga.1', 'Ugandan Premier League'],\n  ['soccer', 'eng.2', 'Championship'],\n  ['soccer', 'ned.1', 'Eredivisie'],\n  ['soccer', 'por.1', 'Primeira Liga'],\n  ['soccer', 'tur.1', 'Turkish Super Lig'],\n  ['soccer', 'bra.1', 'Brasileirao'],\n  ['soccer', 'arg.1', 'Argentine Primera'],\n  ['soccer', 'mex.1', 'Liga MX'],\n  ['soccer', 'usa.1', 'MLS'],\n  ['soccer', 'sco.1', 'Scottish Premiership'],\n  ['soccer', 'bel.1', 'Belgian Pro League'],\n  ['soccer', 'ita.2', 'Serie B'],\n  ['soccer', 'esp.2', 'La Liga 2'],\n  ['soccer', 'ger.2', '2. Bundesliga'],\n  ['soccer', 'afc.champions', 'AFC Champions League'],\n  ['soccer', 'conmebol.libertadores', 'Copa Libertadores'],\n  ['soccer', 'conmebol.sudamericana', 'Copa Sudamericana'],\n  ['basketball', 'nba', 'NBA']\n];\n\nfunction americanToDecimal(val) {\n  const n = Number(val);\n  if (!Number.isFinite(n) || n === 0) return null;\n  return n > 0 ? +(1 + n / 100).toFixed(2) : +(1 + 100 / Math.abs(n)).toFixed(2);\n}\n\nconst now = new Date();\nconst nowIso = now.toISOString();\nconst staleCutoffMs = now.getTime() - 4 * 3600 * 1000;\nconst staleCutoffIso = new Date(staleCutoffMs).toISOString();\n\nconst fmtEat = (offsetDays) =>\n  new Date(now.getTime() + offsetDays * 86400000)\n    .toLocaleDateString('en-CA', { timeZone: 'Africa/Dar_es_Salaam' })\n    .replace(/-/g, '');\n\nconst dateKeys = [fmtEat(-1), fmtEat(0), fmtEat(1), fmtEat(2), fmtEat(3)];\nconst byId = new Map();\n\nfor (const dateKey of dateKeys) {\n  const batch = LEAGUES.map(async ([sportSlug, leagueSlug, leagueName]) => {\n    const url = 'https://site.api.espn.com/apis/site/v2/sports/' + sportSlug + '/' + leagueSlug + '/scoreboard?dates=' + dateKey;\n    try {\n      const data = await this.helpers.httpRequest({ method: 'GET', url, timeout: 9000, json: true });\n      return { sportSlug, leagueName, data };\n    } catch (e) {\n      return { sportSlug, leagueName, data: null };\n    }\n  });\n  const responses = await Promise.all(batch);\n  for (const { sportSlug, leagueName, data } of responses) {\n    const events = (data && data.events) || [];\n    const sport = sportSlug === 'basketball' ? 'basketball' : 'football';\n    for (const ev of events) {\n      const evId = String(ev.id || '').trim();\n      const comp = (ev.competitions && ev.competitions[0]) || null;\n      if (!evId || !comp) continue;\n      const cs = comp.competitors || [];\n      const h = cs.find(c => c.homeAway === 'home');\n      const a = cs.find(c => c.homeAway === 'away');\n      if (!h || !a) continue;\n      const ht = h.team || {};\n      const at = a.team || {};\n      const homeName = String(ht.displayName || ht.name || '').trim();\n      const awayName = String(at.displayName || at.name || '').trim();\n      if (!homeName || !awayName) continue;\n\n      const kickoffStr = String(ev.date || nowIso);\n      const kickoffMs = Date.parse(kickoffStr);\n      const isTooOld = Number.isFinite(kickoffMs) && kickoffMs < staleCutoffMs;\n\n      const st = (ev.status && ev.status.type) || {};\n      const state = String(st.state || 'pre').toLowerCase();\n      const completed = Boolean(st.completed) || state === 'post' || isTooOld;\n      const isLive = !completed && state === 'in';\n      const status = completed ? 'finished' : (isLive ? 'live' : 'scheduled');\n      const clock = String(st.shortDetail || st.detail || '').trim();\n      const hScore = state === 'pre' ? null : (Number.isFinite(parseInt(h.score, 10)) ? parseInt(h.score, 10) : null);\n      const aScore = state === 'pre' ? null : (Number.isFinite(parseInt(a.score, 10)) ? parseInt(a.score, 10) : null);\n\n      const oddsArr = Array.isArray(comp.odds) ? comp.odds : [];\n      const o0 = oddsArr.find(x => x && typeof x === 'object') || null;\n      let oddsHome = null, oddsDraw = null, oddsAway = null, oddsSummary = '';\n      if (o0) {\n        oddsHome = americanToDecimal(o0.homeTeamOdds && o0.homeTeamOdds.moneyLine);\n        oddsAway = americanToDecimal(o0.awayTeamOdds && o0.awayTeamOdds.moneyLine);\n        oddsDraw = americanToDecimal(o0.drawOdds && o0.drawOdds.moneyLine);\n        const parts = [];\n        if (oddsHome && oddsAway) {\n          parts.push(oddsDraw\n            ? ('1: ' + oddsHome.toFixed(2) + ' · X: ' + oddsDraw.toFixed(2) + ' · 2: ' + oddsAway.toFixed(2))\n            : ('1: ' + oddsHome.toFixed(2) + ' · 2: ' + oddsAway.toFixed(2)));\n        } else if (o0.details) {\n          parts.push(String(o0.details).trim());\n        }\n        if (o0.overUnder) parts.push('O/U ' + o0.overUnder);\n        oddsSummary = parts.join(' | ');\n      }\n\n      const id = 'espn-' + sport + '-' + evId;\n      byId.set(id, {\n        id,\n        event_id: evId,\n        sport,\n        league: leagueName,\n        home_team: homeName,\n        away_team: awayName,\n        home_logo_url: String(ht.logo || '').trim(),\n        away_logo_url: String(at.logo || '').trim(),\n        kickoff_at: kickoffStr,\n        status,\n        is_live: isLive,\n        home_score: hScore,\n        away_score: aScore,\n        clock,\n        odds_home: oddsHome,\n        odds_draw: oddsDraw,\n        odds_away: oddsAway,\n        odds_summary: oddsSummary,\n        source: 'espn-multi',\n        is_active: !completed,\n        updated_at: nowIso\n      });\n    }\n  }\n}\n\nconst rows = Array.from(byId.values());\nif (!rows.length) return [];\nreturn [{ json: { count: rows.length, stale_cutoff_iso: staleCutoffIso, payload: rows } }];"
+      }
+    },
+    {
+      "id": "a972daa9-e88a-4349-8165-af8f6011d825",
+      "name": "Upsert Supabase Fixtures",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://tahigoqhuyxedhmeqhnp.supabase.co/rest/v1/fixtures?on_conflict=id",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Noellyne Supabase"
+        }
+      }
+    },
+    {
+      "id": "2f3e5f29-a58e-4f3c-a821-0060118b04b1",
+      "name": "Deactivate Stale Fixtures",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        0
+      ],
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "jsonBody": "={{ JSON.stringify({ is_live: false, is_active: false, status: 'finished', updated_at: new Date().toISOString() }) }}",
+        "method": "PATCH",
+        "options": {
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "sendHeaders": true,
+        "specifyBody": "json",
+        "url": "=https://tahigoqhuyxedhmeqhnp.supabase.co/rest/v1/fixtures?is_active=eq.true&kickoff_at=lt.{{ encodeURIComponent($('Collect Multi-League Fixtures & Odds').first().json.stale_cutoff_iso) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "<CONFIGURE_IN_N8N>",
+          "name": "Noellyne Supabase"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Collect Multi-League Fixtures & Odds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Multi-League Fixtures & Odds": {
+      "main": [
+        [
+          {
+            "node": "Upsert Supabase Fixtures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Supabase Fixtures": {
+      "main": [
+        [
+          {
+            "node": "Deactivate Stale Fixtures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "meta": {
+    "sourceWorkflowId": "PSZrsfnn2dyTLdLA",
+    "activeVersionId": "9d251593-5740-4be9-96ee-0b7f13f1849b",
+    "backedUpAtUtc": "2026-11-25T07:21:18Z",
+    "sanitized": true
+  }
+}

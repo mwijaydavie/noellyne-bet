@@ -73,6 +73,7 @@ void main() {
     expect(PickFilter.highOdds.matches(highOddsWin), isTrue);
     expect(ResultOutcomeFilter.won.matches(sureWin, now: now), isTrue);
     expect(ResultOutcomeFilter.lost.matches(lostPick, now: now), isTrue);
+    expect(ResultOutcomeFilter.week7d.matches(sureWin, now: now), isTrue);
   });
 
   test('PickSort and ResultSort produce exact serious ordering', () {

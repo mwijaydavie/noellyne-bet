@@ -1,6 +1,7 @@
 {
   "name": "Hermes Weekly Performance Report — Sunday 19:00 EAT",
   "description": "Automated Sunday 19:00 EAT Weekly Performance Summary comparing Football vs NBA ROI, TZS Bankroll Growth, and MVP/Lesson of the week from HermesPicks Google Sheet.",
+  "active": true,
   "nodes": [
     {
       "id": "2d097465-215e-4bc3-b8b5-4f7c87c35111",
@@ -46,6 +47,7 @@
       },
       "credentials": {
         "googleSheetsOAuth2Api": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Google Sheets account"
         }
       }
@@ -128,6 +130,7 @@
       "webhookId": "74e4884b-ae56-4930-bbef-7e632e47bd05",
       "credentials": {
         "telegramApi": {
+          "id": "<CONFIGURE_IN_N8N>",
           "name": "Noellyne BetBot"
         }
       }
@@ -195,10 +198,10 @@
     "availableInMCP": true,
     "timezone": "Africa/Dar_es_Salaam"
   },
-  "active": false,
   "meta": {
     "sourceWorkflowId": "WNiHHMe0MfaTeIOT",
-    "exportedBy": "Altraware Disaster Recovery Exporter",
+    "activeVersionId": "716b0323-798c-4c97-ba5f-e60e799e45fe",
+    "backedUpAtUtc": "2026-11-25T07:21:19Z",
     "sanitized": true
   }
 }

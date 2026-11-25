@@ -213,9 +213,10 @@ enum PickFilter {
 /// Outcome / timeframe sub-filter composable with [PickFilter] on Results.
 enum ResultOutcomeFilter {
   all('All'),
+  week7d('7 Days'),
+  recent48h('48h'),
   won('Won'),
-  lost('Lost'),
-  recent48h('48h');
+  lost('Lost');
 
   const ResultOutcomeFilter(this.label);
   final String label;
@@ -225,10 +226,12 @@ enum ResultOutcomeFilter {
     final ref = p.settledAt ?? p.kickoffTime;
     return switch (this) {
       ResultOutcomeFilter.all => true,
-      ResultOutcomeFilter.won => p.isWon,
-      ResultOutcomeFilter.lost => p.isLost,
+      ResultOutcomeFilter.week7d =>
+        ref != null && current.difference(ref).inDays <= 7,
       ResultOutcomeFilter.recent48h =>
         ref != null && current.difference(ref).inHours <= 48,
+      ResultOutcomeFilter.won => p.isWon,
+      ResultOutcomeFilter.lost => p.isLost,
     };
   }
 }
